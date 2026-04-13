@@ -1,7 +1,7 @@
 # 江苏润盛 IoT 监控平台 — 重做设计文档
 
-> **版本**：v1.3 / 2026-04-13
-> **状态**：5 角色审查合并完成，协议/业务/架构/安全/测试 27 项 Blocker 已修订；等待最终 ack → writing-plans
+> **版本**：v1.3.1 / 2026-04-13
+> **状态**：5 角色审查合并 + 数据/函数/前后台变量一致性轮完成；等待最终 ack → writing-plans
 > **关联文档**：
 > - 需求基线：`D:\江苏润盛\需求清单\功能全景清单.md` v2.2（1609 行）
 > - 待澄清问题：`D:\江苏润盛\需求清单\待澄清问题清单.md` v1.1
@@ -24,6 +24,8 @@
 - §8 时间盒与里程碑
 - §9 未决问题对齐
 - §10 变更记录
+- §14 审查反馈整合清单（v1.3+）
+- §A 协议规范附录（v1.3+）
 
 ---
 
@@ -92,7 +94,9 @@
               ┌──────────────────────┐
               │ Redis (pub/sub+缓存) │
               │  channels:           │
-              │   realtime:{dev}     │
+              │   channel:realtime:{dev_number} (Pub/Sub)
+              │   stream:alarm:fired   (Streams)
+              │   stream:control:cmd   (Streams)
               │   alarm:fired        │
               │   control:cmd        │
               └──────────┬───────────┘
@@ -119,7 +123,7 @@
 
 | 通道 | 形态 | 生产者 | 消费者 | 内容 |
 |---|---|---|---|---|
-| Redis `channel:realtime:{DevNumber}` | **Pub/Sub**（允许丢） | gw | api（WS 订阅）| 实时点值 `{point_id, value, ts}`（下一秒又来，丢单条无害） |
+| Redis `channel:realtime:{dev_number}` | **Pub/Sub**（允许丢） | gw | api（WS 订阅）| 实时点值 `{point_id, value, ts}`（下一秒又来，丢单条无害） |
 | Redis `stream:alarm:fired` | **Streams**（at-least-once） | gw | api `api-alarm-consumer` 组 | 告警触发事件，ACK 后 XDEL |
 | Redis `stream:control:cmd` | **Streams**（at-least-once） | api | gw `gw-control-consumer` 组 | 用户控制命令，ACK 后 XDEL |
 | Redis `stream:dlq:*` | **Streams** | 消费者 | 运维告警 | 死信（5 次处理失败） |
@@ -169,7 +173,7 @@ ruisheng-api/
 │   │   ├── security.py          # JWT 签发/校验、密码 Bcrypt
 │   │   ├── rbac.py              # 4 级权限矩阵（D1/§3.6）
 │   │   ├── tenant.py            # UsrGroup 强制过滤（§3.7）
-│   │   └── errors.py            # 错误码 §D.2、统一异常响应
+│   │   └── errors.py            # 错误码（§5.1 ErrCode）、统一异常响应
 │   │
 │   ├── db/
 │   │   ├── base.py              # SQLAlchemy 2.0 async engine + Session
@@ -256,7 +260,7 @@ ruisheng-gw/
 │   │   └── config_watcher.py    # 5s 轮询 update_flag
 │   │
 │   ├── pubsub/
-│   │   ├── publisher.py         # realtime:{dev} / alarm:fired
+│   │   ├── publisher.py         # channel:realtime:{dev_number} / stream:alarm:fired
 │   │   └── subscriber.py        # control:cmd
 │   │
 │   └── tests/
@@ -446,7 +450,7 @@ ruisheng-web/
 ### 3.2 用户控制路径
 
 ```
-浏览器 ──HTTP POST──▶ api /api/devices/{n}/control
+浏览器 ──HTTP POST──▶ api /api/devices/{dev_number}/control
                         │  Idempotency-Key 头防重复
                         ├─ RBAC（ControlAuthority bit0，§3.6）
                         ├─ 多租户过滤（§3.7 自动注入 WHERE usr_group）
@@ -469,7 +473,7 @@ ruisheng-web/
                                 ├─ ACK 成功 → 更新 action.result=success + XACK + WS 推用户
                                 ├─ 超时 3 次 → XADD stream:dlq:control + 审计 failed + 告警 + WS 推用户
                                 ├─ 进程崩溃 → 下次启动 XAUTOCLAIM 拿回未 ACK 继续
-                                └─ 取消 → 用户 24h 内可 `DELETE /api/control/{cmd_id}`（仅 pending 状态）
+                                └─ 取消 → 用户 24h 内可 `DELETE /api/control/commands/{cmd_id}`（仅 pending 状态）
 
 **控制命令状态机**（cmd_id 生命周期）：
 
@@ -482,8 +486,43 @@ ruisheng-web/
 
 **响应契约**：
 - HTTP 201 立即返回 `{cmd_id, status: "pending"}`（不等设备 ACK）
-- WS 在 cmd_id 状态变化时推送 `{cmd_id, status, at, reason?}`
+- WS 在 cmd_id 状态变化时推送 `{type: "control_result", cmd_id, status, at, reason?}`
 - 前端 Toast 显示执行进度，5s 内无状态变化降级为"请稍后查看控制记录"
+
+### 3.4.1 WebSocket 消息合同（前后端一致性契约）
+
+所有 WS 消息统一信封，`type` 字段决定 payload 形状：
+
+```typescript
+// 前端 ws/types.ts 应由后端 OpenAPI/JSONSchema 自动生成
+type WSMessage =
+  | { type: "realtime"; dev_number: string; point_id: number; value: number; ts: string }
+  | { type: "alarm"; event_id: number; dev_number: string; alarm_name: string;
+      value: number; limit: number; ts: string }
+  | { type: "alarm_reset"; event_id: number; dev_number: string; ts: string }
+  | { type: "control_result"; cmd_id: string; status: "success"|"failed"|"timeout"|"cancelled";
+      at: string; reason?: string }
+  | { type: "device_state"; dev_number: string; state: "online"|"offline"|"warning"; at: string }
+  | { type: "ping"; ts: string }                                      // 心跳
+```
+
+**保证**：
+- 所有 `ts` / `at` 均为 ISO8601 UTC，前端自行转 +08
+- 所有 `dev_number` 与 HTTP 路径 `{dev_number}`、Redis key `channel:realtime:{dev_number}` 保持同一命名
+- `status` 枚举与 `user_control_actions.result` 字段取值（`pending/success/failed/timeout/cancelled`）完全一致
+- 新增 `type` 必须同时更新后端 Pydantic 模型和前端 TS 类型，CI 通过 `openapi-typescript` 自动生成强制一致
+
+### 3.4.2 HTTP 标准头统一约定（前后端契约）
+
+| 头 | 方向 | 必需 | 用途 |
+|---|---|---|---|
+| `Authorization: Bearer <JWT>` | 请求 | 登录后必须 | JWT access token，验证见 §5.13 |
+| `X-Trace-Id` | 请求 + 响应 | 可选（缺则后端生成 ULID） | 跨服务追踪；响应回写让前端 Toast 可复制 |
+| `Idempotency-Key` | 请求 | 写操作推荐 | 防重复；服务端缓存响应 24h |
+| `X-OTP-Code` | 请求 | 高危操作必需 | 短信/邮件 OTP 二次验证（§5.13）|
+| `Cache-Control` | 响应 | 写操作必加 `no-store` | 防浏览器/中间代理缓存（M-B-06）|
+
+**ID 格式统一**：`trace_id` / `cmd_id` / `jti` / `alarm_event_id` 全部使用 **ULID**（26 字符 Crockford Base32，时间可排序）。
 ```
 
 ### 3.3 告警触发与通知路径
@@ -558,7 +597,14 @@ async def on_wx_pay_notify(request):
     return xml_ok()
 ```
 
-新增辅助表：`pay_orders_seen (out_trade_no PRIMARY KEY, notified_at)`。
+新增辅助表：
+```sql
+CREATE TABLE pay_orders_seen (
+  out_trade_no VARCHAR(50) PRIMARY KEY,
+  notified_at  timestamptz NOT NULL DEFAULT now()
+);
+```
+用于微信回调幂等防护；每日凌晨清理 30 天以前记录。
 
 ### 3.6 权限矩阵（4 角色 × 14 模块）
 
@@ -607,7 +653,7 @@ async def on_wx_pay_notify(request):
 | 14 运维 | WXGroup 配置 | ✓(OTP) | × | × | × | — |
 | 14 运维 | `/admin/log/*` 动态调级 | ✓(OTP) | × | × | × | — |
 
-**L4 操作 OTP 规则**：所有带 `(OTP)` 标记的操作须在执行前调用 `POST /auth/otp/send`（短信/邮件），用户提交 OTP 后 5 min 内有效。
+**L4 操作 OTP 规则**：所有带 `(OTP)` 标记的操作须在执行前调用 `POST /api/auth/otp/send`（短信/邮件），用户提交 OTP 后 5 min 内有效。
 
 ### 3.7 多租户强制隔离（B-B1 + B-S7 合并）
 
@@ -726,7 +772,7 @@ CREATE TABLE devices (
   last_back_at            timestamptz,
   loss_count              INT NOT NULL DEFAULT 0,
   is_online               BOOLEAN NOT NULL DEFAULT false,
-  last_state              JSONB,                      -- 缓存关键点位值，控制前冲突检测用（M-S-07）
+  last_state              JSONB,                      -- 关键点位快照 {"<point_id>": <value>, "_at": "<ISO ts>"}；控制前冲突检测用（M-S-07）
   update_flag             INT NOT NULL DEFAULT 0,
   usr_group               VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group),
   deleted_at              timestamptz,
@@ -846,11 +892,16 @@ CREATE TABLE user_control_actions (
   id         BIGSERIAL PRIMARY KEY,
   dev_number VARCHAR(50) NOT NULL,
   user_name  VARCHAR(50) NOT NULL,
-  action     JSONB NOT NULL,
-  result     VARCHAR(20),
+  action     JSONB NOT NULL,                     -- {fun_code, reg, value, ...}
+  cmd_id     VARCHAR(32) UNIQUE,                 -- ULID；关联 stream:control:cmd & WS control_result
+  result     VARCHAR(20) CHECK
+               (result IN ('pending','success','failed','timeout','cancelled')),
   acted_at   timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,                      -- 设备 ACK 或失败终态时间
   usr_group  VARCHAR(50) NOT NULL
 );
+CREATE INDEX ON user_control_actions (dev_number, acted_at DESC);
+CREATE INDEX ON user_control_actions (user_name, acted_at DESC);
 
 CREATE TABLE timing_plans (
   id          BIGSERIAL PRIMARY KEY,
@@ -898,7 +949,7 @@ SELECT add_retention_policy('soft_logs', INTERVAL '1 year');
 控制 (1):   user_control_actions
 计划 (3):   timing_plans, maintain_plans, maintain_actions
 组态 (2):   scene_pages, scene_views
-支付 (1):   pay_orders
+支付 (2):   pay_orders, pay_orders_seen
 日志 (2):   soft_logs*, user_login_records*
 
 * = TimescaleDB hypertable，按月分块 + 1 年自动滚动
@@ -1111,7 +1162,7 @@ RETRY_DELAYS = [5, 15, 60, 300, 1800]   # 最多 5 次，指数退避
 |---|---|---|---|---|
 | `stream:alarm:fired` | Streams | gw | `api-alarm-consumer` | `XTRIM MAXLEN 100000` + 消费 ACK 后自然淘汰 |
 | `stream:control:cmd` | Streams | api | `gw-control-consumer` | 同上，ACK 后 XDEL |
-| `channel:realtime:{dev}` | Pub/Sub | gw | api WS 订阅 | **允许丢**（下一秒还会来新值） |
+| `channel:realtime:{dev_number}` | Pub/Sub | gw | api WS 订阅 | **允许丢**（下一秒还会来新值） |
 
 **补偿机制**：
 
@@ -1369,10 +1420,10 @@ logger.configure(patcher=redact)
 管理接口（需 L4 权限）：
 
 ```
-POST /admin/log/level                   {logger:"ruisheng-gw.poller", level:"DEBUG", ttl:1800}
-POST /admin/log/device/{dev_number}     {level:"DEBUG", ttl:1800}   # 单设备开 DEBUG 30 min
-POST /admin/log/user/{user_name}        {level:"DEBUG", ttl:1800}
-GET  /admin/log/current                 → 返回所有活跃的临时调级
+POST /api/admin/log/level                 {logger:"ruisheng-gw.poller", level:"DEBUG", ttl:1800}
+POST /api/admin/log/device/{dev_number}   {level:"DEBUG", ttl:1800}   # 单设备开 DEBUG 30 min
+POST /api/admin/log/user/{user_name}      {level:"DEBUG", ttl:1800}
+GET  /api/admin/log/current               → 返回所有活跃的临时调级
 ```
 
 - 所有 `ttl` 过期后自动恢复默认；最长 6 小时
@@ -1398,7 +1449,7 @@ rg '"trace_id":"01HXXX"' D:\ruisheng\logs\**\*.log | jq .
 
 **Token 生命周期**：
 - `access_token` 有效期 **15 min**（旧设计未限定）
-- `refresh_token` 有效期 **7 天**，仅走 `POST /auth/refresh`
+- `refresh_token` 有效期 **7 天**，仅走 `POST /api/auth/refresh`
 - Refresh 流程要求 **old refresh + new nonce**，旋转单次使用（旧 refresh 立刻失效）
 
 **客户端特征绑定**：
@@ -1453,7 +1504,7 @@ async def check_login(username, ip):
 ```
 
 **OTP 二次验证**（权限矩阵中 L4 / 高危控制操作需要）：
-- 发送：`POST /auth/otp/send` → 短信/邮件/微信模板 → 写 Redis `otp:{uid}:{action}` TTL 5min
+- 发送：`POST /api/auth/otp/send` → 短信/邮件/微信模板 → 写 Redis `otp:{uid}:{action}` TTL 5min
 - 验证：操作请求头 `X-OTP-Code`，后端 `GETDEL otp:{uid}:{action}` 比对
 
 ### 5.14 Windows 与设备安全加固（B-S1 + B-S4）
@@ -1474,7 +1525,7 @@ async def check_login(username, ip):
 PSK 管理：
   - 首次出厂烧录到设备（DTU 生产时）
   - 平台侧存 devices.psk_encrypted（用 DPAPI 加密，见下）
-  - 轮换：平台 API POST /admin/devices/{n}/rotate_psk
+  - 轮换：平台 API POST /api/admin/devices/{dev_number}/rotate_psk
           → 下发新 PSK（用旧 PSK 加密） → 设备确认 → 切换
   - 丢失：人工重置（需运维到现场）
 ```
@@ -1717,10 +1768,10 @@ def gen_scenario(name: str, seed: int) -> Path:
 
 | 端点 | 流量占比 | QPS 目标 | P95 |
 |---|---|---|---|
-| `GET /api/devices/{n}/realtime` | 50% | ≥ 200 | < 100ms |
-| `GET /api/devices/{n}/history?from=...` | 20% | ≥ 50 | < 500ms |
+| `GET /api/devices/{dev_number}/realtime` | 50% | ≥ 200 | < 100ms |
+| `GET /api/devices/{dev_number}/history?from=...` | 20% | ≥ 50 | < 500ms |
 | `GET /api/alarms?status=active` | 15% | ≥ 30 | < 200ms |
-| `POST /api/devices/{n}/control` | 10% | ≥ 20 | < 300ms |
+| `POST /api/devices/{dev_number}/control` | 10% | ≥ 20 | < 300ms |
 | `POST /api/waveforms/analyze (FFT)` | 5% | ≥ 5 | < 2s |
 
 **WS 压测**：
@@ -1930,7 +1981,7 @@ Alertmanager → 钉钉 / 企微 / 邮件
 - HTTPS Let's Encrypt 自动续期
 - 3 个 PG 账号：`ruisheng_api`（业务读写）、`ruisheng_gw`（时序读写）、`ruisheng_backup`（只读+REPLICATION）
 - Redis 绑定 127.0.0.1 + requirepass + ACL
-- Windows 防火墙只开 80/443 + TCP 6000/6020；8000/8001/5432/6379 内部封
+- Windows 防火墙只开 80/443 + TCP 6000/6020；8000/8001/5432/6379/6380 仅 localhost（与 §5.14 基线一致）
 - 审计：所有写操作 → `user_control_actions`；失败登录 5 次 → 锁 30 min
 
 ### 7.9 升级与回滚
@@ -2126,6 +2177,7 @@ T+3min+3s 设备 ACK 停机 → 成功通知用户
 - **v1.1**：自检修订（GroupID 砍除；update_interval_decisec 从点位级挪到终端级；遗产数据迁移策略）
 - **v1.2**：健壮性/长期不变慢/通讯持续三维加固（Redis Streams 替代 pub/sub；fillfactor+autovacuum；TimescaleDB 压缩；本地 WAL 兜底；TCP 双向心跳；时钟校准；微信 Token 降级）
 - **v1.3**：**5 角色并行审查（SA / 架构师 / 通讯 / 安全 / 测试）合并修订**。27 项 Blocker 内联修订；新增 §3.6 权限矩阵、§3.7 多租户 RLS、§5.13 JWT 加固、§5.14 Windows 加固、§6.11 升级路径、§6.12 其他测试、§9.3 用户旅程、§14 审查整合清单、**§A 协议规范附录**（全章）。D8 决策入账（5 角色 Blocker 合并为单次交付）。
+- **v1.3.1**：**数据 / 函数 / 前后台变量一致性轮**。修订点：(1) Redis channel key 统一 `channel:realtime:{dev_number}`；(2) URL 参数统一 `{dev_number}` 替代 `{n}`；(3) 所有私有 API 加 `/api/` 前缀（`/api/auth/*` / `/api/admin/*`）；(4) interval_decisec 修正为 update_interval_decisec 前后端同名；(5) user_control_actions 加 cmd_id UNIQUE + result CHECK 约束；(6) 新增 §3.4.1 WS 消息合同 + §3.4.2 HTTP 标准头契约；(7) ID 统一 ULID；(8) pay_orders_seen DDL 与表清单同步；(9) 目录增补 §14 / §A 锚点；(10) 错误码引用从 §D.2 改 §5.1。
 
 ---
 
@@ -2409,9 +2461,9 @@ for i in range(PacketCount):
 | 115200 bps | 4 ms | 0.5s | **1s** |
 
 **前端配置校验规则**：
-- API `POST /api/devices/{n}/update_interval` 接收 `interval_decisec`
-- 后端计算：该 RS485 总线上（同 DTU 下）所有设备 `interval_decisec` 的**最小值**
-- 若 `min_interval_s < 约束表下限` → 返回错误码 `-100 该波特率下最少轮询周期应 >= X.Xs`
+- API `POST /api/devices/{dev_number}/update_interval` 接收 body `{ "update_interval_decisec": 100 }`（与 DB 字段同名）
+- 后端计算：该 RS485 总线上（同 DTU 下）所有设备 `update_interval_decisec` 的**最小值**
+- 若 `min_interval_s < 约束表下限` → 返回错误码 `-100` + `msg: "该波特率下最少轮询周期应 >= X.Xs"`
 - 前端给即时提示 + 禁用提交按钮
 
 ---
