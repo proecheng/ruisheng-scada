@@ -1,0 +1,82 @@
+# ============================
+# 江苏润盛 IoT 重做项目 .gitignore
+# ============================
+
+# ----- 旧系统源码 / 逆向素材（已经在归档位置，不进 git）-----
+DataBase/
+ModBusServer20210908/
+ModBusWeb20210908/
+润圣监控软件平台终端/
+济南大学开发软件/
+*.rar
+*.mdf
+*.ldf
+
+# ----- 临时 / 解压目录 -----
+*_rar内容/
+
+# ----- 将来的产出代码目录（各自独立 repo 时）-----
+# 如果后续每个服务有独立 repo，它们在这里作为子目录，需要时再决定是否纳入 -----
+# ruisheng-api/
+# ruisheng-gw/
+# ruisheng-web/
+# ruisheng-shared/
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ----- Node / 前端 -----
+node_modules/
+.vite/
+.vite-cache/
+.nuxt/
+.output/
+
+# ----- IDE / 编辑器 -----
+.vscode/
+.idea/
+*.sublime-*
+*.swp
+*.swo
+
+# ----- OS -----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ----- 数据库临时文件 -----
+*.db
+*.sqlite
+*.sqlite3
+
+# ----- 日志 -----
+*.log
+logs/
+
+# ----- 密钥与配置 -----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ----- Claude / 会话缓存 -----
+.claude/projects/
+.claude/tasks/
