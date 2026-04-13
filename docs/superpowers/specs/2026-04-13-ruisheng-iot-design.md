@@ -265,25 +265,102 @@ ruisheng-shared/
 ruisheng-web/
 ├── src/
 │   ├── api/                     # axios + openapi-typescript 自动生成
-│   ├── stores/                  # Pinia
+│   │                            #   拦截器：X-Trace-Id 注入、错误码→中文映射
+│   ├── stores/                  # Pinia（含 diag store：最近 API/WS/错误）
 │   ├── router/
-│   ├── layouts/                 # 响应式（桌面+移动）
+│   ├── layouts/                 # 响应式（桌面+移动断点 768/1024）
 │   ├── views/
 │   │   ├── auth/
 │   │   ├── dashboard/
 │   │   ├── devices/
 │   │   ├── alarms/
 │   │   ├── reports/
-│   │   ├── waveforms/           # ECharts + 调 FFT/OPM
+│   │   ├── waveforms/           # ECharts + 调 FFT/OPM；图表数据一键导 CSV
 │   │   ├── plans/
 │   │   ├── scenes/              # vue-konva 组态画布
 │   │   ├── pay/                 # 微信 JSAPI / 扫码
-│   │   └── settings/
+│   │   ├── settings/
+│   │   └── __diag.vue           # 诊断页：当前会话/连接/最近调用（§2.5.1）
 │   ├── components/
-│   └── ws/                      # WebSocket 客户端封装
-├── vite.config.ts
+│   │   ├── ErrorBoundary.vue    # 组件崩溃兜底（§2.5.1）
+│   │   ├── EmptyState.vue       # 列表空态引导（§2.5.2）
+│   │   ├── ConfirmDialog.vue    # 二次确认 + Undo 5s（§2.5.2）
+│   │   ├── LoadingSkeleton.vue  # 骨架屏
+│   │   ├── CommandPalette.vue   # Ctrl+K 全局搜索（§2.5.3）
+│   │   └── Toast.vue            # 统一反馈
+│   ├── composables/
+│   │   ├── useShortcuts.ts      # 键盘快捷键注册
+│   │   ├── useRecent.ts         # 最近访问记忆
+│   │   └── useAsync.ts          # pending/success/error 三态
+│   ├── directives/
+│   │   ├── v-debounce.ts
+│   │   └── v-permission.ts      # 前端 RBAC 显隐（后端仍为权威）
+│   ├── i18n/                    # vue-i18n 骨架，zh-CN 必备，en 占位
+│   ├── utils/
+│   │   ├── errors.ts            # 错误码→友好消息 + 建议下一步
+│   │   ├── format.ts            # 人性化时间"3 分钟前"、数值格式化
+│   │   └── sentry.ts            # 前端异常上报（脱敏）
+│   ├── ws/                      # WebSocket 客户端封装（自动重连、状态订阅）
+│   └── debug/                   # 仅 ?debug=1 加载
+│       ├── RequestLogPanel.vue
+│       └── WsStatePanel.vue
+├── public/
+│   └── build-info.json          # 构建 hash + 时间，页脚显示
+├── vite.config.ts               # Source maps 生产开启（上传 Sentry，不公开）
 └── package.json
 ```
+
+### 2.5 前端体验原则（可调试性 / 用户友好性 / 易操作性）
+
+#### 2.5.1 可调试性
+
+| 机制 | 实现 | 价值 |
+|---|---|---|
+| **错误边界** | 根级 `<ErrorBoundary>` + Vue `errorCaptured`；组件崩溃展示"某模块异常"+ "刷新 / 联系管理员"双按钮，不白屏 | 单组件 bug 不拖垮整页 |
+| **诊断页 `/__diag`** | 仅登录用户可见：当前用户/租户/Authority；最近 50 次 API（路径+耗时+traceId）；WS 连接状态；客户端时间 vs 服务器时间偏差 | 运维/一线排障零成本 |
+| **Trace ID 贯穿** | axios request 注入 `X-Trace-Id`；响应 header 回写；Toast 错误提示右侧显示 `[点击复制 Trace ID]` | 一个 ID 定位前后端 + gw 完整链路 |
+| **前端异常上报** | `window.onerror` + `vue:errorHandler` + axios interceptor → Sentry（或自建 `POST /api/client_errors`）；带上 user / trace / UA / URL / build hash | 线上 bug 可复现 |
+| **构建版本显示** | 页脚 `v1.2.3 · build 2026-04-13 a3f9` 点击复制；后端 `/api/meta/version` 双向对照 | 问题时马上知道"是哪版" |
+| **Source Maps** | Vite 生产开启；`.map` 上传 Sentry，不发布到 CDN | 堆栈还原原文件行号 |
+| **Debug Mode 开关** | URL `?debug=1` 或键盘 `Ctrl+Alt+D` 切换；开启后显示 RequestLogPanel + WsStatePanel + 所有 Tooltip 展开 | 一线排障不用装 DevTools |
+| **图表数据下载** | 每个 ECharts 右上角有下载按钮 → CSV/JSON 原始数据 | 对账 + 第三方分析 |
+
+#### 2.5.2 用户友好性
+
+| 场景 | 规则 |
+|---|---|
+| **加载态** | 每个异步界面必须有 **骨架屏**，不许白屏超过 300ms；超过 3s 加"还在加载…"文案 |
+| **空态** | 列表为空时渲染 `<EmptyState icon slot action>`：告诉用户"空的原因 + 下一步能做什么"（例："该部门暂无设备，点击'添加设备'") |
+| **错误消息** | 禁用 `"error"` / `"failed"` / HTTP 码直显；后端 ErrCode → `utils/errors.ts` 查表映射为：**一句话现象 + 一句话建议**（如 `-200 设备离线` → "设备 #60270012 目前离线，可能 DTU 断网；稍后再试或查看信号") |
+| **Toast 反馈** | 所有写操作都 toast；成功 2s 自动消、失败常驻需手动关；Ctrl+Z 5s 内可撤销（适用于删除/复位）|
+| **确认对话框** | 危险操作（删除、远程控制、批量改配）二次确认；涉及真实设备动作的额外要求**输入设备号**才能确认 |
+| **表单即时校验** | 用 `vee-validate` + zod schema；输入失焦即校验；提交按钮永远可点击但校验失败时抖动 + 聚焦首个错误字段 |
+| **时间格式** | 列表用"3 分钟前"相对时间；详情 tooltip hover 出绝对时间 + 时区；关键事件（告警/控制）同时显示两种 |
+| **国际化** | `vue-i18n`，zh-CN 全覆盖，en-US 占位（Q-S01 等保要求可能需要）；日期 / 数字 / 货币走 Intl API |
+| **无障碍 a11y** | WCAG AA；所有按钮有 aria-label；表单 label 关联；焦点样式可见；色盲友好调色盘（告警色 + 辅以图形符号） |
+| **移动端** | 主要操作（控制、告警复位）在屏幕下半部分或悬浮按钮；Lighthouse Mobile ≥ 85 |
+
+#### 2.5.3 易操作性
+
+| 功能 | 键位 / 入口 | 描述 |
+|---|---|---|
+| **全局搜索** | `Ctrl+K` / `Cmd+K` | Command Palette：模糊搜设备号/设备名/用户名/告警名；回车跳转 |
+| **设备树快速定位** | 树侧搜索框，输入即过滤 | fuzzy（支持拼音首字母） |
+| **批量操作** | 列表勾选 + 工具栏 | 批量复位告警、批量下发控制、批量导出；≥5 台时要求输入 `CONFIRM` |
+| **最近访问** | 首页"最近设备"卡片 + `Ctrl+E` 打开 | 最近 5 个设备 / 最近 3 张报表 |
+| **Undo** | `Ctrl+Z` / Toast 上的"撤销"按钮 | 删除、复位 5s 内可撤销 |
+| **键盘导航** | `j/k` 列表上下、`Enter` 详情、`Esc` 关弹窗、`/` 聚焦搜索 | 参考 GitHub/Linear 惯例 |
+| **右键菜单** | 列表行右键 | 快捷操作（复位、控制、打开组态）|
+| **收藏 / 固定** | 设备详情页星标 | 收藏的设备置顶；用户级，不跨租户 |
+| **响应式断点** | <768 手机、768–1024 平板、>1024 桌面 | 同一代码三端跑 |
+| **PWA 基础离线** | Service Worker 缓存静态资源 + 最近 1 次接口响应 | 弱网或短断线时能看到上次数据 + 明显"离线" Badge |
+| **浏览器兼容** | Chrome / Edge 最新 2 版；Safari 16+；不支持 IE | 早期告知 |
+
+**前端性能门槛**（verified by Lighthouse CI）：
+- Desktop Performance ≥ 90 / Accessibility ≥ 90 / Best Practices ≥ 90
+- Mobile  Performance ≥ 85 / Accessibility ≥ 90
+- 首屏 LCP ≤ 2.0s（桌面 3G）；CLS ≤ 0.1；FID ≤ 100ms
+- 主 bundle ≤ 500 KB gzipped；路由级代码分割 + ECharts/konva 懒加载
 
 ### 2.5 关键设计原则
 
@@ -1015,6 +1092,122 @@ async def refresh_token(wx_group):
         # 保留旧 token 继续用，直到 API 真失败
 ```
 
+### 5.12 日志策略（完备记录 + 低影响）
+
+**核心原则**：**多记级别、少记体积**。所有日志**结构化 JSON**，异步写入，批量 flush，按级别和事件分治。
+
+#### 5.12.1 级别语义与默认配置
+
+| 级别 | 用途 | 生产默认 | 去向 | 备注 |
+|---|---|---|---|---|
+| **DEBUG** | 协议帧字节、SQL 语句、WS 帧、第三方请求/响应 | **关闭** | 仅文件，不入 DB | 动态开启（按 dev/user 粒度），30min 自动恢复 |
+| **INFO** | 设备上线/下线、用户登录、告警触发、控制下发、配置变更 | 开 | 文件 + Grafana/Loki（可选） | 重要业务足迹，不入 `soft_logs` 表（数据库已有 `alarm_records` / `user_control_actions`） |
+| **WARN** | 单帧 CRC 错、重试中、外部 API 超时一次、降级触发 | 开 | 文件 + `soft_logs` 表 | **衰减采样**：同 ratelimit_key 超过 10 次后每 10×/100×/1000× 才记一次 |
+| **ERROR** | 未捕获异常栈、外部 API 终态失败、幂等冲突、DB 写失败 | 开 | 文件 + `soft_logs` + Sentry | 必须带 traceback；触发 Prometheus 计数 |
+| **CRITICAL** | 进程即将退出、严重数据不一致 | 开 | 文件 + `soft_logs` + 告警 | 必出通知 |
+
+#### 5.12.2 关联 ID 贯穿（跨服务追踪）
+
+每条日志必带下列字段（可为空但字段必存在）：
+
+```json
+{
+  "ts": "2026-04-13T10:35:12.234+08:00",
+  "level": "WARN",
+  "logger": "ruisheng-gw.protocol.modbus_rtu",
+  "msg": "CRC mismatch, dropping frame",
+  "trace_id": "01HXXXXY2Z...",     // 一次 HTTP 请求或一次设备帧处理的 root ID
+  "span_id": "a9f3b2c1",           // 子操作 ID
+  "dev_number": "60270012",        // 设备相关操作
+  "user_name": "138****8000",      // 用户操作（脱敏）
+  "usr_group": "ruisheng_default", // 租户
+  "build": "v1.2.3-a3f9",
+  "pid": 4321,
+  "context": { ... }                // 业务上下文（可变）
+}
+```
+
+**注入规则**：
+- api 侧 FastAPI middleware 从 `X-Trace-Id` 取，无则生成 ULID
+- gw 侧每次收帧生成新的 trace_id；流到 Redis Streams 时透传
+- loguru 通过 `bind()` 在上下文内自动附加
+
+#### 5.12.3 敏感字段自动脱敏（防合规事故）
+
+loguru filter 在写盘前强制替换：
+
+| 字段名模式 | 处理 |
+|---|---|
+| `password` / `password_hash` / `secret` / `appsecret` / `api_key` / `jwt` / `token` | 全替换为 `***` |
+| `phone_number` / `user_name`（当为手机号时）| `138****8000` 保留首 3 + 尾 4 |
+| `openid` | 保留首 6 + `***` |
+| `id_card` | `420***********1234` |
+| `total_fee` / `amount` | **按配置**：默认记录（便于排障），合规要求高时改 `***` |
+| 请求体含 `PAYLOAD_MAX_BYTES=4096` 超长截断 | 以防日志爆磁盘 |
+
+```python
+# core/logging.py
+SENSITIVE_KEYS = {"password", "password_hash", "secret", "appsecret",
+                  "api_key", "jwt", "token", "cookie", "authorization"}
+
+def redact(record):
+    for key in list(record["extra"].keys()):
+        if key.lower() in SENSITIVE_KEYS:
+            record["extra"][key] = "***"
+        elif key.lower() in {"phone_number", "msisdn"} and record["extra"][key]:
+            v = str(record["extra"][key])
+            record["extra"][key] = f"{v[:3]}****{v[-4:]}" if len(v) >= 7 else "***"
+    return record
+
+logger.configure(patcher=redact)
+```
+
+#### 5.12.4 低影响写入（不拖慢主路径）
+
+| 机制 | 参数 | 说明 |
+|---|---|---|
+| **异步写** | `loguru.add(sink, enqueue=True)` | 主协程只入队；专用线程写盘 |
+| **批量 flush** | 每 100ms 或满 1000 条 | 减少 fsync |
+| **采样衰减** | WARN 级 10× / 100× / 1000× 阶梯 | 防"日志风暴"（设备大面积掉线时） |
+| **soft_logs 表写入** | 只收 WARN / ERROR / CRITICAL | DEBUG/INFO 不入库，只进文件 |
+| **字符串延迟格式化** | `logger.debug("value={}", v)` 而非 f-string | level 被禁时完全跳过 |
+| **大对象截断** | request body / BLOB 超 4KB 截断 | 防单条巨型日志 |
+| **磁盘占用硬上限** | 每个服务 20 GB | 超过触发压缩 + 轮转 |
+| **轮转策略** | 按日 + 按大小 100MB；压缩 gzip；保留 30 天本地 + 1 年冷存储 | 对象存储 S3/OSS |
+| **磁盘降级** | 剩余 < 10% → 只写 ERROR+；< 5% → 停止文件日志，改内存环形缓冲 | 断臂求生 |
+
+**性能预算**：日志开销应 ≤ 单请求 1%；协议层热路径（每帧解析）绝对禁用 DEBUG 级 string 构造。
+
+#### 5.12.5 动态调级（零停机排障）
+
+管理接口（需 L4 权限）：
+
+```
+POST /admin/log/level                   {logger:"ruisheng-gw.poller", level:"DEBUG", ttl:1800}
+POST /admin/log/device/{dev_number}     {level:"DEBUG", ttl:1800}   # 单设备开 DEBUG 30 min
+POST /admin/log/user/{user_name}        {level:"DEBUG", ttl:1800}
+GET  /admin/log/current                 → 返回所有活跃的临时调级
+```
+
+- 所有 `ttl` 过期后自动恢复默认；最长 6 小时
+- 操作记 `user_control_actions` 审计
+- gw 侧通过 Redis Pub/Sub 接收指令，不需重启
+
+#### 5.12.6 集中查询
+
+**MVP（v1.0）**：文件 + ripgrep + jq，运维手工查：
+```bash
+rg '"trace_id":"01HXXX"' D:\ruisheng\logs\**\*.log | jq .
+```
+
+**v1.1 升级**：引入 **Grafana + Loki**（文件挂载，无需数据库），按 trace_id 跨 api/gw 聚合；成本极低，部署 2 个 exe。
+
+**关键查询预设**（Grafana 仪表盘模板）：
+- 某 trace_id 的完整时序
+- 某设备近 1 小时所有 WARN+
+- 告警触发链路（gw 解析 → XADD → api 消费 → 通知发送）
+- 登录失败/权限拒绝热点
+
 ---
 
 ## §6 测试策略
@@ -1214,6 +1407,8 @@ Alertmanager → 钉钉 / 企微 / 邮件
 ```
 
 关键告警：gw 下线 60s、CRC 失败率 > 0.1、DB 写延迟 P95 > 500ms、磁盘剩余 < 20%、通知通道全挂、设备在线率 5min 骤降 20%
+
+**日志运维**：结构化 JSON + 关联 ID 贯穿 + 脱敏 + 动态调级 + 磁盘自适应，详见 **§5.12**。
 
 ### 7.8 安全基线
 
