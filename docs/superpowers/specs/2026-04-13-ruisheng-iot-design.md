@@ -436,31 +436,33 @@ CREATE TABLE users (
 CREATE INDEX idx_users_tenant ON users(usr_group);
 
 CREATE TABLE devices (
-  id                BIGSERIAL PRIMARY KEY,
-  dev_number        VARCHAR(50) UNIQUE NOT NULL,
-  dev_ser_number    VARCHAR(50) NOT NULL,
-  iccid             VARCHAR(50),
-  dev_name          VARCHAR(100),
-  dev_type          VARCHAR(50),
-  modbus_addr       SMALLINT NOT NULL,
-  baud_rate         INT,
-  group_company     VARCHAR(100),
-  company           VARCHAR(100),
-  department        VARCHAR(100),
-  administrators    VARCHAR(50) REFERENCES users(user_name),
-  dev_ip            INET,
-  code_file         VARCHAR(255),
-  code_updated_at   timestamptz,
-  last_call_at      timestamptz,
-  last_back_at      timestamptz,
-  loss_count        INT NOT NULL DEFAULT 0,
-  is_online         BOOLEAN NOT NULL DEFAULT false,
-  update_flag       INT NOT NULL DEFAULT 0,
-  usr_group         VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group),
-  deleted_at        timestamptz,
-  created_at        timestamptz NOT NULL DEFAULT now(),
-  updated_at        timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (dev_ser_number, iccid)
+  id                      BIGSERIAL PRIMARY KEY,
+  dev_number              VARCHAR(50) UNIQUE NOT NULL,
+  dev_ser_number          VARCHAR(50) NOT NULL,
+  iccid                   VARCHAR(50),
+  dev_name                VARCHAR(100),
+  dev_type                VARCHAR(50),
+  modbus_addr             SMALLINT NOT NULL,
+  baud_rate               INT,
+  group_company           VARCHAR(100),
+  company                 VARCHAR(100),
+  department              VARCHAR(100),
+  administrators          VARCHAR(50) REFERENCES users(user_name),
+  dev_ip                  INET,
+  code_file               VARCHAR(255),
+  code_updated_at         timestamptz,
+  update_interval_decisec INT NOT NULL DEFAULT 100,   -- D6: 终端级轮询 [10..1000] = 1.0..100.0s
+  last_call_at            timestamptz,
+  last_back_at            timestamptz,
+  loss_count              INT NOT NULL DEFAULT 0,
+  is_online               BOOLEAN NOT NULL DEFAULT false,
+  update_flag             INT NOT NULL DEFAULT 0,
+  usr_group               VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group),
+  deleted_at              timestamptz,
+  created_at              timestamptz NOT NULL DEFAULT now(),
+  updated_at              timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (dev_ser_number, iccid),
+  CHECK (update_interval_decisec BETWEEN 10 AND 1000)
 );
 
 CREATE TABLE device_points (
@@ -468,11 +470,11 @@ CREATE TABLE device_points (
   dev_number        VARCHAR(50) NOT NULL REFERENCES devices(dev_number) ON DELETE CASCADE,
   point_name        VARCHAR(100) NOT NULL,
   user_point_name   VARCHAR(100),
-  point_number      INT NOT NULL,
-  fun_code          SMALLINT NOT NULL,
+  point_number      INT NOT NULL,                -- ModBus 寄存器起始地址
+  fun_code          SMALLINT NOT NULL,           -- 3/4 读
   dev_addr          SMALLINT NOT NULL,
-  r_bit             SMALLINT,
-  value_type        VARCHAR(20) NOT NULL,
+  r_bit             SMALLINT,                    -- 位寻址
+  value_type        VARCHAR(20) NOT NULL,        -- '字' / '双字' / 'bit'
   point_unit        VARCHAR(20),
   point_ratio       DOUBLE PRECISION DEFAULT 1,
   point_offset      DOUBLE PRECISION DEFAULT 0,
@@ -480,11 +482,10 @@ CREATE TABLE device_points (
   user_point_offset DOUBLE PRECISION DEFAULT 0,
   min_value         DOUBLE PRECISION,
   max_value         DOUBLE PRECISION,
-  update_interval_decisec INT NOT NULL DEFAULT 100, -- 0.1s 单位 [10..1000]
   show              SMALLINT NOT NULL DEFAULT 1,
   created_at        timestamptz NOT NULL DEFAULT now(),
-  updated_at        timestamptz NOT NULL DEFAULT now(),
-  CHECK (update_interval_decisec BETWEEN 10 AND 1000)
+  updated_at        timestamptz NOT NULL DEFAULT now()
+  -- 注：轮询间隔在 devices.update_interval_decisec（终端级，D6）
 );
 
 CREATE TABLE device_waring_cfgs (
@@ -623,7 +624,81 @@ SELECT add_retention_policy('soft_logs', INTERVAL '1 year');
 * = TimescaleDB hypertable，按月分块 + 1 年自动滚动
 ```
 
-### 4.4 关键设计点
+### 4.4 不继承的旧遗产（显式声明）
+
+| 旧遗产 | 新系统态度 | 原因 |
+|---|---|---|
+| `GroupID` 端口偏移机制（`6000 + GroupID`）| ❌ 不继承 | 旧系统用它在同机跑多实例；新系统用 NSSM 多服务/多配置解决，不需要偏移 |
+| `MinTransactionCnt=1` 伪批量 | ❌ 丢弃 | 真批量 batch_writer，每 100ms flush 或满 500 行 |
+| `charts_0..19` 服务端 PNG 目录 | ❌ 丢弃 | 前端 ECharts 渲染 |
+| `C:\APP\` APK 路径、`C:\IOF\Execl\` 导出路径 | ❌ 丢弃 | 对象存储替代 |
+| InProc Session | ❌ 丢弃 | JWT 替代 |
+| 硬编码特权号 `18264192756` | ❌ 丢弃（D1）| RBAC 替代 |
+| `FunCode 7 / 12` | ❌ 不做（D7）| 旧代码无 case 分支 |
+| 21 个空壳 `.aspx` 页面 | ❌ 不做（D7）| 前端 SPA 自然替代 |
+| `DEL_<num>_<ts>` 软删除前缀 hack | ❌ 不用 | `deleted_at` 字段替代 |
+| 点位级 `UpdateInterval`（每个点独立间隔）| ❌ 不继承 | D6 改为**终端级**轮询；同一 ModBus 从站一次读多个寄存器是协议本来的样子，点位级间隔既违反物理又无意义 |
+
+### 4.5 遗产数据迁移策略
+
+**迁移对象**：旧 `ModBus.mdf`（1.27 GB 主库）中的业务数据 → 新 PostgreSQL。历史库 `ModBusHis.mdf` 基本为空（Q-D01 需 DBA 确认）。
+
+**阶段**
+
+| 阶段 | 动作 | 时点 |
+|---|---|---|
+| P-0 准备 | DBA attach 旧 mdf → 在 Windows SQL Server 中可连接状态 | Sprint 1 首周 |
+| P-1 Schema 对账 | 导出旧 schema → 映射到新 snake_case 表（见下表） | Sprint 1 W2 |
+| P-2 试迁移 | 用 **pgloader** 跑 dry-run；小样本对比行数 | Sprint 1 末 |
+| P-3 增量机制 | 双跑期启用；旧库写 legacy.\*，CDC/触发器投 Redis 同步到新库 | Sprint 3 初 |
+| P-4 一次性灌入 | Sprint 3 末冷切：停写旧库 → 最后一次 pgloader → 对账 | Sprint 3 末 |
+| P-5 验收 | 对账 SQL 差异 < 0.1% → 切流开始 | Sprint 4 初 |
+
+**字段映射核心表（Sprint 1 W2 产出完整 map.yaml）**
+
+| 旧 PascalCase | 新 snake_case | 转换规则 |
+|---|---|---|
+| `Usr.UserName` | `users.user_name` | 直通 |
+| `Usr.PassWord` MD5 | `users.password_hash` | 首次登录强制重置（D7 / H.3） |
+| `Usr.Authority` | `users.authority` | 直通，枚举严格校验 |
+| `Usr.ControlAuthority` | `users.control_authority` | 直通（SMALLINT 位掩码） |
+| `DevInf.DevNumber` | `devices.dev_number` | 直通 |
+| `DevInf.iccid` | `devices.iccid` | 直通 |
+| `DevPointInf.UpdateInterval` 秒（点位级）| **聚合**到 `devices.update_interval_decisec` | 同一设备取旧所有点位 UpdateInterval 的**最小值**，**× 10** 转 0.1s 单位；旧为 NULL 时默认 100（10s）；D6 改为终端级（参见 §4.4） |
+| `DevPointData_His_*` 分表 | `point_data_history` hypertable | 按月旧表 concat + INSERT ... SELECT |
+| `His<YYYYMM>` 历史 | `point_data_history` + 波形入 `waveform_history` | 按 `data_array` 是否非空分流 |
+| `PhoneAlarmRecord` + `WXAlarmRecord` | `alarm_records` 合表 | `channels_sent` JSONB 按来源填 `{sms:"ok"}` / `{wechat:"ok"}` |
+| `PayOrder` | `pay_orders` | 直通 |
+| `SoftLog` | `soft_logs` | 直通 |
+| `TimingPlan` | `timing_plans` | 直通 |
+| `ZTPageInf` / `ZTViewInf` | `scene_pages` / `scene_views` | 直通 |
+| `DEL_xxx_ts` 软删前缀 | `deleted_at` 字段 | 正则提取原 DevNumber + 时间戳 |
+
+**工具链**
+
+```bash
+# pgloader 脚本（示意，Sprint 1 末完成）
+LOAD DATABASE
+  FROM mssql://ruisheng@legacy-win:1433/ModBus
+  INTO postgresql://ruisheng_api:xxx@localhost/ruisheng
+  WITH
+    include no drop, create no tables,   -- 表先由 alembic 建
+    reset sequences, data only,
+    preserve index names
+  CAST
+    type datetime to timestamptz drop default drop not null
+  BEFORE LOAD DO
+    $$ ... 启用 timescaledb, 禁用触发器 $$
+  AFTER LOAD DO
+    $$ ... 启用触发器, ANALYZE, REFRESH 物化视图 $$;
+```
+
+**对账脚本（每日 03:00 跑）**
+
+- `SELECT COUNT(*), MIN(ts), MAX(ts), SUM(value)` 各表分别对比
+- 差异 > 0.1% 邮件告警 + 暂停切流
+
+### 4.6 关键设计点
 
 | 点 | 选择 | 原因 |
 |---|---|---|
