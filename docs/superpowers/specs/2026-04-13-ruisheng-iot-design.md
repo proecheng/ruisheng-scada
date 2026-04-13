@@ -117,12 +117,15 @@
 
 ### 1.3 通讯总线契约
 
-| 通道 | 生产者 | 消费者 | 内容 |
-|---|---|---|---|
-| Redis `realtime:{DevNumber}` | gw | api | 实时点值变化 `{point_id, value, ts}` |
-| Redis `alarm:fired` | gw | api | 告警触发事件 → api 调用通知适配器 |
-| Redis `control:cmd` | api | gw | 用户控制命令 → gw 下发到 RS485 |
-| PostgreSQL `device.update_flag` | api | gw（轮询监听）| 配置变更（告警阈值/轮询间隔/定时计划） |
+| 通道 | 形态 | 生产者 | 消费者 | 内容 |
+|---|---|---|---|---|
+| Redis `channel:realtime:{DevNumber}` | **Pub/Sub**（允许丢） | gw | api（WS 订阅）| 实时点值 `{point_id, value, ts}`（下一秒又来，丢单条无害） |
+| Redis `stream:alarm:fired` | **Streams**（at-least-once） | gw | api `api-alarm-consumer` 组 | 告警触发事件，ACK 后 XDEL |
+| Redis `stream:control:cmd` | **Streams**（at-least-once） | api | gw `gw-control-consumer` 组 | 用户控制命令，ACK 后 XDEL |
+| Redis `stream:dlq:*` | **Streams** | 消费者 | 运维告警 | 死信（5 次处理失败） |
+| PostgreSQL `devices.update_flag` | 轮询 | api | gw（5s 扫） | 配置变更（告警阈值/轮询间隔/定时计划） |
+
+> 详细设计见 **§5.9 消息送达保证**。核心原则：**实时数据允许丢**（覆盖写模型），**告警与控制不许丢**（业务事故）。
 
 ### 1.4 关键设计选择
 
@@ -301,10 +304,17 @@ ruisheng-web/
                                             │
                                  ┌──────────┼──────────────┐
                                  ▼          ▼              ▼
-                            Redis       Redis         PostgreSQL
-                          realtime:   alarm:fired     TimescaleDB
-                          {DevNum}    （如触发）      point_data_*
-                                 │
+                            channel:     stream:       PostgreSQL
+                            realtime:    alarm:fired   TimescaleDB
+                            {DevNum}    (Streams,      point_data_*
+                           (Pub/Sub,    at-least-once) + 本地WAL兜底
+                           可丢)              │            (§5.11)
+                                 │            ▼
+                                 │      api 消费组
+                                 │      XREADGROUP + XACK
+                                 │            │
+                                 │            ├─ 通知适配器
+                                 │            └─ WS 转发给浏览器
                                  ▼
                             ruisheng-api WS ─▶ 浏览器
 ```
@@ -324,23 +334,24 @@ ruisheng-web/
 
 ```
 浏览器 ──HTTP POST──▶ api /api/devices/{n}/control
-                        │
+                        │  Idempotency-Key 头防重复
                         ├─ RBAC（ControlAuthority bit0）
                         ├─ 多租户过滤
-                        ├─ 写 user_control_actions（审计）
-                        └─ publish Redis control:cmd
+                        ├─ 事务：写 user_control_actions(result=pending) + 生成 cmd_id
+                        └─ XADD stream:control:cmd (cmd_id, payload)
                                 │
                                 ▼
-                        gw subscriber
-                                │
+                        gw XREADGROUP gw-control-consumer
+                                │  cmd_id LRU 去重 24h（§5.9）
                                 ├─ 在线 → poller 队列
-                                └─ 离线 → 命令队列(10min TTL)
+                                └─ 离线 → 命令队列（Redis ZSET, 10min TTL）
                                 │
                                 ▼
                         编码 FunCode 6/16 + CRC ──▶ DTU ──▶ RS485 ──▶ 设备
                                 │
-                                ├─ ACK 成功 → publish realtime 更新 + 写审计
-                                └─ 超时 3 次 → publish alarm:fired + 写审计失败
+                                ├─ ACK 成功 → 更新 action.result=success + XACK
+                                ├─ 超时 3 次 → XADD stream:dlq:control + 审计 failed + 告警
+                                └─ 进程崩溃 → 下次启动 XAUTOCLAIM 拿回未 ACK 继续
 ```
 
 ### 3.3 告警触发与通知路径
@@ -349,22 +360,23 @@ ruisheng-web/
 gw 解析帧 → domain/alarm_engine
              │（查 update_flag 5s 前加载的最新阈值）
              ├─ AlarmType 比对 > < = != LX
+             ├─ LX 计数器：Redis Hash hincrby（崩溃不丢）§5.9
              ├─ 检查 RelationPointID
-             ├─ WaringFlag 0→1 触发，1→1 静默，1→0 按 ResetRemind 决定通知
-             ▼
-publish Redis alarm:fired
+             ├─ 事务：UPDATE device_waring_cfgs.waring_flag + INSERT alarm_records
+             └─ XADD stream:alarm:fired (event_id=alarm_record_id, ...)
    │
    ▼
-api subscriber:
-   ├─ 写 alarm_records
-   ├─ 查 user_alarm_list
-   └─ 并发 fan-out：
-       ├─ wechat.send_template
+api XREADGROUP api-alarm-consumer
+   │  event_id 用 SET NX EX 86400 去重（§5.9）
+   ├─ 查 user_alarm_list（按 usr_group 隔离，§3.7）
+   └─ 并发 fan-out 通知适配器：
+       ├─ wechat.send_template (msg_id 幂等)
        ├─ sms.send
        ├─ voice.call
-       └─ email.send
+       ├─ email.send
        │
-       └─ 失败 → retry 队列（Redis Streams）→ 重试 5 次指数退避
+       ├─ 全部成功 → XACK
+       └─ 任一失败 → 进 retry 队列指数退避 5 次；最终失败 → XADD stream:dlq:alarm + meta 告警
 ```
 
 **通知适配器接口**：`INotifier` Protocol，注册表按 `config.yaml` provider 字段加载，换供应商只改 yaml。
@@ -463,6 +475,9 @@ CREATE TABLE devices (
   updated_at              timestamptz NOT NULL DEFAULT now(),
   UNIQUE (dev_ser_number, iccid),
   CHECK (update_interval_decisec BETWEEN 10 AND 1000)
+) WITH (
+  fillfactor = 80,                            -- last_call_at / loss_count 高频 UPDATE
+  autovacuum_vacuum_scale_factor = 0.05
 );
 
 CREATE TABLE device_points (
@@ -510,7 +525,7 @@ CREATE TABLE device_waring_cfgs (
   updated_at           timestamptz NOT NULL DEFAULT now()
 );
 
--- 实时覆盖写
+-- 实时覆盖写（UPDATE-heavy，必须强化 autovacuum 防膨胀）
 CREATE TABLE point_data_realtime (
   dev_number   VARCHAR(50) NOT NULL,
   point_id     BIGINT NOT NULL,
@@ -518,6 +533,12 @@ CREATE TABLE point_data_realtime (
   rt_value     DOUBLE PRECISION,
   recorded_at  timestamptz NOT NULL,
   PRIMARY KEY (dev_number, point_id)
+) WITH (
+  fillfactor = 70,                            -- 留 30% 空间给 HOT 更新
+  autovacuum_vacuum_scale_factor = 0.05,      -- 5% 死行就 vacuum（默认 20% 太晚）
+  autovacuum_analyze_scale_factor = 0.02,
+  autovacuum_vacuum_cost_limit = 1000,        -- 提高 vacuum 速度
+  autovacuum_vacuum_insert_scale_factor = 0.1
 );
 
 -- 历史（TimescaleDB hypertable）
@@ -638,6 +659,11 @@ SELECT add_retention_policy('soft_logs', INTERVAL '1 year');
 | 21 个空壳 `.aspx` 页面 | ❌ 不做（D7）| 前端 SPA 自然替代 |
 | `DEL_<num>_<ts>` 软删除前缀 hack | ❌ 不用 | `deleted_at` 字段替代 |
 | 点位级 `UpdateInterval`（每个点独立间隔）| ❌ 不继承 | D6 改为**终端级**轮询；同一 ModBus 从站一次读多个寄存器是协议本来的样子，点位级间隔既违反物理又无意义 |
+| 告警状态仅在内存（重启丢）| ❌ 不继承 | 告警 `waring_flag` 状态机持久化到 DB；LX 消抖计数器存 Redis（见 §5.9）|
+| 控制命令走内存重试（重启丢）| ❌ 不继承 | 控制命令走 **Redis Streams**（at-least-once），崩溃可恢复（见 §5.9）|
+| 告警事件走 Redis pub/sub（at-most-once）| ❌ 不继承 | `alarm:fired` 改为 **Redis Streams**，api 消费 ACK 后才删（见 §5.9）|
+| DB 宕机后内存缓冲 5min 就丢 | ❌ 改进 | gw 侧写 **本地磁盘 WAL**，DB 恢复后重放（见 §5.11）|
+| 被动 TCP 60s 超时（不发 keepalive）| ❌ 改进 | 应用层 **双向心跳**（见 §5.11）|
 
 ### 4.5 遗产数据迁移策略
 
@@ -747,7 +773,12 @@ class ApiResponse(BaseModel):
 | TCP 心跳超时 (60s) | 关连接、设备标"离线告警态" | ✅ |
 | RS485 轮询超时 | LossCnt++，≥ 3 次 → 离线 | 离线时 ✅ |
 | 设备未注册却发数据 | 缓存 IP + 召唤（10s × 5 次后丢弃） | 否 |
-| 控制命令无 ACK (5s) | 重试 3 次（指数退避 1/2/4 s） | 全失败时 ✅ |
+| 控制命令无 ACK (5s) | 重试 3 次（指数退避 1/2/4 s），失败进 Redis Streams 重试队列（非进程内） | 全失败时 ✅ |
+| gw 进程崩溃（未捕异常 / OOM） | NSSM 自动重启 + 写 Windows Event Log + 生成 core dump → logs\crash\ | ✅ |
+| 设备洪泛上报（恶意 / 故障） | 单连接令牌桶限流 10 帧/s；超限断链 + 黑名单 5min | ✅ |
+| Windows 时钟漂移 > 1s | gw 启动时校 NTP，运行时每 30min 比 DB `now()`；漂移 >1s 告警 | ✅ |
+| HTTPS / 微信 access_token / appsecret 到期 | Prometheus `cert_expire_days` 和 `wx_token_expire_s` 阈值告警（≤ 15 天 / ≤ 10 min） | ✅ |
+| 磁盘剩余 < 10% | 停止写入 `soft_logs`（只留 ERROR）；≤ 5% 时 gw 拒绝新采集并告警 | ✅ |
 
 ### 5.3 告警引擎关键伪码
 
@@ -803,8 +834,186 @@ RETRY_DELAYS = [5, 15, 60, 300, 1800]   # 最多 5 次，指数退避
 ### 5.8 健康检查 + 可观测
 
 - `/api/health`：api/db/redis/gw_last_seen 四维
-- Prometheus metrics：`ruisheng_gw_devices_online` / `frames_received` / `crc_failures` / `alarms_fired` / `db_write_latency_ms` / `redis_publish_lag`
-- 日志：loguru → stdout → NSSM 滚动文件；异常 → Sentry
+- Prometheus metrics 覆盖 4 类：
+  - **业务**：`devices_online` / `frames_received_total` / `crc_failures_total` / `alarms_fired_total`
+  - **性能**：`db_write_latency_ms` / `redis_publish_lag` / `stream_pending_total` / `api_request_duration_ms`
+  - **长期健康**（§5.10）：`pg_table_bloat_ratio` / `pg_dead_tuples` / `redis_memory_used_bytes` / `disk_free_percent`
+  - **过期类**（安全）：`ssl_cert_expire_days` / `wechat_token_expire_seconds` / `appsecret_last_rotated_days`
+- 日志：loguru → stdout → NSSM 滚动（10MB × 10 份）；异常 → Sentry
+- 崩溃：`faulthandler` + Windows Error Reporting → `D:\ruisheng\logs\crash\`
+
+### 5.9 消息送达保证（Redis Streams 替代 pub/sub）
+
+**问题**：Redis pub/sub 是 **fire-and-forget**，消费者重启期间的消息会**直接丢**。告警漏发 = P0 事故。
+
+**方案**：三条业务关键通道全部改 **Redis Streams**（at-least-once + 消费组 + pending entries list）。
+
+| 通道 | 类型 | 生产者 | 消费组 | 保留策略 |
+|---|---|---|---|---|
+| `stream:alarm:fired` | Streams | gw | `api-alarm-consumer` | `XTRIM MAXLEN 100000` + 消费 ACK 后自然淘汰 |
+| `stream:control:cmd` | Streams | api | `gw-control-consumer` | 同上，ACK 后 XDEL |
+| `channel:realtime:{dev}` | Pub/Sub | gw | api WS 订阅 | **允许丢**（下一秒还会来新值） |
+
+**补偿机制**：
+
+- 消费者启动先 `XAUTOCLAIM` 拿回崩溃时未 ACK 的消息
+- 处理成功才 `XACK`；处理 5 次失败 → 进"死信流" `stream:dlq:*` + 告警
+- PEL（pending entries list）堆积 > 1000 → 告警（消费者跟不上）
+
+**幂等保证**（防重复）：
+
+| 场景 | 幂等键 | 机制 |
+|---|---|---|
+| 微信支付回调 | `out_trade_no` | `INSERT ... ON CONFLICT DO NOTHING` + 行锁；已 `paid` 直接返回 success |
+| 微信消息推送 | `msg_id + openid` | 同上 |
+| 告警事件消费 | `alarm_event_id`（由 gw 生成 UUID） | Redis `SET ... NX EX 86400` 去重 |
+| 控制命令执行 | `cmd_id`（由 api 生成） | gw 内存 LRU 去重 24h + DB 写唯一约束 |
+| HTTP POST 关键接口 | 请求头 `Idempotency-Key` | 响应缓存 24h |
+
+**告警状态持久化**（修复 R3 / R6）：
+
+```python
+# 不再只靠 cfg.waring_flag 内存字段
+class AlarmEngine:
+    async def evaluate(self, value, cfg) -> AlarmEvent | None:
+        # LX 计数器：Redis Hash，崩溃不丢
+        if cfg.alarm_type == 'LX':
+            count = await redis.hincrby(
+                f"lx_counter:{cfg.dev_number}",
+                str(cfg.id),
+                1 if triggered else -count  # 不越限清零
+            )
+            triggered = count >= int(cfg.limit_value)
+
+        # 状态字段落库 + UPDATE device_waring_cfgs.waring_flag
+        # 事务内：UPDATE cfg 和 INSERT alarm_record 同提交
+        async with db.transaction():
+            if triggered and not cfg.waring_flag:
+                await db.execute("UPDATE device_waring_cfgs SET waring_flag=true WHERE id=$1", cfg.id)
+                event_id = await db.execute("INSERT INTO alarm_records(...) RETURNING id", ...)
+                await redis.xadd("stream:alarm:fired", {"event_id": event_id, ...})
+```
+
+### 5.10 长期性能维护（运行一年不变慢）
+
+**表膨胀防护（修复 R2 / M1 / M2）**：
+
+| 表 | 写模式 | 防护 |
+|---|---|---|
+| `point_data_realtime` | UPDATE 覆盖写 | fillfactor=70 + 强化 autovacuum（见 §4.2）|
+| `devices` | UPDATE `last_call_at` 等 | fillfactor=80 + autovacuum |
+| `device_waring_cfgs` | UPDATE `waring_flag` | fillfactor=80 |
+| `point_data_history` | INSERT only | TimescaleDB 压缩（见下）|
+| `waveform_history` | INSERT only | 同上 |
+| `soft_logs` / `user_login_records` | INSERT only | hypertable + retention |
+| `alarm_records` / `user_control_actions` | INSERT only | **补入 hypertable（此版新增）** |
+
+**TimescaleDB 自动压缩**：老 chunk 超过 7 天自动压缩到 ~10% 体积。
+
+```sql
+ALTER TABLE point_data_history SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'dev_number, point_id'
+);
+SELECT add_compression_policy('point_data_history', INTERVAL '7 days');
+
+ALTER TABLE waveform_history  SET (timescaledb.compress, timescaledb.compress_segmentby = 'dev_number');
+SELECT add_compression_policy('waveform_history', INTERVAL '7 days');
+```
+
+**归档范围扩展（补齐 M1）**：原 D4 只覆盖 3 张时序表，本版追加两张：
+
+```sql
+-- 告警记录也转 hypertable
+SELECT create_hypertable('alarm_records', 'triggered_at', chunk_time_interval => INTERVAL '1 month');
+SELECT add_retention_policy('alarm_records', INTERVAL '2 year');   -- 审计合规保留 2 年
+SELECT add_compression_policy('alarm_records', INTERVAL '30 days');
+
+-- 控制审计（合规要求可能更长）
+SELECT create_hypertable('user_control_actions', 'acted_at', chunk_time_interval => INTERVAL '1 month');
+SELECT add_retention_policy('user_control_actions', INTERVAL '3 year');
+SELECT add_compression_policy('user_control_actions', INTERVAL '30 days');
+```
+
+**定期维护 Job**（APScheduler）：
+
+| Job | 频率 | 动作 |
+|---|---|---|
+| `vacuum_hot_tables` | 每天 03:00 | `VACUUM (ANALYZE) point_data_realtime, devices, device_waring_cfgs` |
+| `reindex_concurrently` | 每周日 02:00 | `REINDEX TABLE CONCURRENTLY` 高频 UPDATE 表 |
+| `bloat_check` | 每天 | 查 `pg_stat_user_tables`，bloat ratio > 3 → 告警 |
+| `archive_to_oss` | 每月 1 号 02:00 | retention policy 剔除前，先 COPY TO Parquet 上传对象存储 |
+| `redis_memory_cap` | 每 5 min | `INFO memory` > 80% → 告警，> 95% → 限流保护 |
+
+**连接池扩缩规则（修复 M5）**：
+
+| 设备规模 | api pool | gw DB pool | gw Redis pool | pgbouncer |
+|---|---|---|---|---|
+| ≤ 500 设备 | 20 | 10 | 20 | 可不加 |
+| 500–2000 | 40 | 20 | 50 | **引入 pgbouncer** transaction 模式 |
+| 2000–5000 | 80 | 40 | 100 | 必须 |
+| > 5000 | 拆读写副本 | 40 主 + 40 读 | 200 | 必须 |
+
+**前端缓存**：静态资源 Nginx `expires 30d`，Vue dist 文件名含 hash；API 层关键 GET 接口带 `Cache-Control: private, max-age=5`（实时数据不缓存，配置类数据缓存）。
+
+### 5.11 通讯持续性（设备稳连 + 重启不丢）
+
+**TCP 应用层双向心跳（修复 C1）**：
+
+| 方向 | 周期 | 超时判定 |
+|---|---|---|
+| gw → 设备：读空寄存器 (FunCode 3, count=0) 或约定心跳帧 | 30s | 连续 3 次无响应 = LossCnt++ |
+| 设备 → gw：应当 60s 内至少回一帧 | — | 无则主动断链并告警 |
+| TCP 层 `SO_KEEPALIVE` | 60/30/3 | 兜底防 NAT 超时 |
+
+**本地磁盘 WAL 缓冲（修复 C2）**：
+
+```
+gw 入库路径：
+  解析帧 → batch_writer.queue.put(row)
+            │
+            ├─ PG 可达：100ms / 500 行 flush
+            └─ PG 不可达：
+                 ├─ 内存缓冲 满（≥ 1 万行）→ 溢出到 D:\ruisheng\gw\wal\YYYYMMDD-HHMM.ndjson
+                 ├─ PG 恢复：回放 wal 目录 + 清文件
+                 └─ wal 占磁盘 > 10GB → 老文件丢弃 + P0 告警
+```
+
+**设备重连保证（修复 C4）**：
+
+- gw 重启：不主动断现有连接（NSSM stop 会发 SIGTERM，我们在 shutdown 钩子中"优雅关闭"，不直接 RST）
+- 完全崩溃：DTU 侧按约定"3 次心跳失败自动重连"；本文档**明确要求** DTU 厂商支持并在 Q-P 系列询问中加 Q-P10 确认
+- 重连后：gw 先接受注册 → 查 `devices.last_back_at`：
+  - 若间隔 < 2 min：认为是短抖动，LossCnt 不清零，直接续跑
+  - 若间隔 ≥ 2 min：认为是长断，发送一次"追补召唤"把关键点位全读一遍
+
+**限流 / 背压（修复 C5）**：
+
+- 入口级：单 TCP 连接令牌桶 10 帧/s（瞬时爆 20），超限丢帧 + 计数
+- 处理级：`asyncio.Queue(maxsize=10000)` 满了 → 丢老帧（drop-tail）+ 告警；实时数据比历史数据更重要
+- 下游级：Redis Streams `MAXLEN ~` 近似长度上限（publisher 非阻塞）
+- API 级：FastAPI `slowapi` 每 IP 100 req/min；登录 5 次/min
+
+**时钟一致性（修复 C6）**：
+
+- Windows Server 启用 `w32time` + 指向国内权威 NTP（阿里/腾讯/国授时中心）
+- gw 启动时强制同步一次；运行中每 30 min 比对 `SELECT now()` 与本地时间，差 > 1s 告警并用 DB 时间作为入库 `recorded_at`（不信任本地时间）
+
+**微信 Token 刷新健壮化（修复 M6）**：
+
+```python
+async def refresh_token(wx_group):
+    try:
+        new = await wx_api.get_token()
+        await db.update(wx_group, token=new, token_expires_at=now+7200)
+        metric.wx_token_refresh_success.inc()
+    except Exception:
+        metric.wx_token_refresh_failure.inc()
+        remaining = wx_group.token_expires_at - now
+        if remaining < 600:                                       # 10 min
+            await send_meta_alarm("微信 Token 即将过期且刷新失败")
+        # 保留旧 token 继续用，直到 API 真失败
+```
 
 ---
 
