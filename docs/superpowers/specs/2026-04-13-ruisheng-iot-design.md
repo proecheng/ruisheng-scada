@@ -1,7 +1,7 @@
 # 江苏润盛 IoT 监控平台 — 重做设计文档
 
-> **版本**：v1.3.1 / 2026-04-13
-> **状态**：5 角色审查合并 + 数据/函数/前后台变量一致性轮完成；等待最终 ack → writing-plans
+> **版本**：v1.3.2 / 2026-04-13
+> **状态**：5 角色审查合并 + 一致性轮 + 边界/数据流轮 全部完成；等待最终 ack → writing-plans
 > **关联文档**：
 > - 需求基线：`D:\江苏润盛\需求清单\功能全景清单.md` v2.2（1609 行）
 > - 待澄清问题：`D:\江苏润盛\需求清单\待澄清问题清单.md` v1.1
@@ -570,29 +570,42 @@ api XREADGROUP api-alarm-consumer
 
 ```python
 async def on_wx_pay_notify(request):
-    body = await request.body()
-    # 1. 签名验证
-    received_sign = request.form.get("sign")
-    expected = hashlib.md5(sorted_params_urlencoded + "&key=" + api_v3_key).hexdigest().upper()
-    if received_sign != expected:
-        return xml_fail("签名失败")
+    # 1. 先读原始 form，但**不信任**任何字段直到签名通过
+    raw = await request.form()
+    received_sign = raw.get("sign")
+    if not received_sign:
+        return xml_fail("missing sign")
 
-    # 2. 时间戳窗口（5 min）
-    ts = int(request.form.get("time_end", "0"))
-    if abs(time.time() - ts) > 300:
+    # 2. 签名验证（基于原始字段 dict，排除 sign 本身）
+    params = {k: v for k, v in raw.items() if k != "sign"}
+    expected = wechat_pay_sign(params, api_v3_key)
+    if not hmac.compare_digest(received_sign, expected):
+        soft_log.warn("wxpay signature mismatch", remote=request.client.host)
+        return xml_fail("bad signature")
+
+    # 3. **签名通过后才**提取业务字段
+    out_trade_no = params["out_trade_no"]
+    total_fee    = int(params["total_fee"])
+    time_end     = parse_wechat_time(params["time_end"])   # 微信格式 yyyyMMddHHmmss
+
+    # 4. 时间戳窗口（5 min，防重放）
+    if abs((datetime.utcnow() - time_end).total_seconds()) > 300:
         return xml_fail("timestamp out of window")
 
-    # 3. 幂等（INSERT ON CONFLICT，事务内）
+    # 5. 金额非负 + 业务匹配
+    if total_fee < 0:
+        return xml_fail("invalid fee")
+
+    # 6. 幂等（INSERT ON CONFLICT，事务内）+ 业务处理
     async with db.transaction():
         ok = await db.execute(
             "INSERT INTO pay_orders_seen(out_trade_no, notified_at) VALUES ($1, NOW()) "
-            "ON CONFLICT (out_trade_no) DO NOTHING", body.out_trade_no
+            "ON CONFLICT (out_trade_no) DO NOTHING", out_trade_no
         )
         if not ok.rows_affected:
-            return xml_ok()  # 已处理过，直接返回成功但不重复业务
+            return xml_ok()  # 已处理，幂等返回成功
 
-        # 4. 业务处理
-        await mark_paid(body.out_trade_no, body.total_fee, body.time_end)
+        await mark_paid(out_trade_no, total_fee, time_end)
 
     return xml_ok()
 ```
@@ -697,6 +710,187 @@ def inject_tenant_filter(query):
 
 **违规处置**：生产检测到"无 usr_group 过滤的查询" → 立刻 P0 告警 + 自动封禁该进程。
 
+### 3.8 边界情况与数据流细则（v1.3.2 新增）
+
+> 本节汇总审查发现的边界/竞态/降级规则。每条明确"触发条件 / 系统行为 / 用户感知"。
+
+#### 3.8.1 控制命令并发与冲突（E1）
+
+**场景**：两用户同时点同一设备同一操作（或冲突操作）。
+
+**规则**：
+- 单设备控制命令串行执行：gw 的离线命令队列和 poller 队列都按 **cmd_id ULID 时间序**（ULID 内含毫秒时间戳）FIFO
+- 相同语义重复命令（同 user、同 action 5s 内）→ api 层直接拒绝 409 "操作进行中，请等待"
+- 冲突命令（如"启动"与"停止"同时到达）→ 全部入队顺序执行；前端 UI 基于 `last_state` 灰化不合理按钮但不强制（规则归属业务判断）
+- **控制期间点位值变化锁**：gw 下发 cmd_X 到收到 ACK 之前，对同设备的**新控制命令**延后处理（读命令不受限）
+
+#### 3.8.2 同帧触发多告警（E2 + E8）
+
+**场景**：一次 FunCode 3 响应包含 20 个点位，其中 5 个越限。
+
+**规则**：
+- **每个 (point_id, alarm_cfg_id) 独立产生 AlarmEvent**（不合并），分别 XADD 到 `stream:alarm:fired`
+- 同点位多条规则同时命中（`>80` 和 `LX`）→ 分别产生两个 event（规则 id 不同）
+- api 侧通知通道做"合并窗口"：同 dev_number 同 user 在 3s 内的多条告警聚合为 1 条微信/短信（聚合文案："XX 设备 3 条告警：...")
+- 邮件/IVR 电话保持不聚合（各自独立）
+
+#### 3.8.3 Redis Streams 容量满（E3 + F9）
+
+**场景**：`stream:alarm:fired MAXLEN ~100000` 达到上限。
+
+**规则**：
+- `XADD ... MAXLEN ~` 是**近似裁剪**，不会阻塞 XADD（只丢最老消息）
+- **PEL 监控分级**：
+  - 未消费堆积 > 1,000 → Grafana 告警（消费者跟不上）
+  - > 10,000 → P0 告警 + 自动触发 DLQ 扩容或加速消费（`XREADGROUP COUNT` 扩到 200）
+  - > 100,000 → 主动扩机（发信号让 api 副本扩展）
+- 消费者失败 5 次后直接进 DLQ（§5.9 已规范），不阻塞主流
+- `stream:control:cmd` 容量 50,000，同策略
+
+#### 3.8.4 WS 慢消费者（E4）
+
+**场景**：浏览器 tab 后台化 / 网络抖动 / client buffer 满。
+
+**规则**：
+- api 侧每个 WS 连接有**单独的发送队列**（`asyncio.Queue(maxsize=500)`）
+- 队列满 → **丢弃最老实时数据**（允许丢，§1.3 已决策），**不丢告警和 control_result**（分队列处理）
+- 连续 3 次发送失败（5s 内） → 主动关闭 WS，让客户端重连
+- 客户端重连后 → 订阅 `channel:realtime:{dev_number}` + 补拉最近 N 条 `alarm_records`（近 5 min）
+- 移动端 tab 后台化 → 心跳 `type:"ping"` 每 30s，长时间（>5min）后台 → 服务端主动断连省资源
+
+#### 3.8.5 离线命令队列过期通知（E5）
+
+**场景**：控制命令入离线队列 10min TTL 到期，设备仍未上线。
+
+**规则**：
+- gw 定期（每 30s）扫离线队列 → 将超时命令标 `cancelled`，更新 `user_control_actions.result='cancelled'`, `completed_at=now()`
+- XADD `stream:alarm:fired` event_type="command_cancelled"（让 api 通过 WS 和告警通道告知用户）
+- WS 推 `{type: "control_result", cmd_id, status: "cancelled", at, reason: "设备离线超过 10 分钟"}`
+- 前端 Toast 显示并变红色，提醒用户
+
+#### 3.8.6 DevSerNumber 冲突与身份退化（E6）
+
+**场景**：两台设备产线失误用同一序列号。
+
+**规则**：
+- 主键 UNIQUE `(dev_ser_number, iccid)` 起保护作用：序列号相同但 iccid 不同 → 视为两台设备
+- 同序列号同 iccid → 视为同一设备（产线事故需人工）
+- 注册时 DB 发现冲突 → gw 返回 FunCode 21 错误响应，并写 `soft_logs` ERROR + 告警
+- 运维处置：手工改其中一台的 iccid 或 dev_number 后重新出厂烧录
+
+#### 3.8.7 JWT 长操作中过期（E7）
+
+**场景**：用户填长表单 20 分钟后提交，access token 15min 已过期。
+
+**规则**：
+- 前端 axios 拦截器检测到 401 → 自动用 `refresh_token` 请求 `/api/auth/refresh`
+- 成功 → 重试原请求
+- refresh 失败（refresh 也过期）→ 暂存当前未提交表单到 `localStorage`，跳登录页，登录成功后恢复表单
+- 所有 POST 类关键表单支持 `draft_id` 自动保存（每 30s 草稿写后端），防止提交失败彻底丢失
+
+#### 3.8.8 历史查询大数据集（E9）
+
+**场景**：前端请求 `/api/devices/X/history?from=2026-01-01&to=2026-04-13`。
+
+**规则**：
+- **强制分页**：单次最多返回 5000 行（带 `next_cursor`）
+- 超过 1 天范围的查询**自动降采样**：查询参数 `sample_interval_s` 默认按时长计算（1 天=30s，7 天=5min，30 天=1h）
+- 响应头 `X-Downsampled: true` + `X-Sample-Interval-S: 300` 告知前端
+- 原始数据导出走异步任务：`POST /api/exports` → 生成 Parquet 上对象存储 → 邮件/WS 通知完成
+- 长查询超时 30s → 返回 `-200 timeout, 请缩小范围或用导出功能`
+
+#### 3.8.9 归档 Job 与查询并发（E10）
+
+**场景**：归档 Job 正在对某月 chunk 启用压缩，同时查询命中该 chunk。
+
+**规则**（TimescaleDB 原生支持）：
+- `compress_chunk` 操作持有 `AccessExclusiveLock` → 查询需等待或超时
+- 我们的约束：归档 Job 只动 ≥ 7 天前的 chunk（§5.10 已定），实际业务查询以近 1–3 天为主，冲突概率低
+- 查询侧设置 `SET LOCAL lock_timeout = '5s'` → 超时返回 `-301 DB 忙，请稍后重试`
+- 归档 Job 窗口固定在 02:00–04:00，与业务低峰对齐
+
+#### 3.8.10 配置变更 Pub/Sub 丢失的兜底（F5）
+
+**场景**：gw 刚好断 Redis 错过了 `channel:config:changed` 广播。
+
+**规则**：
+- gw 重连 Redis 后，**立即全量扫 `devices WHERE update_flag > 0`** 拉取所有待更新配置（config_watcher 兜底）
+- 每 5 min 定期也扫一次（防止 Redis 消息真丢）
+- `update_flag` 在 gw 应用完配置后由 gw 自己 clear → api 侧读取到 0 代表"已同步"
+
+#### 3.8.11 告警事务与 Stream 发布原子性（F4）
+
+**场景**：事务 INSERT alarm_records 成功，紧接的 XADD stream 失败。
+
+**规则**（双写一致性 → 改为 Outbox 模式）：
+```sql
+-- 新增 outbox 表（第 22 张）
+CREATE TABLE alarm_outbox (
+  id          BIGSERIAL PRIMARY KEY,
+  alarm_id    BIGINT NOT NULL REFERENCES alarm_records(id),
+  payload     JSONB NOT NULL,
+  published   BOOLEAN NOT NULL DEFAULT false,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX ON alarm_outbox (published, created_at) WHERE published = false;
+```
+gw 侧：
+```python
+async with db.transaction():
+    alarm_id = await db.insert_alarm(...)
+    await db.insert_outbox(alarm_id, payload)        # 与 alarm_records 同事务
+# 事务外：独立 relay 协程扫 outbox published=false → XADD → 成功后 UPDATE published=true
+```
+保证："落库成功但告警未发"这种半状态会被 relay 自动补偿。
+
+#### 3.8.12 cmd_id 跨重启去重（F3）
+
+gw 重启后内存 LRU 丢失 → 改为 **Redis `SET NX EX 86400`**：
+```python
+ok = await redis.set(f"cmd_seen:{cmd_id}", "1", nx=True, ex=86400)
+if not ok:
+    await xack_and_skip(cmd_id)   # 已处理过，幂等
+```
+
+#### 3.8.13 广播帧地址 0（F7）
+
+**规则**：gw **拒收地址 0 的 ModBus 帧**（log WARN）。理由：新系统不使用 ModBus 广播语义，所有下行都针对具体 RTU 地址。
+
+#### 3.8.14 同 DTU 多设备帧交错（F8）
+
+**规则**：
+- 现状约束 `SILENCE_MS=200` 保证 RS485 半双工下每个设备回复完才下一个
+- 但 TCP 透传层如果 DTU 内部并发（少见），gw 侧依赖**帧 CRC + 地址字段**识别归属
+- 解析出的帧按 `dev_addr` 路由到对应设备的 `Device` 对象（而非按 TCP 连接）
+- CRC 错帧丢弃 + 累计计数（§5.2）
+
+#### 3.8.15 波形 BLOB 容错解码（F6）
+
+**规则**：
+```python
+def decode_waveform(blob: bytes) -> tuple[list[float], int]:
+    if len(blob) < 2:
+        raise ProtocolError("waveform blob truncated header")
+    sample_time = blob[0]
+    packet_count = blob[1]
+    expected_len = 2 + packet_count * sizeof(value_type)
+    if len(blob) < expected_len:
+        raise ProtocolError(f"waveform truncated: expect {expected_len}, got {len(blob)}")
+    # 严格解析；解析失败 → 丢弃单条，不写 DB，log WARN（§5.2 CRC 错同级别处置）
+```
+
+#### 3.8.16 用户注销的级联处理（F10）
+
+**场景**：用户主动注销。
+
+**规则**：
+- 软删除 `users.deleted_at = now()`
+- 吊销所有 JWT（jti 黑名单 7 天）
+- 用户进行中的控制命令：保持原状态继续执行（审计留档）
+- 用户订阅的告警通道：从 `user_phone_numbers` / `user_emails` / `user_wx_bindings` 级联删除
+- 该用户归属的设备 → 归还给上级管理员（L2 → L3 → L4）
+- 保留 `user_control_actions` 审计记录 3 年（合规），显示为"已注销用户 XXX（脱敏）"
+
 ---
 
 ## §4 数据模型
@@ -734,7 +928,9 @@ CREATE TABLE wx_groups (
 
 CREATE TABLE users (
   id                BIGSERIAL PRIMARY KEY,
-  user_name         VARCHAR(50) UNIQUE NOT NULL,
+  user_name         VARCHAR(50) UNIQUE NOT NULL
+                    CHECK (user_name ~ '^1[3-9][0-9]{9}$'   -- 中国大陆手机号
+                           OR user_name ~ '^[a-zA-Z][a-zA-Z0-9_]{3,29}$'),  -- 或预置账号
   password_hash     VARCHAR(100) NOT NULL,     -- bcrypt
   login_name        VARCHAR(50),
   group_company     VARCHAR(100),
@@ -758,8 +954,8 @@ CREATE TABLE devices (
   iccid                   VARCHAR(50),
   dev_name                VARCHAR(100),
   dev_type                VARCHAR(50),
-  modbus_addr             SMALLINT NOT NULL,
-  baud_rate               INT,
+  modbus_addr             SMALLINT NOT NULL CHECK (modbus_addr BETWEEN 1 AND 247),
+  baud_rate               INT CHECK (baud_rate IN (9600, 19200, 38400, 57600, 115200)),
   group_company           VARCHAR(100),
   company                 VARCHAR(100),
   department              VARCHAR(100),
@@ -790,8 +986,8 @@ CREATE TABLE device_points (
   dev_number        VARCHAR(50) NOT NULL REFERENCES devices(dev_number) ON DELETE CASCADE,
   point_name        VARCHAR(100) NOT NULL,
   user_point_name   VARCHAR(100),
-  point_number      INT NOT NULL,                -- ModBus 寄存器起始地址
-  fun_code          SMALLINT NOT NULL,           -- 3/4 读
+  point_number      INT NOT NULL CHECK (point_number BETWEEN 0 AND 65535),  -- ModBus 寄存器地址
+  fun_code          SMALLINT NOT NULL CHECK (fun_code IN (1, 2, 3, 4)),     -- 仅"读"类
   dev_addr          SMALLINT NOT NULL,
   r_bit             SMALLINT,                    -- 位寻址
   value_type        VARCHAR(20) NOT NULL,        -- '字' / '双字' / 'bit'
@@ -815,7 +1011,7 @@ CREATE TABLE device_waring_cfgs (
   reg_bit              SMALLINT,
   alarm_name           VARCHAR(100) NOT NULL,
   alarm_type           VARCHAR(4) NOT NULL CHECK (alarm_type IN ('>','<','=','!=','LX')),
-  limit_value          DOUBLE PRECISION NOT NULL,
+  limit_value          DOUBLE PRECISION NOT NULL CHECK ('NaN' != limit_value::text AND 'Infinity' != abs(limit_value)::text),
   relation_point_id    BIGINT REFERENCES device_points(id),
   relation_reg_bit     SMALLINT,
   relation_alarm_type  VARCHAR(4),
@@ -917,12 +1113,13 @@ CREATE TABLE timing_plans (
 CREATE TABLE pay_orders (
   out_trade_no VARCHAR(50) PRIMARY KEY,
   openid       VARCHAR(100) NOT NULL,
-  total_fee    INT NOT NULL,
+  total_fee    INT NOT NULL CHECK (total_fee >= 0),
   body         VARCHAR(255),
   pay_state    VARCHAR(20) NOT NULL DEFAULT 'pending'
                 CHECK (pay_state IN ('pending','paid','failed','refund')),
   created_at   timestamptz NOT NULL DEFAULT now(),
-  paid_at      timestamptz
+  paid_at      timestamptz,
+  CHECK ((pay_state = 'paid') = (paid_at IS NOT NULL))
 );
 
 CREATE TABLE soft_logs (
@@ -945,7 +1142,7 @@ SELECT add_retention_policy('soft_logs', INTERVAL '1 year');
 设备 (6):   devices, device_points, device_waring_cfgs,
             device_static_data, sim_cards, device_templates
 时序 (3):   point_data_realtime, point_data_history*, waveform_history*
-告警 (1):   alarm_records
+告警 (2):   alarm_records, alarm_outbox（§3.8.11 事务 outbox）
 控制 (1):   user_control_actions
 计划 (3):   timing_plans, maintain_plans, maintain_actions
 组态 (2):   scene_pages, scene_views
@@ -2178,6 +2375,7 @@ T+3min+3s 设备 ACK 停机 → 成功通知用户
 - **v1.2**：健壮性/长期不变慢/通讯持续三维加固（Redis Streams 替代 pub/sub；fillfactor+autovacuum；TimescaleDB 压缩；本地 WAL 兜底；TCP 双向心跳；时钟校准；微信 Token 降级）
 - **v1.3**：**5 角色并行审查（SA / 架构师 / 通讯 / 安全 / 测试）合并修订**。27 项 Blocker 内联修订；新增 §3.6 权限矩阵、§3.7 多租户 RLS、§5.13 JWT 加固、§5.14 Windows 加固、§6.11 升级路径、§6.12 其他测试、§9.3 用户旅程、§14 审查整合清单、**§A 协议规范附录**（全章）。D8 决策入账（5 角色 Blocker 合并为单次交付）。
 - **v1.3.1**：**数据 / 函数 / 前后台变量一致性轮**。修订点：(1) Redis channel key 统一 `channel:realtime:{dev_number}`；(2) URL 参数统一 `{dev_number}` 替代 `{n}`；(3) 所有私有 API 加 `/api/` 前缀（`/api/auth/*` / `/api/admin/*`）；(4) interval_decisec 修正为 update_interval_decisec 前后端同名；(5) user_control_actions 加 cmd_id UNIQUE + result CHECK 约束；(6) 新增 §3.4.1 WS 消息合同 + §3.4.2 HTTP 标准头契约；(7) ID 统一 ULID；(8) pay_orders_seen DDL 与表清单同步；(9) 目录增补 §14 / §A 锚点；(10) 错误码引用从 §D.2 改 §5.1。
+- **v1.3.2**：**边界情况 + 数据流完整性轮**。修订 10 处 🔴 边界漏洞 + 10 处 🟡 数据流缺口 + 5 处 🟢 DDL 约束。关键新增：(1) §3.8 新章节 16 个边界规则（并发控制串行化 / 同帧多告警 / Stream 满 / WS 慢消费者 / 离线命令过期通知 / DevSerNumber 冲突退化 / JWT 长操作过期 / 历史查询大数据集降采样 / 归档与查询并发 / Outbox 事务补偿 / cmd_id 跨重启去重等）；(2) 微信支付验签顺序修正（先验签后取字段，hmac.compare_digest）；(3) DDL 加 CHECK 约束（user_name 正则 / modbus_addr 1-247 / fun_code 1-4 / pay_orders.total_fee≥0 / pay_state 与 paid_at 一致）；(4) 新增 alarm_outbox 表保证告警落库与 Stream 发布原子性。
 
 ---
 
