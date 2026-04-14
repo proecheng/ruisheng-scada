@@ -5,13 +5,14 @@
 
 ---
 
-## 当前状态：Plan 0 Stage B 完成，Stage C 待启动
+## 当前状态：Plan 0 Stage C 进行中（4/22）
 
-**最后更新**：2026-04-14（Stage B 收尾后）
+**最后更新**：2026-04-14（Stage C C1–C4 完成后）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`97f38b1 feat(shared): schemas package with generic ApiResponse shell`
-**最新 tag**：`plan-0-stage-b-complete`（已 push）
-**master 最新 commit**：`479dcdf docs(plan): fix B10 min_poll_interval formula`
+**最近 commit**（worktree）：`c03db3c feat(shared): Device + Point + StaticData + SimCard + Template models`
+**最新 tag**：`plan-0-stage-b-complete`（Stage C 未打 tag）
+**master 最新 commit**：`8463b94 docs(plan): fix UQ naming_convention template (second plan bug found during C4)`
+**测试状态**：86/86 passing（Stage B 52 + C1–C4 34）
 
 ---
 
@@ -30,6 +31,27 @@
 ---
 
 ## 已完成
+
+### Plan 0 Stage C（feature 分支，4/22 ✅）
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| C1 | Declarative Base + mixins | `dfb7157` + patch `1284a65` | 3 tests；patch 加 naming_convention |
+| C2 | WxGroup (wx_groups) | `a27033c` | 3 tests |
+| C3 | User + WxBinding + Phone + Email | `71eb752` | 12 tests；**2 次 revert**（详见下） |
+| C4 | Device + Point + Static + Sim + Template | `8a770e7` retrofit + `c03db3c` 实现 | 16 tests；retrofit UQ template |
+
+**Stage C 至今发现 3 个 plan bug（已全部反向 fix 到 master）：**
+
+1. **C1 patch**：Plan 原未加 `Base.metadata.naming_convention`，code review 抓到。加后约束名对 Alembic 稳定。Master `f4e66db`。
+2. **CK/UQ name 双叠**：Plan 原写 `name="ck_users_user_name_format"` → 与 naming_convention 模板叠加成 `ck_users_ck_users_user_name_format`。改为裸名 `name="user_name_format"`。Master `e32493e`。C3 第一次 revert 源于此。
+3. **UQ 模板不支持多列**：原模板 `%(column_0_name)s` 对多列 UQ 只取第一列名，且 `unique=True` 也受影响。改为 `%(constraint_name)s` 并强制所有 UQ 显式 `name=`。Master `8463b94`。C4 第一次 revert 源于此。
+
+**Process 教训（2 次 implementer 静默改 spec）：**
+- C3 attempt 1：implementer 发现双叠、静默改 spec 短名 → revert + prompt 加 STRONG guard
+- C4 attempt 1：implementer 发现 UQ 模板 bug、静默改 base.py + users.py → revert + Path B 正式化
+
+两次都是 implementer 经验正确、process 错误。每次 revert + 反向 fix plan 效果好，但实施成本高（多跑一轮）。
 
 ### 文档阶段（master 分支）
 
