@@ -1,6 +1,6 @@
 # 江苏润盛 IoT 监控平台 — 重做设计文档
 
-> **版本**：v1.3.2 / 2026-04-13
+> **版本**：v1.3.3 / 2026-04-14
 > **状态**：5 角色审查合并 + 一致性轮 + 边界/数据流轮 全部完成；等待最终 ack → writing-plans
 > **关联文档**：
 > - 需求基线：`D:\江苏润盛\需求清单\功能全景清单.md` v2.2（1609 行）
@@ -274,7 +274,7 @@ ruisheng-gw/
 
 ```
 ruisheng-shared/
-├── __init__.py                  # SHARED_SCHEMA_VERSION = 20260413  ← 每次 breaking 改动 +1
+├── __init__.py                  # SHARED_SCHEMA_VERSION = 20260414  ← 每次 breaking 改动 +1
 ├── CHANGELOG.md                 # 每次改动必登：breaking / deprecation / feature / fix
 ├── models/                      # SQLAlchemy 模型（两服务共用）
 ├── schemas/                     # pydantic（两服务共用）
@@ -288,7 +288,7 @@ ruisheng-shared/
 # ruisheng-api/app/main.py  &&  ruisheng-gw/app/main.py  都加
 from ruisheng_shared import SHARED_SCHEMA_VERSION
 
-REQUIRED = 20260413
+REQUIRED = 20260414
 if SHARED_SCHEMA_VERSION != REQUIRED:
     raise RuntimeError(f"shared mismatch: expect {REQUIRED}, got {SHARED_SCHEMA_VERSION}")
 ```
@@ -653,7 +653,7 @@ CREATE TABLE pay_orders_seen (
 | 7 告警 | 通讯录 | ✓ | ✓ | ✓ | R | — |
 | 8 设备配置 | 比例/字段 | ✓ | ✓ | ▲(CA bit1) | × | 原硬编码特权号 18264192756 已废弃（D1），走 L4 |
 | 8 设备配置 | 添加/删除 | ✓ | ✓ | ✓ | × | — |
-| 9 保养 | 查询/增删 | ✓ | ✓ | ✓ | R | — |
+| 9 保养 | 查询/增删 | ✓ | ✓ | ✓ | ▲自有 | L1 只能对"本人绑定设备"的保养计划增删 |
 | 10 定时计划 | 增删启停 | ✓ | ✓ | ✓ | × | — |
 | 11 组态 | 查看 | ✓ | ✓ | ✓ | ▲ | — |
 | 11 组态 | 编辑 | ✓ | ✓ | ✓ | × | — |
@@ -709,6 +709,16 @@ def inject_tenant_filter(query):
 - 每个资源 endpoint 必须有对应负向测试：UserA(tenantA) 访问 UserB(tenantB) 资源应返回 403
 
 **违规处置**：生产检测到"无 usr_group 过滤的查询" → 立刻 P0 告警 + 自动封禁该进程。
+
+**软删 + FK 语义**（v1.3.3 新增）：
+- FK 仅检查行存在性，**不检查 deleted_at**；业务查询必须 JOIN WHERE deleted_at IS NULL
+- 禁止依赖 `ON DELETE RESTRICT` 做业务级联（所有表用软删，级联永不触发）
+- UI 列表遇到引用已软删行时，降级显示 `LEFT JOIN + COALESCE(target.name, '已删除') AS display_name`
+
+**gw 服务账号**（v1.3.3 新增）：
+- `CREATE ROLE ruisheng_gw BYPASSRLS LOGIN PASSWORD '...'`（gw 是后台服务，无 HTTP 上下文）
+- 所有 gw SQL 由 CI lint 强制带 `WHERE usr_group = ?` 过滤（负向 test：构造跨租户 join，断言拒绝合并）
+- api 继续用普通角色 + `SET LOCAL app.tenant_id` 走 RLS
 
 ### 3.8 边界情况与数据流细则（v1.3.2 新增）
 
@@ -890,6 +900,35 @@ def decode_waveform(blob: bytes) -> tuple[list[float], int]:
 - 用户订阅的告警通道：从 `user_phone_numbers` / `user_emails` / `user_wx_bindings` 级联删除
 - 该用户归属的设备 → 归还给上级管理员（L2 → L3 → L4）
 - 保留 `user_control_actions` 审计记录 3 年（合规），显示为"已注销用户 XXX（脱敏）"
+- `maintain_actions` 审计记录 **同款规则**：保留 3 年 + 脱敏显示（v1.3.3 追加）
+
+#### 3.8.17 保养计划推进状态机（v1.3.3 新增）
+
+**场景**：师傅 App 点"完成保养"。
+
+**推进公式（并发安全）**：
+```
+next_due_at_new = max(now(), next_due_at_old) + interval_days * INTERVAL '1 day'
+```
+- **禁止累加式** `next_due_at + interval`（漏保养一周后做只推进一个周期，导致漏检永远推迟）
+- `max(now(), old)` 保证即使超期后补做，下次也从 now() 起算
+
+**事务序**：
+```
+BEGIN;
+  SELECT * FROM maintain_plans WHERE id = :plan_id FOR UPDATE;  -- 行锁防并发
+  INSERT INTO maintain_actions (action_uuid, plan_id, dev_number, user_name, usr_group)
+    VALUES (...) ON CONFLICT (action_uuid) DO NOTHING;          -- 幂等（弱网双击）
+  UPDATE maintain_plans
+    SET next_due_at = GREATEST(now(), next_due_at) + make_interval(days => interval_days),
+        updated_at = now()
+    WHERE id = :plan_id;
+COMMIT;
+```
+
+**action_uuid 约定**：前端生成 ULID（26 字符），网络失败重试时复用同一 uuid → `ON CONFLICT DO NOTHING` 幂等。
+
+**时间容差**（v1.3.3 通用约定）：所有表单时间字段允许 ≤ 60s 早于服务端 now()（应对浏览器时钟偏差）；CHECK 约束写作 `next_due_at >= created_at - INTERVAL '1 minute'`。
 
 ---
 
@@ -901,11 +940,37 @@ def decode_waveform(blob: bytes) -> tuple[list[float], int]:
 |---|---|
 | 表/字段 | `snake_case` |
 | 主键 | `id BIGSERIAL` + 业务键 UNIQUE |
-| 时间 | 统一 `timestamptz`，存 UTC |
-| 多租户 | 每张业务表强制 `usr_group VARCHAR(50) NOT NULL` + INDEX |
-| 软删除 | `deleted_at timestamptz NULL` |
-| 审计字段 | `created_at` / `updated_at`（触发器维护）|
+| 时间 | 统一 `timestamptz`，存 UTC；系统假定 `TZ='Asia/Shanghai'`，无 DST |
+| 多租户 | 每张业务表强制 `usr_group VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group)` + INDEX |
+| 软删除 | `deleted_at timestamptz NULL`（审计类表除外，详见 §4.1.1） |
+| 审计字段 | `created_at` / `updated_at`（触发器 `trg_<table>_updated` 维护；见 §4.1.1） |
+| 字符串归一 | VARCHAR 入库前在 API 层 `strip()` + NFC normalize；DB 不做 trim |
 | 字符集 | UTF8，collation `zh-x-icu` |
+| FK 命名 | 不在 DDL 写 `CONSTRAINT fk_...` 名，交 Alembic `naming_convention` 生成（`fk_<table>_<col>_<referred>`） |
+| CHECK 命名 | 同上，交 naming_convention（`ck_<table>_<constraint_name>`） |
+| Index 命名 | 显式 `ix_<table>_<purpose>` / `ux_<table>_<purpose>`（partial unique） |
+| RLS policy | 所有表同名 `tenant_isolation`（模板见 §3.7）|
+| Trigger 命名 | `trg_<table>_updated`（updated_at 自动维护） |
+| 时间容差 | 所有表单时间字段：CHECK `target_time >= created_at - INTERVAL '1 minute'` |
+
+### 4.1.1 通用设施（v1.3.3 新增）
+
+```sql
+-- (1) 通用 updated_at 触发器函数（被每张含 updated_at 的表的触发器复用）
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS TRIGGER AS $$
+BEGIN NEW.updated_at = now(); RETURN NEW; END $$ LANGUAGE plpgsql;
+
+-- (2) gw 服务账号（BYPASSRLS，SQL 由 CI lint 强制带 WHERE usr_group）
+CREATE ROLE ruisheng_gw BYPASSRLS LOGIN PASSWORD '<prod-secret>';
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO ruisheng_gw;
+
+-- (3) api 服务账号（走 RLS，每事务 SET LOCAL 两个变量）
+CREATE ROLE ruisheng_api LOGIN PASSWORD '<prod-secret>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ruisheng_api;
+-- api 每个请求 begin tx 后：
+--   SET LOCAL app.tenant_id = '<user.usr_group>';
+--   SET LOCAL app.role      = '<user.authority>';  -- Administrators/GroupCompany/Company/User
+```
 
 ### 4.2 核心表 DDL 节选
 
@@ -1099,15 +1164,85 @@ CREATE TABLE user_control_actions (
 CREATE INDEX ON user_control_actions (dev_number, acted_at DESC);
 CREATE INDEX ON user_control_actions (user_name, acted_at DESC);
 
+-- timing_plans（v1.3.3 扩展：补 usr_group / deleted_at / updated_at / RLS / 索引）
 CREATE TABLE timing_plans (
   id          BIGSERIAL PRIMARY KEY,
-  dev_number  VARCHAR(50) NOT NULL,
+  dev_number  VARCHAR(50) NOT NULL REFERENCES devices(dev_number) ON DELETE RESTRICT,
   action_at   timestamptz NOT NULL,
   action      INT NOT NULL,
   repetition  INT NOT NULL DEFAULT 0,
   enable      BOOLEAN NOT NULL DEFAULT true,
-  update_flag SMALLINT NOT NULL DEFAULT 0,
-  created_at  timestamptz NOT NULL DEFAULT now()
+  update_flag SMALLINT NOT NULL DEFAULT 0,                        -- gw 感知配置变更
+  usr_group   VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT,
+  deleted_at  timestamptz,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_timing_plans_dev_action ON timing_plans (dev_number, action_at);
+CREATE INDEX ix_timing_plans_due        ON timing_plans (action_at)
+  WHERE enable = true AND deleted_at IS NULL;
+CREATE INDEX ix_timing_plans_usr_group  ON timing_plans (usr_group);
+
+CREATE TRIGGER trg_timing_plans_updated BEFORE UPDATE ON timing_plans
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE timing_plans ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON timing_plans USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
+);
+
+-- maintain_plans（v1.3.3 新增：保养计划模板；不下发 gw，故无 update_flag）
+CREATE TABLE maintain_plans (
+  id             BIGSERIAL PRIMARY KEY,
+  dev_number     VARCHAR(50) NOT NULL REFERENCES devices(dev_number) ON DELETE RESTRICT,
+  plan_name      VARCHAR(100) COLLATE "zh-x-icu" NOT NULL,
+  description    VARCHAR(255),
+  interval_days  INT NOT NULL CHECK (interval_days BETWEEN 1 AND 3650),
+  next_due_at    timestamptz NOT NULL,
+  enable         BOOLEAN NOT NULL DEFAULT true,
+  usr_group      VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT,
+  deleted_at     timestamptz,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  CHECK (next_due_at >= created_at - INTERVAL '1 minute')    -- 60s 容差，见 §4.1
+);
+CREATE INDEX ix_maintain_plans_dev_number       ON maintain_plans (dev_number);
+CREATE INDEX ix_maintain_plans_usr_group        ON maintain_plans (usr_group);
+CREATE INDEX ix_maintain_plans_next_due_active  ON maintain_plans (next_due_at)
+  WHERE enable = true AND deleted_at IS NULL;
+CREATE UNIQUE INDEX ux_maintain_plans_dev_plan_name
+  ON maintain_plans (dev_number, plan_name) WHERE deleted_at IS NULL;
+
+CREATE TRIGGER trg_maintain_plans_updated BEFORE UPDATE ON maintain_plans
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE maintain_plans ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON maintain_plans USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
+);
+
+-- maintain_actions（v1.3.3 新增：保养执行审计；一次写入 + action_uuid 幂等）
+CREATE TABLE maintain_actions (
+  id           BIGSERIAL PRIMARY KEY,
+  action_uuid  VARCHAR(26) NOT NULL UNIQUE,               -- ULID，前端生成；弱网幂等
+  plan_id      BIGINT NOT NULL,                           -- 弱引用：审计永久留痕，不设 FK
+  dev_number   VARCHAR(50) NOT NULL,                      -- 冗余：设备删后仍可审计
+  acted_at     timestamptz NOT NULL DEFAULT now(),
+  user_name    VARCHAR(50) NOT NULL REFERENCES users(user_name) ON DELETE RESTRICT,
+  note         VARCHAR(1000),                             -- 保养备注（师傅文字记录）
+  usr_group    VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT
+);
+CREATE INDEX ix_maintain_actions_plan_acted ON maintain_actions (plan_id,    acted_at DESC);
+CREATE INDEX ix_maintain_actions_dev_acted  ON maintain_actions (dev_number, acted_at DESC);
+CREATE INDEX ix_maintain_actions_user_acted ON maintain_actions (user_name,  acted_at DESC);
+CREATE INDEX ix_maintain_actions_usr_group  ON maintain_actions (usr_group);
+
+ALTER TABLE maintain_actions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON maintain_actions USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
 );
 
 CREATE TABLE pay_orders (
@@ -1134,7 +1269,7 @@ SELECT create_hypertable('soft_logs', 'recorded_at',
 SELECT add_retention_policy('soft_logs', INTERVAL '1 year');
 ```
 
-### 4.3 表清单总览（共 21 张）
+### 4.3 表清单总览（共 26 张，v1.3.3 修正计数）
 
 ```
 租户 (1):   wx_groups
@@ -1203,7 +1338,7 @@ SELECT add_retention_policy('soft_logs', INTERVAL '1 year');
 | `PhoneAlarmRecord` + `WXAlarmRecord` | `alarm_records` 合表 | `channels_sent` JSONB 按来源填 `{sms:"ok"}` / `{wechat:"ok"}` |
 | `PayOrder` | `pay_orders` | 直通 |
 | `SoftLog` | `soft_logs` | 直通 |
-| `TimingPlan` | `timing_plans` | 直通 |
+| `TimingPlan` | `timing_plans` | **非直通**（v1.3.3）：usr_group 从 `devices.usr_group` 按 `dev_number` 反查填入；`deleted_at = null`；`updated_at = created_at`；`DEL_xxx_ts` 前缀记录转 `deleted_at` |
 | `ZTPageInf` / `ZTViewInf` | `scene_pages` / `scene_views` | 直通 |
 | `DEL_xxx_ts` 软删前缀 | `deleted_at` 字段 | 正则提取原 DevNumber + 时间戳 |
 
@@ -1269,6 +1404,18 @@ class ApiResponse(BaseModel):
     data: Any = None
     transid: str | None = None
 ```
+
+**PG 错误 → 业务错误码映射（TODO Plan 2，v1.3.3 追加）**：
+
+| PG SQLSTATE | 典型触发 | 建议业务码 | 用户提示（中文）|
+|---|---|---|---|
+| `23505` unique_violation | `ux_maintain_plans_dev_plan_name` 重名 | `BAD_PARAM` | "同设备下已存在同名计划" |
+| `23503` foreign_key_violation | dev_number/user_name 引用不存在行 | `BAD_PARAM` | "关联的设备/用户不存在" |
+| `23514` check_violation | `interval_days BETWEEN 1 AND 3650` 越界 | `BAD_PARAM` | 按约束名映射（见 §4.1） |
+| `40001` serialization_failure | 并发写 `maintain_plans` 冲突 | `BIZ_FAIL` | "操作冲突，请重试" |
+| `42501` insufficient_privilege | RLS 拦下跨租户查询 | `FORBIDDEN` | "无权访问" |
+
+具体映射实现见 Plan 2 (api) `app/core/exception_handler.py`；本 plan (Plan 0) 只约定约束名规范，不实现映射。
 
 ### 5.2 协议层容错矩阵
 
@@ -2376,6 +2523,19 @@ T+3min+3s 设备 ACK 停机 → 成功通知用户
 - **v1.3**：**5 角色并行审查（SA / 架构师 / 通讯 / 安全 / 测试）合并修订**。27 项 Blocker 内联修订；新增 §3.6 权限矩阵、§3.7 多租户 RLS、§5.13 JWT 加固、§5.14 Windows 加固、§6.11 升级路径、§6.12 其他测试、§9.3 用户旅程、§14 审查整合清单、**§A 协议规范附录**（全章）。D8 决策入账（5 角色 Blocker 合并为单次交付）。
 - **v1.3.1**：**数据 / 函数 / 前后台变量一致性轮**。修订点：(1) Redis channel key 统一 `channel:realtime:{dev_number}`；(2) URL 参数统一 `{dev_number}` 替代 `{n}`；(3) 所有私有 API 加 `/api/` 前缀（`/api/auth/*` / `/api/admin/*`）；(4) interval_decisec 修正为 update_interval_decisec 前后端同名；(5) user_control_actions 加 cmd_id UNIQUE + result CHECK 约束；(6) 新增 §3.4.1 WS 消息合同 + §3.4.2 HTTP 标准头契约；(7) ID 统一 ULID；(8) pay_orders_seen DDL 与表清单同步；(9) 目录增补 §14 / §A 锚点；(10) 错误码引用从 §D.2 改 §5.1。
 - **v1.3.2**：**边界情况 + 数据流完整性轮**。修订 10 处 🔴 边界漏洞 + 10 处 🟡 数据流缺口 + 5 处 🟢 DDL 约束。关键新增：(1) §3.8 新章节 16 个边界规则（并发控制串行化 / 同帧多告警 / Stream 满 / WS 慢消费者 / 离线命令过期通知 / DevSerNumber 冲突退化 / JWT 长操作过期 / 历史查询大数据集降采样 / 归档与查询并发 / Outbox 事务补偿 / cmd_id 跨重启去重等）；(2) 微信支付验签顺序修正（先验签后取字段，hmac.compare_digest）；(3) DDL 加 CHECK 约束（user_name 正则 / modbus_addr 1-247 / fun_code 1-4 / pay_orders.total_fee≥0 / pay_state 与 paid_at 一致）；(4) 新增 alarm_outbox 表保证告警落库与 Stream 发布原子性。
+- **v1.3.3 / 2026-04-14**：**保养模块 DDL 完整化 + spec 全局一致性加固（Plan 0 Stage C Task C7 派发前 2 轮审查产出）**。`SHARED_SCHEMA_VERSION` bump `20260413 → 20260414`（breaking）。关键修订：
+  - (1) **§4.2 新增 `maintain_plans` / `maintain_actions` 两表完整 DDL**：保养计划模板 + 执行审计（原 spec 只在 §4.3 表清单提及名字，无 DDL）；
+  - (2) **§4.2 `timing_plans` 原地重写**：补 `usr_group` + `deleted_at` + `updated_at` + `REFERENCES devices/wx_groups` + 3 索引 + 触发器 + RLS policy（原版为 12 年前老 DDL，缺多租户基础设施）；
+  - (3) **§3.6 line 656** 保养 L1 权限 `R → ▲自有`（一线员工可对本人绑定设备的保养计划增删，符合 SCADA 现场作业语义）；
+  - (4) **§3.7 扩写**：软删 + FK 语义（FK 不检查 deleted_at，业务查询必须 JOIN + COALESCE 降级显示）+ gw 服务账号 `ruisheng_gw BYPASSRLS` + api 每事务 SET LOCAL 两变量；
+  - (5) **§3.8.17 新增**：保养计划推进状态机（`max(now(), old) + interval` 非累加公式 + `FOR UPDATE` 行锁 + `action_uuid ULID` 幂等），防漏做 + 防双击；
+  - (6) **§3.8.16 追加**：`maintain_actions` 同款脱敏保留 3 年规则；
+  - (7) **§4.1 规约表加行**：TZ='Asia/Shanghai' 无 DST / 字符串 strip+NFC 在 API 层 / FK-CHECK 命名交 naming_convention / Index 显式命名 / RLS policy 统一 `tenant_isolation` / Trigger `trg_<table>_updated` / 表单时间字段 60s 容差；
+  - (8) **§4.1.1 新增通用设施**：`set_updated_at()` 触发器函数 + `ruisheng_gw` / `ruisheng_api` 两个 DB 角色定义；
+  - (9) **§4.3 表清单数量** `21 → 26` 修正（原计数自 v1.0 就错）；
+  - (10) **§4.5 line 1341** `TimingPlan` 迁移规则从"直通"改为"非直通"：usr_group 从 devices 反查填入 + `updated_at = created_at` + `DEL_xxx_ts → deleted_at`；
+  - (11) **§5.1** 追加 PG SQLSTATE → ErrCode 中文映射表（TODO Plan 2 实现 `app/core/exception_handler.py`）；
+  - (12) 本轮审查产出含 5 BLOCKER + 8 MAJOR + 9 MINOR，全部 BLOCKER+MAJOR 已落地本次 commit，MINOR 按"延后 Plan 2/3"或 spec TODO 处理。
 
 ---
 
