@@ -1,11 +1,22 @@
 """设备相关 5 张表。对应 spec §4.2。"""
+
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
-    JSON, BigInteger, Boolean, CheckConstraint, DateTime, Double, ForeignKey,
-    Index, Integer, SmallInteger, String, UniqueConstraint,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Double,
+    ForeignKey,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -50,20 +61,16 @@ class Device(Base, TimestampMixin, SoftDeleteMixin):
     group_company: Mapped[str | None] = mapped_column(String(100))
     company: Mapped[str | None] = mapped_column(String(100))
     department: Mapped[str | None] = mapped_column(String(100))
-    administrators: Mapped[str | None] = mapped_column(
-        String(50), ForeignKey("users.user_name")
-    )
+    administrators: Mapped[str | None] = mapped_column(String(50), ForeignKey("users.user_name"))
     dev_ip: Mapped[str | None] = mapped_column(INET)
     code_file: Mapped[str | None] = mapped_column(String(255))
     code_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    update_interval_decisec: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=100
-    )
+    update_interval_decisec: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     last_call_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_back_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     loss_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_online: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    last_state: Mapped[dict | None] = mapped_column(JSONB)
+    last_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     update_flag: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     usr_group: Mapped[str] = mapped_column(
         String(50), ForeignKey("wx_groups.usr_group"), nullable=False
@@ -73,7 +80,9 @@ class Device(Base, TimestampMixin, SoftDeleteMixin):
 class DevicePoint(Base, TimestampMixin):
     __tablename__ = "device_points"
     __table_args__ = (
-        CheckConstraint("point_number BETWEEN 0 AND 65535", name="point_number"),  # → ck_device_points_point_number
+        CheckConstraint(
+            "point_number BETWEEN 0 AND 65535", name="point_number"
+        ),  # → ck_device_points_point_number
         CheckConstraint("fun_code IN (1,2,3,4)", name="fun_code"),  # → ck_device_points_fun_code
         Index("idx_points_dev", "dev_number"),
     )
@@ -130,9 +139,10 @@ class SimCard(Base, TimestampMixin):
 
 class DeviceTemplate(Base, TimestampMixin):
     """设备模板（Q-B10 保留占位）。"""
+
     __tablename__ = "device_templates"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     dev_type: Mapped[str | None] = mapped_column(String(50))
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)

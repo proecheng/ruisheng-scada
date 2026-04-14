@@ -16,6 +16,8 @@
 - feature: add User + UserWxBinding + UserPhoneNumber + UserEmail models
 - chore: refactor UQ naming_convention uses constraint_name; User.user_name UQ declared explicitly
 - feature: add Device + DevicePoint + DeviceStaticData + SimCard + DeviceTemplate models
+- feature: add DeviceWaringCfg + AlarmRecord + AlarmOutbox models (spec §3.8)
+- fix: tighten Mapped[dict] to Mapped[dict[str, Any]] on Device.last_state / DeviceTemplate.payload (mypy --strict)
 
 ## 2026-04-13 v0.1.0
 
