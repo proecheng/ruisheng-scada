@@ -5,14 +5,14 @@
 
 ---
 
-## 当前状态：Plan 0 Stage C 进行中（5/22）
+## 当前状态：Plan 0 Stage C 进行中（6/22）
 
-**最后更新**：2026-04-14（Stage C C5 完成后）
+**最后更新**：2026-04-14（Stage C C6 完成后）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`ecdbefe fix(shared): alarm_records index — DESC on triggered_at to match spec`
+**最近 commit**（worktree）：`a7ae395 docs(shared): C6 CHANGELOG entry + biconditional CK comment`
 **最新 tag**：`plan-0-stage-b-complete`（Stage C 未打 tag）
-**master 最新 commit**：`8463b94 docs(plan): fix UQ naming_convention template (second plan bug found during C4)`
-**测试状态**：104/104 passing（Stage B 52 + C1–C5 52）
+**master 最新 commit**：`54e3e6d docs(plan): fix C5 control CK — 'paid' is not a valid result value (4th plan bug)`
+**测试状态**：115/115 passing（Stage B 52 + C1–C6 63）
 
 ---
 
@@ -41,12 +41,14 @@
 | C3 | User + WxBinding + Phone + Email | `71eb752` | 12 tests；**2 次 revert**（详见下） |
 | C4 | Device + Point + Static + Sim + Template | `8a770e7` retrofit + `c03db3c` 实现 | 16 tests；retrofit UQ template |
 | C5 | DeviceWaringCfg + AlarmRecord + AlarmOutbox | `eef06ca` + fixup `ecdbefe` | 18 tests；spec review 抓出索引缺 DESC，已修；side-fix（devices.py mypy 紧化）被混入 feat commit（process 警告，已存 memory） |
+| C6 | UserControlAction | `dfe10cb` + fixup `a7ae395` | 11 tests；单 commit（无 side-fix 混入）；fixup 补 CHANGELOG + 加 biconditional CK 注释 |
 
-**Stage C 至今发现 3 个 plan bug（已全部反向 fix 到 master）：**
+**Stage C 至今发现 4 个 plan bug（已全部反向 fix 到 master）：**
 
 1. **C1 patch**：Plan 原未加 `Base.metadata.naming_convention`，code review 抓到。加后约束名对 Alembic 稳定。Master `f4e66db`。
 2. **CK/UQ name 双叠**：Plan 原写 `name="ck_users_user_name_format"` → 与 naming_convention 模板叠加成 `ck_users_ck_users_user_name_format`。改为裸名 `name="user_name_format"`。Master `e32493e`。C3 第一次 revert 源于此。
 3. **UQ 模板不支持多列**：原模板 `%(column_0_name)s` 对多列 UQ 只取第一列名，且 `unique=True` 也受影响。改为 `%(constraint_name)s` 并强制所有 UQ 显式 `name=`。Master `8463b94`。C4 第一次 revert 源于此。
+4. **C6 control CK 误值 'paid'**：Plan 原写 `CheckConstraint("(result = 'paid') = (completed_at IS NOT NULL)")`，但 `result` 合法值是 `pending/success/failed/timeout/cancelled`，无 'paid'。改为 `(result = 'pending') = (completed_at IS NULL)`。Master `54e3e6d`。派发前 controller 预检查抓到（未触发 revert）。
 
 **Process 教训（2 次 implementer 静默改 spec）：**
 - C3 attempt 1：implementer 发现双叠、静默改 spec 短名 → revert + prompt 加 STRONG guard
