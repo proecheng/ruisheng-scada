@@ -5,14 +5,15 @@
 
 ---
 
-## 当前状态：Plan 0 Stage C 进行中（6/22）
+## 当前状态：Plan 0 Stage C 进行中（7/22）
 
-**最后更新**：2026-04-14（Stage C C6 完成后）
+**最后更新**：2026-04-14（Stage C C7 完成后）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`a7ae395 docs(shared): C6 CHANGELOG entry + biconditional CK comment`
+**最近 commit**（worktree）：`171b474 fix(shared): bump SHARED_SCHEMA_VERSION 20260413→20260414 + CHANGELOG prefix`
 **最新 tag**：`plan-0-stage-b-complete`（Stage C 未打 tag）
-**master 最新 commit**：`54e3e6d docs(plan): fix C5 control CK — 'paid' is not a valid result value (4th plan bug)`
-**测试状态**：115/115 passing（Stage B 52 + C1–C6 63）
+**master 最新 commit**：`879629b docs(spec): v1.3.3 — complete maintain_* DDL + timing_plans rewrite + global consistency`
+**SHARED_SCHEMA_VERSION**：`20260414`（v1.3.3 breaking bump）
+**测试状态**：151/151 passing（Stage B 52 + C1–C7 99）
 
 ---
 
@@ -42,13 +43,15 @@
 | C4 | Device + Point + Static + Sim + Template | `8a770e7` retrofit + `c03db3c` 实现 | 16 tests；retrofit UQ template |
 | C5 | DeviceWaringCfg + AlarmRecord + AlarmOutbox | `eef06ca` + fixup `ecdbefe` | 18 tests；spec review 抓出索引缺 DESC，已修；side-fix（devices.py mypy 紧化）被混入 feat commit（process 警告，已存 memory） |
 | C6 | UserControlAction | `dfe10cb` + fixup `a7ae395` | 11 tests；单 commit（无 side-fix 混入）；fixup 补 CHANGELOG + 加 biconditional CK 注释 |
+| C7 | TimingPlan + MaintainPlan + MaintainAction | `12bf516` + fixup `171b474` | 36 tests；2 轮审查 → spec v1.3.3（5 BLOCKER + 8 MAJOR inline 修）；fixup 补 SHARED_SCHEMA_VERSION bump + CHANGELOG 前缀 |
 
-**Stage C 至今发现 4 个 plan bug（已全部反向 fix 到 master）：**
+**Stage C 至今发现 5 个 plan bug（已全部反向 fix 到 master）：**
 
 1. **C1 patch**：Plan 原未加 `Base.metadata.naming_convention`，code review 抓到。加后约束名对 Alembic 稳定。Master `f4e66db`。
 2. **CK/UQ name 双叠**：Plan 原写 `name="ck_users_user_name_format"` → 与 naming_convention 模板叠加成 `ck_users_ck_users_user_name_format`。改为裸名 `name="user_name_format"`。Master `e32493e`。C3 第一次 revert 源于此。
 3. **UQ 模板不支持多列**：原模板 `%(column_0_name)s` 对多列 UQ 只取第一列名，且 `unique=True` 也受影响。改为 `%(constraint_name)s` 并强制所有 UQ 显式 `name=`。Master `8463b94`。C4 第一次 revert 源于此。
 4. **C6 control CK 误值 'paid'**：Plan 原写 `CheckConstraint("(result = 'paid') = (completed_at IS NOT NULL)")`，但 `result` 合法值是 `pending/success/failed/timeout/cancelled`，无 'paid'。改为 `(result = 'pending') = (completed_at IS NULL)`。Master `54e3e6d`。派发前 controller 预检查抓到（未触发 revert）。
+5. **C7 spec §4.2 缺 maintain_* DDL + timing_plans 不完整**：spec §4.3 表清单提了 `maintain_plans / maintain_actions` 但 §4.2 只有 `timing_plans` 原始 12 年前老 DDL（无 usr_group/deleted_at/updated_at/RLS），两张保养表 DDL 完全缺失。Controller 派 2 轮 reviewer（schema + 端到端数据流/UX），抓出 5 BLOCKER（RLS session 变量名、CK 命名双叠、软删+FK 语义、gw BYPASSRLS、并发推进）+ 8 MAJOR（partial unique alembic 幽灵、触发器/policy op.execute、timing_plans breaking、dead update_flag、幂等 action_uuid、user_name 索引、60s 时间容差、FK 命名交 convention）+ 9 MINOR。全部 BLOCKER+MAJOR inline 改入 spec v1.3.3（commit `879629b`），MINOR 按"延后 Plan 2/3"或 spec TODO。SHARED_SCHEMA_VERSION 20260413→20260414（breaking）。
 
 **Process 教训（2 次 implementer 静默改 spec）：**
 - C3 attempt 1：implementer 发现双叠、静默改 spec 短名 → revert + prompt 加 STRONG guard
@@ -112,6 +115,27 @@
 ### Stage E（7 task，测试基建 + seeds，需 Docker）
 ### Stage F（6 task，PCAP 生成器）
 ### Stage G（7 task，CI 完备 + 文档 + release + 技术债清理）— 新增 **G6 deps 迁移**、**G7 release workflow**
+
+---
+
+## 2026-04-14 Spec v1.3.3 修订（C7 派发前 2 轮审查产出）
+
+**变更范围**：master spec v1.3.2 → v1.3.3（commit `879629b`，+173/-13 行）
+
+**修订清单**：
+- §3.6 L656 保养 L1 权限 R → ▲自有（一线员工 CRUD 本人设备）
+- §3.7 扩写软删+FK 语义 + gw `ruisheng_gw BYPASSRLS` 角色 + api SET LOCAL 规则
+- §3.8.17 新增保养推进状态机（`max(now(), old) + interval` 非累加 + `FOR UPDATE` + action_uuid 幂等）
+- §3.8.16 追加 maintain_actions 同款 3 年保留+脱敏
+- §4.1 规约表 +7 行（TZ Asia/Shanghai 无 DST / VARCHAR 在 API 层 strip+NFC / FK-CHECK 命名交 naming_convention / Index 显式命名 / RLS policy 统一 tenant_isolation / Trigger trg_<table>_updated / 表单时间字段 60s 容差）
+- §4.1.1 新增通用设施（`set_updated_at()` 触发器函数 + ruisheng_gw/ruisheng_api 两个 DB 角色定义）
+- §4.2 timing_plans 原地重写（+usr_group/deleted_at/updated_at/FK/RLS/3 索引/触发器）+ 新增 maintain_plans + maintain_actions 完整 DDL
+- §4.3 表计数 21 → 26（v1.0 起就数错了）
+- §4.5 L1341 TimingPlan 迁移从"直通"改为"非直通"（usr_group 从 devices 反查填入）
+- §5.1 PG SQLSTATE → ErrCode 中文映射表（TODO Plan 2 实现）
+- SHARED_SCHEMA_VERSION 20260413 → 20260414（breaking）
+
+**审查发现**：5 BLOCKER + 8 MAJOR + 9 MINOR。BLOCKER+MAJOR 全部 inline 修复；MINOR 按"延后 Plan 2/3"处理（具体清单见 spec §10 v1.3.3 changelog）。
 
 ---
 
