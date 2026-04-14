@@ -2200,13 +2200,15 @@ _RTT_MS: dict[int, int] = {
 
 
 def min_poll_interval_decisec(baud: int, device_count: int) -> int:
-    """给定波特率与总线设备数，返回物理上可行的最小轮询周期（0.1s 单位）。"""
+    """给定波特率与总线设备数，返回物理上可行的最小轮询周期（0.1s 单位）。
+
+    算法：ceil(one_round_ms / 1000) 秒 → decisec，并保证下限为 10（即 1s）。
+    """
     if baud not in _RTT_MS:
         raise BizError(ErrCode.BAD_PARAM, f"波特率 {baud} 不在支持表中")
     one_round_ms = _RTT_MS[baud] * max(device_count, 1)
-    # 转 0.1s 向上取整，并加 1s 余量
-    min_s_tenth = (one_round_ms + 999) // 100   # ms → 向上取到 0.1s
-    return max(min_s_tenth + 10, 10)            # +1s 余量；且不得低于 1s
+    # ms → 向上取整到 1s → 转 decisec (×10)；下限 1s
+    return max(((one_round_ms + 999) // 1000) * 10, 10)
 
 
 def validate_bus_feasibility(*, baud: int, device_count: int, min_decisec: int) -> None:
