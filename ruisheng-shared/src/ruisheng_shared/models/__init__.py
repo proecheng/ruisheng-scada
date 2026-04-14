@@ -4,6 +4,7 @@
 
 from .alarms import AlarmOutbox, AlarmRecord, DeviceWaringCfg
 from .base import Base, SoftDeleteMixin, TimestampMixin
+from .control import UserControlAction
 from .devices import Device, DevicePoint, DeviceStaticData, DeviceTemplate, SimCard
 from .tenants import WxGroup
 from .users import User, UserEmail, UserPhoneNumber, UserWxBinding
@@ -21,6 +22,7 @@ __all__ = [
     "SoftDeleteMixin",
     "TimestampMixin",
     "User",
+    "UserControlAction",
     "UserEmail",
     "UserPhoneNumber",
     "UserWxBinding",
