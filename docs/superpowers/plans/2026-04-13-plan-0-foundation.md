@@ -1547,10 +1547,10 @@ def test_decode_phone_alarm() -> None:
 
 
 def test_encode_phone_alarm() -> None:
-    # 触发电话 + 触发全开 + 恢复全关 → 0x2103
+    # 触发电话 + 恢复电话 + 触发全开 + 恢复全关 → 0x2103
     v = AlarmAction.encode_phone_alarm(
         call_on_trigger=True,
-        call_on_reset=False,
+        call_on_reset=True,
         trigger_action=AlarmAction.ALL_ON,
         reset_action=AlarmAction.ALL_OFF,
     )
