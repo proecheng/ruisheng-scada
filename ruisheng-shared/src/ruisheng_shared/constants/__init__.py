@@ -1,5 +1,5 @@
-"""常量集合。B9 onwards will append more submodules (e.g., limits)."""
+"""常量集合。"""
 
-from . import protocol
+from . import limits, protocol
 
-__all__ = ["protocol"]
+__all__ = ["limits", "protocol"]
