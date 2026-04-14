@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, SoftDeleteMixin, TimestampMixin
@@ -20,11 +20,12 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
             "authority IN ('Administrators','GroupCompany','Company','User')",
             name="authority",  # naming_convention 会前缀 ck_users_
         ),
+        UniqueConstraint("user_name", name="user_name"),  # 铁律 2：不用 unique=True，显式 UQ 才能被 naming_convention 正确命名 → uq_users_user_name
         Index("idx_users_tenant", "usr_group"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    user_name: Mapped[str] = mapped_column(String(50), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     login_name: Mapped[str | None] = mapped_column(String(50))
     group_company: Mapped[str | None] = mapped_column(String(100))
