@@ -1,0 +1,44 @@
+"""统一错误码与业务异常基类。对应 spec §5.1 + §D.2。"""
+from __future__ import annotations
+
+from enum import IntEnum
+
+
+class ErrCode(IntEnum):
+    OK = 0
+    BIZ_FAIL = -1          # HTTP 200
+    BAD_PARAM = -100       # HTTP 400
+    UNAUTHED = -101        # HTTP 401
+    FORBIDDEN = -102       # HTTP 403
+    DEV_OFFLINE = -200     # HTTP 200
+    DEV_NO_REPLY = -201    # HTTP 200
+    DEV_CRC_FAIL = -202    # HTTP 200
+    INTERNAL = -300        # HTTP 500
+    DB_UNAVAILABLE = -301  # HTTP 503
+
+
+_HTTP_MAP: dict[ErrCode, int] = {
+    ErrCode.OK: 200,
+    ErrCode.BIZ_FAIL: 200,
+    ErrCode.BAD_PARAM: 400,
+    ErrCode.UNAUTHED: 401,
+    ErrCode.FORBIDDEN: 403,
+    ErrCode.DEV_OFFLINE: 200,
+    ErrCode.DEV_NO_REPLY: 200,
+    ErrCode.DEV_CRC_FAIL: 200,
+    ErrCode.INTERNAL: 500,
+    ErrCode.DB_UNAVAILABLE: 503,
+}
+
+
+class BizError(Exception):
+    """业务异常。api 层 FastAPI handler 捕获后转 ApiResponse。"""
+
+    def __init__(self, code: ErrCode, msg: str) -> None:
+        super().__init__(msg)
+        self.code = code
+        self.msg = msg
+
+    @property
+    def http_status(self) -> int:
+        return _HTTP_MAP[self.code]
