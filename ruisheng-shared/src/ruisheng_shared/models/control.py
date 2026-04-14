@@ -42,6 +42,9 @@ class UserControlAction(Base):
             "result IN ('pending','success','failed','timeout','cancelled')",
             name="result",  # → ck_user_control_actions_result
         ),
+        # biconditional: (result = 'pending') ⇔ (completed_at IS NULL)
+        # terminal states (success/failed/timeout/cancelled) must have completed_at set;
+        # pending must not. See spec §3.5 control state machine.
         CheckConstraint(
             "(result = 'pending') = (completed_at IS NULL)",
             name="result_completed_consistency",
