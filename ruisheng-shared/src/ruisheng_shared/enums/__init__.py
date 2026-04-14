@@ -2,5 +2,6 @@
 
 B2 onwards will append imports here incrementally as each enum file is added.
 """
+from .fun_code import FunCode
 
-__all__: list[str] = []
+__all__: list[str] = ["FunCode"]
