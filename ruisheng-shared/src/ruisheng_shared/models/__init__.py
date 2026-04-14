@@ -7,6 +7,7 @@ from .base import Base, SoftDeleteMixin, TimestampMixin
 from .control import UserControlAction
 from .devices import Device, DevicePoint, DeviceStaticData, DeviceTemplate, SimCard
 from .plans import MaintainAction, MaintainPlan, TimingPlan
+from .scenes import ScenePage, SceneView
 from .tenants import WxGroup
 from .users import User, UserEmail, UserPhoneNumber, UserWxBinding
 
@@ -21,6 +22,8 @@ __all__ = [
     "DeviceWaringCfg",
     "MaintainAction",
     "MaintainPlan",
+    "ScenePage",
+    "SceneView",
     "SimCard",
     "SoftDeleteMixin",
     "TimestampMixin",
