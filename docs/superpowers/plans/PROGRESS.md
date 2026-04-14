@@ -5,15 +5,15 @@
 
 ---
 
-## 当前状态：Plan 0 Stage C 进行中（7/22）
+## 当前状态：Plan 0 Stage C 进行中（8/22）
 
-**最后更新**：2026-04-14（Stage C C7 完成后）
+**最后更新**：2026-04-14（Stage C C8 完成后）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`171b474 fix(shared): bump SHARED_SCHEMA_VERSION 20260413→20260414 + CHANGELOG prefix`
+**最近 commit**（worktree）：`2e41292 fix(shared): C8 post-review fixup — CHANGELOG + Stage D skip-tests + semantic warnings`
 **最新 tag**：`plan-0-stage-b-complete`（Stage C 未打 tag）
-**master 最新 commit**：`879629b docs(spec): v1.3.3 — complete maintain_* DDL + timing_plans rewrite + global consistency`
-**SHARED_SCHEMA_VERSION**：`20260414`（v1.3.3 breaking bump）
-**测试状态**：151/151 passing（Stage B 52 + C1–C7 99）
+**master 最新 commit**：`0daa0d2 docs(spec): v1.3.4 — scene_pages / scene_views DDL + tenant-consistency + snapshot triggers`
+**SHARED_SCHEMA_VERSION**：`20260414`（v1.3.4 保持，非破坏性扩展）
+**测试状态**：189 passed + 2 skipped = 191 collected（Stage B 52 + C1–C7 99 + C8 38 + 2 Stage D 占位 skip）
 
 ---
 
@@ -33,7 +33,7 @@
 
 ## 已完成
 
-### Plan 0 Stage C（feature 分支，5/22 ✅）
+### Plan 0 Stage C（feature 分支，8/22 ✅）
 
 | # | Task | Commit | Notes |
 |---|---|---|---|
@@ -44,14 +44,16 @@
 | C5 | DeviceWaringCfg + AlarmRecord + AlarmOutbox | `eef06ca` + fixup `ecdbefe` | 18 tests；spec review 抓出索引缺 DESC，已修；side-fix（devices.py mypy 紧化）被混入 feat commit（process 警告，已存 memory） |
 | C6 | UserControlAction | `dfe10cb` + fixup `a7ae395` | 11 tests；单 commit（无 side-fix 混入）；fixup 补 CHANGELOG + 加 biconditional CK 注释 |
 | C7 | TimingPlan + MaintainPlan + MaintainAction | `12bf516` + fixup `171b474` | 36 tests；2 轮审查 → spec v1.3.3（5 BLOCKER + 8 MAJOR inline 修）；fixup 补 SHARED_SCHEMA_VERSION bump + CHANGELOG 前缀 |
+| C8 | ScenePage + SceneView | `4d8950e` + fixup `2e41292` | 38 tests + 2 Stage D 占位 skip；派发前 2 轮 review → spec v1.3.4（0 BLOCKER + 3 MAJOR inline 修，含 scene_* 租户一致性触发器 + 展示快照语义）；post-impl 2 轮 review → fixup（CHANGELOG + 3 语义警示 + skip-test 占位）；SHARED_SCHEMA_VERSION 保持 20260414（非破坏性扩展） |
 
-**Stage C 至今发现 5 个 plan bug（已全部反向 fix 到 master）：**
+**Stage C 至今发现 6 个 plan bug（已全部反向 fix 到 master）：**
 
 1. **C1 patch**：Plan 原未加 `Base.metadata.naming_convention`，code review 抓到。加后约束名对 Alembic 稳定。Master `f4e66db`。
 2. **CK/UQ name 双叠**：Plan 原写 `name="ck_users_user_name_format"` → 与 naming_convention 模板叠加成 `ck_users_ck_users_user_name_format`。改为裸名 `name="user_name_format"`。Master `e32493e`。C3 第一次 revert 源于此。
 3. **UQ 模板不支持多列**：原模板 `%(column_0_name)s` 对多列 UQ 只取第一列名，且 `unique=True` 也受影响。改为 `%(constraint_name)s` 并强制所有 UQ 显式 `name=`。Master `8463b94`。C4 第一次 revert 源于此。
 4. **C6 control CK 误值 'paid'**：Plan 原写 `CheckConstraint("(result = 'paid') = (completed_at IS NOT NULL)")`，但 `result` 合法值是 `pending/success/failed/timeout/cancelled`，无 'paid'。改为 `(result = 'pending') = (completed_at IS NULL)`。Master `54e3e6d`。派发前 controller 预检查抓到（未触发 revert）。
 5. **C7 spec §4.2 缺 maintain_* DDL + timing_plans 不完整**：spec §4.3 表清单提了 `maintain_plans / maintain_actions` 但 §4.2 只有 `timing_plans` 原始 12 年前老 DDL（无 usr_group/deleted_at/updated_at/RLS），两张保养表 DDL 完全缺失。Controller 派 2 轮 reviewer（schema + 端到端数据流/UX），抓出 5 BLOCKER（RLS session 变量名、CK 命名双叠、软删+FK 语义、gw BYPASSRLS、并发推进）+ 8 MAJOR（partial unique alembic 幽灵、触发器/policy op.execute、timing_plans breaking、dead update_flag、幂等 action_uuid、user_name 索引、60s 时间容差、FK 命名交 convention）+ 9 MINOR。全部 BLOCKER+MAJOR inline 改入 spec v1.3.3（commit `879629b`），MINOR 按"延后 Plan 2/3"或 spec TODO。SHARED_SCHEMA_VERSION 20260413→20260414（breaking）。
+6. **C8 spec §4.2 缺 scene_pages / scene_views DDL**：spec §4.3 表清单提了"组态 (2): scene_pages, scene_views"，§4.5 L1342 只一行"直通"，但 §4.2 **完整 DDL 区空白**；旧表 `ZTPageInf` / `ZTViewInf` 无 UsrGroup/deleted_at/updated_at/RLS。Controller 派 2 轮 reviewer：第 1 轮产 DDL 初稿 + 抓 Q-B08 TODO；第 2 轮 Controller 追加 2 个 MAJOR（跨表租户一致性不变量 + Company/Department 快照语义），reviewer 回复最终方案（BEFORE INSERT/UPDATE 触发器 `enforce_scene_tenant_consistency` + BEFORE INSERT `fill_scene_views_snapshot`）+ 自抓 3 MAJOR（partial unique 字段从 4 元 `(page_id, dev, pos_x, pos_y)` 收敛到 2 元 `(page_id, dev)`、第 1 轮 §4.5"直通"误判必改非直通、pgloader AFTER LOAD 完整 SQL 块）。总计 0 BLOCKER + 3 MAJOR + 5 MINOR，全部 MAJOR inline 改入 spec v1.3.4（commit `0daa0d2`，+225/-2 行）。SHARED_SCHEMA_VERSION **保持 20260414**（仅 DB schema 扩展，未改 shared Pydantic/enum）。Q-B08（子页面层级 / 背景图分辨率 / SVG 支持）保留为 §4.2 DDL 顶部 TODO。
 
 **Process 教训（2 次 implementer 静默改 spec）：**
 - C3 attempt 1：implementer 发现双叠、静默改 spec 短名 → revert + prompt 加 STRONG guard
@@ -115,6 +117,28 @@
 ### Stage E（7 task，测试基建 + seeds，需 Docker）
 ### Stage F（6 task，PCAP 生成器）
 ### Stage G（7 task，CI 完备 + 文档 + release + 技术债清理）— 新增 **G6 deps 迁移**、**G7 release workflow**
+
+---
+
+## 2026-04-14 Spec v1.3.4 修订（C8 派发前 2 轮审查产出）
+
+**变更范围**：master spec v1.3.3 → v1.3.4（commit `0daa0d2`，+225/-2 行）
+
+**修订清单**：
+- §3.7 追加"gw 禁止访问 scene_pages / scene_views"（CI lint 扫描违规 P0 阻塞）
+- §3.8.18 新增 scene_views Company/Department 展示快照规则（INSERT 自动填充 / 允许覆盖 / UPDATE 不同步）
+- §4.1.1 新增 (4)(5) 两个 PL/pgSQL 触发器函数：
+  - `enforce_scene_tenant_consistency()`：scene_pages/scene_views 的 BEFORE INSERT/UPDATE 校验 usr_group 与 users / scene_pages / devices 一致（补 RLS 只防读不防跨表写的盲点），RAISE EXCEPTION 23514
+  - `fill_scene_views_snapshot()`：BEFORE INSERT 从 users 反查填充 company/department
+- §4.2 新增 scene_pages / scene_views 完整 DDL（NUMERIC(10,2) 坐标 + sanity bounds CHECK 、partial unique `(scene_page_id, dev_number) WHERE deleted_at IS NULL`、RLS policy、zh-x-icu collation、Q-B08 TODO 注释块）
+- §4.5 L1342 `ZTPageInf / ZTViewInf` 从"直通"展开为 2 行非直通迁移映射 + pgloader AFTER LOAD DO 完整 SQL 块（禁用触发器 → 反查填充 → NULL 断言 → 启用触发器 → 空 UPDATE 事后校验）
+
+**审查发现**：0 BLOCKER + 3 MAJOR + 5 MINOR。全 MAJOR inline 修复；MINOR 按"延后 Stage D alembic"或 "implementer 备忘"处理。
+
+**关键 MAJOR**：
+- MAJOR A 跨表租户一致性：方案 1 PL/pgSQL 触发器（拒绝方案 2 GENERATED STORED 不支持跨表 / 方案 3 复合 FK 需改 users/devices UNIQUE）
+- MAJOR B Company/Department 快照语义：INSERT-fill + 允许覆盖 + UPDATE 不同步
+- MAJOR C partial unique 4 元改 2 元（语义弱：像素级唯一 → "同页同设备只配 1 个热点"）
 
 ---
 
