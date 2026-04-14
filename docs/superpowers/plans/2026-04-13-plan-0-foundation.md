@@ -2461,6 +2461,28 @@ git commit -m "feat(shared): SQLAlchemy Base + Timestamp/SoftDelete mixins"
 
 > 由于 Task C2 ~ C21 每张表都遵循同样的 TDD 模式，这里为每张表给出完整可照做的 task 模板（Step 3 的代码段是实际要写入的内容）。
 
+> **⚠️ 命名约定铁律（C2 起所有表必须遵守）**
+>
+> C1 引入的 `Base.metadata.naming_convention` 模板为：
+> - `ck`: `"ck_%(table_name)s_%(constraint_name)s"`
+> - `uq`: `"uq_%(table_name)s_%(column_0_name)s"`
+> - `fk`: `"fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s"`
+> - `pk`: `"pk_%(table_name)s"`
+> - `ix`: `"ix_%(column_0_label)s"`
+>
+> SQLAlchemy 会把 `CheckConstraint(..., name=X)` 的 `X` 代入 `%(constraint_name)s`。所以：
+>
+> - ✅ `CheckConstraint(..., name="user_name_format")` → 最终 `ck_users_user_name_format`
+> - ❌ `CheckConstraint(..., name="ck_users_user_name_format")` → 最终 `ck_users_ck_users_user_name_format`（双叠）
+> - ✅ `UniqueConstraint("a", "b", name="a_b")` → 最终 `uq_<tbl>_a_b`
+> - ❌ `UniqueConstraint("a", "b", name="uq_tbl_a_b")` → 最终双叠
+>
+> **铁律**：CheckConstraint / UniqueConstraint 的 `name=` 一律写**裸名**（不含 `ck_/uq_/fk_` 前缀）。
+>
+> Index 不同 —— `Index("idx_xxx", col)` 的第一参是字面索引名，naming_convention **不对其重写**；保留原 `idx_*` 显式命名。
+>
+> 测试里断言的是**最终生成名**（`ck_users_user_name_format` 等），与代码里的裸名（`"user_name_format"`）**经 naming_convention 展开后**一致。
+
 ## Task C2：wx_groups 模型
 
 **Files:**
@@ -2567,11 +2589,11 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     __table_args__ = (
         CheckConstraint(
             r"user_name ~ '^1[3-9][0-9]{9}$' OR user_name ~ '^[a-zA-Z][a-zA-Z0-9_]{3,29}$'",
-            name="ck_users_user_name_format",
+            name="user_name_format",  # naming_convention 会前缀 ck_users_
         ),
         CheckConstraint(
             "authority IN ('Administrators','GroupCompany','Company','User')",
-            name="ck_users_authority",
+            name="authority",  # naming_convention 会前缀 ck_users_
         ),
         Index("idx_users_tenant", "usr_group"),
     )
@@ -2650,18 +2672,18 @@ from .base import Base, SoftDeleteMixin, TimestampMixin
 class Device(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "devices"
     __table_args__ = (
-        UniqueConstraint("dev_ser_number", "iccid", name="uq_devices_ser_iccid"),
+        UniqueConstraint("dev_ser_number", "iccid", name="ser_iccid"),  # → uq_devices_ser_iccid (naming_convention 处理前缀)
         CheckConstraint(
             "update_interval_decisec BETWEEN 10 AND 1000",
-            name="ck_devices_poll_interval",
+            name="poll_interval",  # → ck_devices_poll_interval
         ),
         CheckConstraint(
             "modbus_addr BETWEEN 1 AND 247",
-            name="ck_devices_modbus_addr",
+            name="modbus_addr",  # → ck_devices_modbus_addr
         ),
         CheckConstraint(
             "baud_rate IN (9600, 19200, 38400, 57600, 115200)",
-            name="ck_devices_baud_rate",
+            name="baud_rate",  # → ck_devices_baud_rate
         ),
         Index("idx_devices_tenant", "usr_group"),
         Index("idx_devices_admin", "administrators"),
@@ -2707,8 +2729,8 @@ class Device(Base, TimestampMixin, SoftDeleteMixin):
 class DevicePoint(Base, TimestampMixin):
     __tablename__ = "device_points"
     __table_args__ = (
-        CheckConstraint("point_number BETWEEN 0 AND 65535", name="ck_points_point_number"),
-        CheckConstraint("fun_code IN (1,2,3,4)", name="ck_points_fun_code"),
+        CheckConstraint("point_number BETWEEN 0 AND 65535", name="point_number"),  # → ck_device_points_point_number
+        CheckConstraint("fun_code IN (1,2,3,4)", name="fun_code"),  # → ck_device_points_fun_code
         Index("idx_points_dev", "dev_number"),
     )
 
