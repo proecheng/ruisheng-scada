@@ -5,6 +5,7 @@ B2 onwards will append imports here incrementally as each enum file is added.
 
 from .alarm_action import AlarmAction
 from .alarm_type import AlarmType
+from .control_status import ControlStatus
 from .fun_code import FunCode
 
-__all__: list[str] = ["AlarmAction", "AlarmType", "FunCode"]
+__all__: list[str] = ["AlarmAction", "AlarmType", "ControlStatus", "FunCode"]
