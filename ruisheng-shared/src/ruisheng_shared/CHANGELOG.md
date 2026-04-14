@@ -13,6 +13,7 @@
 - feature: SQLAlchemy Base + TimestampMixin + SoftDeleteMixin
 - internal: add naming_convention to Base.metadata for Alembic constraint name stability
 - feature: add WxGroup (wx_groups) tenant model
+- feature: add User + UserWxBinding + UserPhoneNumber + UserEmail models
 
 ## 2026-04-13 v0.1.0
 

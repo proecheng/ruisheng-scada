@@ -4,5 +4,15 @@
 
 from .base import Base, SoftDeleteMixin, TimestampMixin
 from .tenants import WxGroup
+from .users import User, UserEmail, UserPhoneNumber, UserWxBinding
 
-__all__ = ["Base", "SoftDeleteMixin", "TimestampMixin", "WxGroup"]
+__all__ = [
+    "Base",
+    "SoftDeleteMixin",
+    "TimestampMixin",
+    "User",
+    "UserEmail",
+    "UserPhoneNumber",
+    "UserWxBinding",
+    "WxGroup",
+]
