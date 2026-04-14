@@ -2409,7 +2409,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 # 必须在 C2 之前定型，否则后续重命名会触发大量迁移。
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
-    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "uq": "uq_%(table_name)s_%(constraint_name)s",  # 需要显式 UniqueConstraint(name=...)，不能只靠 unique=True
     "ck": "ck_%(table_name)s_%(constraint_name)s",
     "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
     "pk": "pk_%(table_name)s",
@@ -2477,7 +2477,9 @@ git commit -m "feat(shared): SQLAlchemy Base + Timestamp/SoftDelete mixins"
 > - ✅ `UniqueConstraint("a", "b", name="a_b")` → 最终 `uq_<tbl>_a_b`
 > - ❌ `UniqueConstraint("a", "b", name="uq_tbl_a_b")` → 最终双叠
 >
-> **铁律**：CheckConstraint / UniqueConstraint 的 `name=` 一律写**裸名**（不含 `ck_/uq_/fk_` 前缀）。
+> **铁律 1**：CheckConstraint / UniqueConstraint 的 `name=` 一律写**裸名**（不含 `ck_/uq_/fk_` 前缀）。
+>
+> **铁律 2**：**不要**使用列上的 `unique=True`，因为 uq 模板用 `%(constraint_name)s` 需要显式名。改写为独立 `UniqueConstraint(col, name="col")`（放在 `__table_args__`）。
 >
 > Index 不同 —— `Index("idx_xxx", col)` 的第一参是字面索引名，naming_convention **不对其重写**；保留原 `idx_*` 显式命名。
 >
@@ -2578,7 +2580,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, SoftDeleteMixin, TimestampMixin
@@ -2595,11 +2597,12 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
             "authority IN ('Administrators','GroupCompany','Company','User')",
             name="authority",  # naming_convention 会前缀 ck_users_
         ),
+        UniqueConstraint("user_name", name="user_name"),  # 铁律 2：不用 unique=True，显式 UQ 才能被 naming_convention 正确命名 → uq_users_user_name
         Index("idx_users_tenant", "usr_group"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    user_name: Mapped[str] = mapped_column(String(50), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     login_name: Mapped[str | None] = mapped_column(String(50))
     group_company: Mapped[str | None] = mapped_column(String(100))
