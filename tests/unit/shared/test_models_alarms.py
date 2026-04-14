@@ -102,14 +102,16 @@ def test_alarm_records_channels_sent_jsonb() -> None:
 
 
 def test_alarm_records_index_dev_triggered() -> None:
-    # Find an index covering (dev_number, triggered_at) with triggered_at DESC
-    found = False
-    for ix in AlarmRecord.__table__.indexes:
-        col_names = [c.name for c in ix.columns]
-        if col_names == ["dev_number", "triggered_at"]:
-            found = True
-            break
-    assert found, "missing composite index on (dev_number, triggered_at DESC)"
+    # Spec DDL: CREATE INDEX ON alarm_records (dev_number, triggered_at DESC);
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    idx = next(
+        ix for ix in AlarmRecord.__table__.indexes if ix.name == "idx_alarm_records_dev_triggered"
+    )
+    ddl = str(CreateIndex(idx).compile(dialect=postgresql.dialect()))
+    assert "dev_number" in ddl
+    assert "triggered_at DESC" in ddl
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -79,7 +80,7 @@ class AlarmRecord(Base):
         Index(
             "idx_alarm_records_dev_triggered",
             "dev_number",
-            "triggered_at",
+            text("triggered_at DESC"),
         ),
     )
 
