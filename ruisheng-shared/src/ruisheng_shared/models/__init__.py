@@ -6,6 +6,7 @@ from .alarms import AlarmOutbox, AlarmRecord, DeviceWaringCfg
 from .base import Base, SoftDeleteMixin, TimestampMixin
 from .control import UserControlAction
 from .devices import Device, DevicePoint, DeviceStaticData, DeviceTemplate, SimCard
+from .plans import MaintainAction, MaintainPlan, TimingPlan
 from .tenants import WxGroup
 from .users import User, UserEmail, UserPhoneNumber, UserWxBinding
 
@@ -18,9 +19,12 @@ __all__ = [
     "DeviceStaticData",
     "DeviceTemplate",
     "DeviceWaringCfg",
+    "MaintainAction",
+    "MaintainPlan",
     "SimCard",
     "SoftDeleteMixin",
     "TimestampMixin",
+    "TimingPlan",
     "User",
     "UserControlAction",
     "UserEmail",

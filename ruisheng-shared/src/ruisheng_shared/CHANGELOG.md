@@ -19,6 +19,7 @@
 - feature: add DeviceWaringCfg + AlarmRecord + AlarmOutbox models (spec §3.8)
 - feature: add UserControlAction (user_control_actions) model — control command audit log, spec §3.5, hypertable-ready (no FK on dev_number/user_name)
 - fix: tighten Mapped[dict] to Mapped[dict[str, Any]] on Device.last_state / DeviceTemplate.payload (mypy --strict)
+- C7: plans.py (TimingPlan / MaintainPlan / MaintainAction) — spec v1.3.3 §4.2 完整 DDL；action_uuid 幂等键；保养 next_due_at 60s 容差。
 
 ## 2026-04-13 v0.1.0
 
