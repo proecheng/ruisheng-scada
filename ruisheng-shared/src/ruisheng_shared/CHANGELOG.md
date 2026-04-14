@@ -11,6 +11,7 @@
 ## 2026-04-14
 
 - feature: SQLAlchemy Base + TimestampMixin + SoftDeleteMixin
+- internal: add naming_convention to Base.metadata for Alembic constraint name stability
 
 ## 2026-04-13 v0.1.0
 
