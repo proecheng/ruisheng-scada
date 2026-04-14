@@ -35,6 +35,12 @@ _HTTP_MAP: dict[ErrCode, int] = {
     ErrCode.DEV_CRC_FAIL: 200,
     ErrCode.INTERNAL: 500,
     ErrCode.DB_UNAVAILABLE: 503,
+    ErrCode.PAY_SIGN_FAIL: 400,
+    ErrCode.PAY_DUPLICATE: 200,
+    ErrCode.PAY_STATE_CONFLICT: 409,
+    ErrCode.PAY_AMOUNT_MISMATCH: 409,
+    ErrCode.PAY_EXPIRED: 409,
+    ErrCode.PAY_REFUND_FAIL: 502,
 }
 
 

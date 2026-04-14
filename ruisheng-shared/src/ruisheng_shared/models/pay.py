@@ -52,6 +52,7 @@ class PayOrder(Base, TimestampMixin, SoftDeleteMixin):
 
     PK 例外（§4.6）：out_trade_no 直接作 PK；无 id BIGSERIAL 列。
     openid 无 CHECK（CHECK 交 pydantic，见 spec §4.2 注释 + D3 决策）。
+    mark_paid(db, out_trade_no, total_fee, time_end) → §3.5；db 参数为 gw_pool 连接（BYPASSRLS）
     """
 
     __tablename__ = "pay_orders"
@@ -62,6 +63,8 @@ class PayOrder(Base, TimestampMixin, SoftDeleteMixin):
             name="total_fee_nonneg",  # → ck_pay_orders_total_fee_nonneg
         ),
         # (2) pay_state 枚举 6 值
+        # 终态：paid / refund / cancelled / expired（不可再转 paid）
+        # 非终态：pending / failed（回调成功后可转 paid）
         CheckConstraint(
             "pay_state IN ('pending','paid','failed','refund','cancelled','expired')",
             name="pay_state",  # → ck_pay_orders_pay_state
@@ -138,6 +141,7 @@ class PayOrderSeen(Base):
             "notified_at",
             postgresql_using="brin",
         ),
+        # 时序追加 + 30d TTL 清理，BRIN 压缩率高（vs BTREE 需按时间全量索引）
     )
 
     out_trade_no: Mapped[str] = mapped_column(String(50), primary_key=True)

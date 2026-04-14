@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+from ruisheng_shared.errors import BizError, ErrCode
 from ruisheng_shared.models.pay import PayOrder, PayOrderSeen
 
 # ---------------------------------------------------------------------------
@@ -35,6 +37,7 @@ def test_pay_order_out_trade_no_string() -> None:
     col = PayOrder.__table__.columns["out_trade_no"]
     assert isinstance(col.type, String)
     assert col.primary_key is True
+    assert col.type.length == 50
 
 
 def test_pay_order_openid_string100_not_null() -> None:
@@ -104,6 +107,7 @@ def test_pay_order_paid_at_nullable() -> None:
 
     col = PayOrder.__table__.columns["paid_at"]
     assert isinstance(col.type, DateTime)
+    assert col.type.timezone is True
     assert col.nullable is True
 
 
@@ -112,6 +116,7 @@ def test_pay_order_refund_at_nullable() -> None:
 
     col = PayOrder.__table__.columns["refund_at"]
     assert isinstance(col.type, DateTime)
+    assert col.type.timezone is True
     assert col.nullable is True
 
 
@@ -287,6 +292,7 @@ def test_pay_order_seen_out_trade_no_type() -> None:
     col = PayOrderSeen.__table__.columns["out_trade_no"]
     assert isinstance(col.type, String)
     assert col.primary_key is True
+    assert col.type.length == 50
 
 
 def test_pay_order_seen_notified_at_not_null() -> None:
@@ -294,6 +300,7 @@ def test_pay_order_seen_notified_at_not_null() -> None:
 
     col = PayOrderSeen.__table__.columns["notified_at"]
     assert isinstance(col.type, DateTime)
+    assert col.type.timezone is True
     assert col.nullable is False
 
 
@@ -373,3 +380,49 @@ def test_errcode_pay_refund_fail() -> None:
     from ruisheng_shared.errors import ErrCode
 
     assert ErrCode.PAY_REFUND_FAIL == -405
+
+
+# ---------------------------------------------------------------------------
+# BizError.http_status — PAY_* HTTP 状态码映射
+# ---------------------------------------------------------------------------
+
+
+def test_pay_errcode_sign_fail_http_status() -> None:
+    assert BizError(ErrCode.PAY_SIGN_FAIL, "").http_status == 400
+
+
+def test_pay_errcode_duplicate_http_status() -> None:
+    assert BizError(ErrCode.PAY_DUPLICATE, "").http_status == 200
+
+
+def test_pay_errcode_state_conflict_http_status() -> None:
+    assert BizError(ErrCode.PAY_STATE_CONFLICT, "").http_status == 409
+
+
+def test_pay_errcode_amount_mismatch_http_status() -> None:
+    assert BizError(ErrCode.PAY_AMOUNT_MISMATCH, "").http_status == 409
+
+
+def test_pay_errcode_expired_http_status() -> None:
+    assert BizError(ErrCode.PAY_EXPIRED, "").http_status == 409
+
+
+def test_pay_errcode_refund_fail_http_status() -> None:
+    assert BizError(ErrCode.PAY_REFUND_FAIL, "").http_status == 502
+
+
+# ---------------------------------------------------------------------------
+# Stage D/E 占位 skip-tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skip(reason="Stage D alembic integration: GRANT pay_orders_seen TO ruisheng_gw")
+def test_pay_orders_seen_gw_grant_stage_d() -> None:
+    """占位：Stage D 验证 GRANT INSERT,SELECT,DELETE ON pay_orders_seen TO ruisheng_gw.
+    预期：ruisheng_gw 角色可写 pay_orders_seen；ruisheng_api 只读（§4.2 v1.3.5）"""
+
+
+@pytest.mark.skip(reason="Stage D/E integration: pay_orders_seen 30-day cleanup job")
+def test_pay_orders_seen_cleanup_job_stage_de() -> None:
+    """占位：Stage D/E 验证 pay_orders_seen 清理 Job 行为（§5.10.3）.
+    预期：ruisheng_gw 每日 02:00 DELETE notified_at < now()-30d；连续 2 日 0 行 → P2 告警"""
