@@ -1,6 +1,6 @@
 # 江苏润盛 IoT 监控平台 — 重做设计文档
 
-> **版本**：v1.3.5 / 2026-04-14
+> **版本**：v1.3.6 / 2026-04-15
 > **状态**：5 角色审查合并 + 一致性轮 + 边界/数据流轮 全部完成；等待最终 ack → writing-plans
 > **关联文档**：
 > - 需求基线：`D:\江苏润盛\需求清单\功能全景清单.md` v2.2（1609 行）
@@ -1380,16 +1380,76 @@ REVOKE ALL ON pay_orders_seen FROM PUBLIC;
 GRANT INSERT, SELECT, DELETE ON pay_orders_seen TO ruisheng_gw;
 GRANT SELECT                  ON pay_orders_seen TO ruisheng_api;
 
+-- soft_logs（v1.3.6 增强：+source 字段 + level CHECK + 索引 + 压缩 + 权限）
+-- 无 usr_group / 无 RLS：系统级审计，类比 pay_orders_seen（§3.6 L664 L2–L4 读走 RBAC 不走 DB RLS）
+-- 无 updated_at / 无 deleted_at：INSERT-only；retention policy 负责清理
 CREATE TABLE soft_logs (
   id          BIGSERIAL PRIMARY KEY,
-  level       VARCHAR(10) NOT NULL,
+  level       VARCHAR(10) NOT NULL
+              CHECK (level IN ('WARN','ERROR','CRITICAL')),   -- §5.12: 只有这 3 级写入 DB
+  source      VARCHAR(20) NOT NULL
+              CHECK (source IN ('gw','api','worker')),        -- 来源进程（worker 预留未来调度进程）
   msg         VARCHAR(500) NOT NULL,
-  context     JSONB,
+  context     JSONB,                                          -- JSON 结构见 §5.12.2 (trace_id/span_id/dev_number 等)
   recorded_at timestamptz NOT NULL DEFAULT now()
 );
 SELECT create_hypertable('soft_logs', 'recorded_at',
   chunk_time_interval => INTERVAL '1 month');
 SELECT add_retention_policy('soft_logs', INTERVAL '1 year');
+ALTER TABLE soft_logs SET (timescaledb.compress);
+SELECT add_compression_policy('soft_logs', INTERVAL '7 days');
+
+CREATE INDEX ix_soft_logs_level_recorded_at
+  ON soft_logs (level, recorded_at DESC);
+CREATE INDEX ix_soft_logs_source_recorded_at
+  ON soft_logs (source, recorded_at DESC);
+
+REVOKE ALL ON soft_logs FROM PUBLIC;
+GRANT INSERT         ON soft_logs TO ruisheng_gw;
+GRANT INSERT, SELECT ON soft_logs TO ruisheng_api;
+
+-- user_login_records（v1.3.6 新增：Web 端登录审计；hypertable；多租户 RLS）
+-- 旧表映射：UserLoginRecord (UserName, LoginTime, IP, City, UA) → snake_case + success/usr_group
+-- 写入：ruisheng_api（POST /api/auth/login）
+-- 无 updated_at / 无 deleted_at：INSERT-only 审计；retention policy 清理
+-- user_name 弱引用（无 FK）：审计永久留痕；用户软删/注销后记录保留（类比 maintain_actions.dev_number）
+CREATE TABLE user_login_records (
+  id          BIGSERIAL PRIMARY KEY,
+  user_name   VARCHAR(50) NOT NULL,                          -- 弱引用：审计永久留痕，用户软删后仍可审计
+  logged_at   timestamptz NOT NULL DEFAULT now(),            -- hypertable 时间维度
+  ip_addr     INET NOT NULL,                                 -- 支持 IPv4/IPv6；迁移时旧 VARCHAR::INET
+  city        VARCHAR(100),                                  -- GeoIP 解析，失败时 NULL
+  user_agent  VARCHAR(500),                                  -- HTTP User-Agent，nullable
+  success     BOOLEAN NOT NULL DEFAULT true,                 -- 失败登录也记录（§5.13 限流审计）
+  usr_group   VARCHAR(50) NOT NULL
+              REFERENCES wx_groups(usr_group) ON DELETE RESTRICT  -- 多租户；冗余存（审计永久可查）
+);
+SELECT create_hypertable('user_login_records', 'logged_at',
+  chunk_time_interval => INTERVAL '1 month');
+SELECT add_retention_policy('user_login_records', INTERVAL '3 years');   -- 安全合规审计，对齐 user_control_actions
+ALTER TABLE user_login_records SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'usr_group'
+);
+SELECT add_compression_policy('user_login_records', INTERVAL '7 days');
+
+CREATE INDEX ix_user_login_records_usr_group_logged_at
+  ON user_login_records (usr_group, logged_at DESC);
+CREATE INDEX ix_user_login_records_user_name_logged_at
+  ON user_login_records (user_name, logged_at DESC);
+-- 失败 IP 安全分析（§5.13 限流；partial index 只对失败行）
+CREATE INDEX ix_user_login_records_ip_fail
+  ON user_login_records (ip_addr, logged_at DESC)
+  WHERE NOT success;
+
+ALTER TABLE user_login_records ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON user_login_records USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
+);
+
+REVOKE ALL ON user_login_records FROM PUBLIC;
+GRANT INSERT, SELECT ON user_login_records TO ruisheng_api;
 
 -- scene_pages（v1.3.4 新增：组态画面模板；旧映射 ZTPageInf 非直通）
 -- TODO(Q-B08): 待澄清
@@ -1554,7 +1614,8 @@ COMMENT ON COLUMN scene_views.department IS
 | `His<YYYYMM>` 历史 | `point_data_history` + 波形入 `waveform_history` | 按 `data_array` 是否非空分流 |
 | `PhoneAlarmRecord` + `WXAlarmRecord` | `alarm_records` 合表 | `channels_sent` JSONB 按来源填 `{sms:"ok"}` / `{wechat:"ok"}` |
 | `PayOrder` | `pay_orders` | **非直通**（v1.3.5）：`usr_group` 从 `user_wx_bindings(openid).usr_group` 反查填入（找不到 → pgloader RAISE EXCEPTION 阻塞，不接受兜底租户；运维须 T-24h dry-run 提前列出 orphan）；`updated_at = created_at`；`paid_at` 保留旧值；`refund_at / deleted_at` = NULL；旧 `pay_state='refund'` 且无 refund_at → 以 `paid_at` 填补（历史订单无精确退款时间） |
-| `SoftLog` | `soft_logs` | 直通 |
+| `SoftLog` | `soft_logs` | **直通/无历史数据**（v1.3.6）：旧 `ModBus.mdf` 中若无 `SoftLog` 表或为空表则跳过；若有历史行：`Msg → msg`；`EnterTime → recorded_at`；`level` 默认填 `'WARN'`；`source → 'api'`；`context = NULL`；写入前 DISABLE level/source CHECK，写入后 ENABLE |
+| `UserLoginRecord` | `user_login_records` | **非直通**（v1.3.6）：`UserName → user_name`；`LoginTime → logged_at`；`IP → ip_addr::INET`（格式错误 RAISE EXCEPTION 阻塞）；`City → city`；`UA → user_agent`；`success = true`（旧记录均成功登录）；`usr_group` 从 `users(UserName).usr_group` 反查，找不到 pgloader RAISE EXCEPTION 阻塞，T-24h dry-run 提前暴露 orphan |
 | `TimingPlan` | `timing_plans` | **非直通**（v1.3.3）：usr_group 从 `devices.usr_group` 按 `dev_number` 反查填入；`deleted_at = null`；`updated_at = created_at`；`DEL_xxx_ts` 前缀记录转 `deleted_at` |
 | `ZTPageInf` | `scene_pages` | **非直通**（v1.3.4）：`UserName → owner_user_name`；`usr_group` 从 `users(OwnerUserName).usr_group` 反查填入；`EnterTime → created_at`（保留旧值，不覆盖）；`deleted_at = null`；`updated_at = created_at`；`SonPagePic` 文件从旧目录上传对象存储并重写为 `s3://{bucket}/{usr_group}/scene/{page_id}/sonpage.{ext}` key；坐标若旧库为 INT 则 `::NUMERIC(10,2)` |
 | `ZTViewInf` | `scene_views` | **非直通**（v1.3.4）：`UserName → owner_user_name`；`usr_group` 反查同上；`company` / `department` 若旧库缺失则从 `users` 快照（触发器 §4.1.1 (5) 兜底）；`scene_page_id` 两步映射：`(ZTViewInf.PageName, OwnerUserName, usr_group) → scene_pages.id`（找不到记 DLQ 人工 review）；`dev_number` 按 `devices.dev_number` 校验（找不到跳过） |
@@ -2857,6 +2918,11 @@ T+3min+3s 设备 ACK 停机 → 成功通知用户
   - (6) Q-B08（子页面层级 / 背景图分辨率 / SVG 支持）保留为 §4.2 DDL 块顶部 TODO 注释，不阻塞 Plan 0；业务确认后再补 `parent_id` 列
   - (7) 本轮审查产出 0 BLOCKER + 3 MAJOR + 5 MINOR，全部 MAJOR 已落地本次 commit（MAJOR-A 租户一致性触发器、MAJOR-B Company/Department 快照语义、MAJOR-C partial unique 字段从 (scene_page_id, dev_number, pos_x, pos_y) 收敛到 (scene_page_id, dev_number)）；MINOR 按"Alembic include_object 过滤"等 implementer 备忘处理
   - implementer 备忘：Alembic autogenerate 对 partial unique + COLLATE "zh-x-icu" 列的幽灵 diff 处理见 C7 v1.3.3 MAJOR #1 同款 `include_object` 过滤
+- **v1.3.6 / 2026-04-15**：**日志表 DDL 补强（Plan 0 Stage C Task C10 派发前 1 轮审查产出）**。`SHARED_SCHEMA_VERSION` 在 C10 implementer fixup commit 时 bump `20260415 → 20260416`（新增 SoftLog + UserLoginRecord ORM model）。关键修订：
+  - (1) **§4.2 soft_logs 增强**：新增 `source VARCHAR(20) CHECK ('gw','api','worker')` 字段；`level` 补 CHECK `IN ('WARN','ERROR','CRITICAL')`（§5.12 规定）；添加 `ix_soft_logs_level_recorded_at` + `ix_soft_logs_source_recorded_at` 两个索引；补压缩策略（7 天后自动压缩）；补 REVOKE/GRANT 权限声明
+  - (2) **§4.2 user_login_records 新增**：旧表 `UserLoginRecord(UserName, LoginTime, IP, City, UA)` 升级到多租户标准：`ip_addr INET`（支持 IPv4/IPv6）；新增 `success BOOLEAN`（失败登录也记录，§5.13 限流）；`usr_group` FK 到 wx_groups + RLS `tenant_isolation`；`user_name` **弱引用**（无 FK，类比 maintain_actions；审计永久留痕）；3 年保留期（安全合规，对齐 user_control_actions）；按 usr_group 压缩分段；3 个索引（租户历史 / 用户历史 / 失败 IP partial）
+  - (3) **§4.5** SoftLog "直通" 改 "直通/无历史数据" + 补条件；UserLoginRecord 改"非直通" + usr_group 反查 + IP INET 转换 + success 默认 true
+  - 设计审查 1 轮，0 BLOCKER + 2 MAJOR + 4 MINOR；采纳 B2 建议（弱引用）；MAJOR M1（source 枚举扩展点）保留 CHECK 接受 ALTER 代价
 - **v1.3.5 / 2026-04-14**：**支付模块 DDL 补强轮（Plan 0 Stage C Task C9 派发前 2 轮审查产出）**。`SHARED_SCHEMA_VERSION` bump `20260414 → 20260415`（breaking：新增 pay_orders ORM + §5.1 PAY_* ErrCode 6 项）。关键修订：
   - (1) **§4.2 pay_orders 重写**：新增 usr_group FK + RLS tenant_isolation policy（NOT FORCE；回调走 ruisheng_gw BYPASSRLS）；pay_state 扩至 6 值（+cancelled +expired）；新增 updated_at / deleted_at / refund_at；biconditional CK `(pay_state='paid')=(paid_at IS NOT NULL)` + refund_at 非空 ⇒ paid_at 非空 + refund_at ≥ paid_at；3 个 partial index（usr_group+created / openid+created / pending+created 用于 expired scan）
   - (2) **§4.2 pay_orders_seen 搬入 §4.2**（原 §3.5 片段）：无 usr_group 无 RLS，角色授权 + BRIN(notified_at)；30 天 TTL 见 §5.10
