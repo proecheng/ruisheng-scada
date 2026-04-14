@@ -80,3 +80,4 @@ secrets/
 # ----- Claude / 会话缓存 -----
 .claude/projects/
 .claude/tasks/
+.claude/worktrees/
