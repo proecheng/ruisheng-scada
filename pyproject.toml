@@ -18,8 +18,10 @@ dev-dependencies = [
   "hypothesis>=6.100",
   "ruff>=0.5",
   "mypy>=1.11",
+  "pydantic>=2.7",
   "pre-commit>=3.7",
   "testcontainers[postgres,redis]>=4.7",
+  "asyncpg>=0.29",
   "taskipy>=1.13",
   "fakeredis>=2.23",
 ]
