@@ -2811,7 +2811,7 @@ class DeviceTemplate(Base, TimestampMixin):
   - `result` CHECK 枚举 5 值
   - `cmd_id` UNIQUE
   - 双索引 `(dev_number, acted_at DESC)` / `(user_name, acted_at DESC)`
-  - `CheckConstraint("(result = 'paid') = (completed_at IS NOT NULL)")` — 类比 pay_orders
+  - `CheckConstraint("(result = 'pending') = (completed_at IS NULL)", name="result_completed_consistency")` — 类比 pay_orders 的 `pay_state`/`paid_at` 一致性；spec DDL 未加但 §3.5 状态机要求终态必有 completed_at（plan bug fix 2026-04-14：原写法误用 'paid'，但 result 合法值是 pending/success/failed/timeout/cancelled，不存在 'paid'）
 - **plans.py**: `TimingPlan` / `MaintainPlan` / `MaintainAction`
 - **scenes.py**: `ScenePage` / `SceneView`
 - **pay.py**: `PayOrder`（带 `total_fee >= 0` 和 `(pay_state='paid') = (paid_at IS NOT NULL)`）/ `PayOrderSeen`
