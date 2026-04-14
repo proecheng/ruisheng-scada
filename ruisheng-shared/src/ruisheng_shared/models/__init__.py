@@ -7,6 +7,8 @@ from .base import Base, SoftDeleteMixin, TimestampMixin
 from .control import UserControlAction
 from .devices import Device, DevicePoint, DeviceStaticData, DeviceTemplate, SimCard
 from .plans import MaintainAction, MaintainPlan, TimingPlan
+
+# NOTE: ScenePage / SceneView 仅 api 服务使用；gw（后台采集/控制）不得 import（spec §3.7）
 from .scenes import ScenePage, SceneView
 from .tenants import WxGroup
 from .users import User, UserEmail, UserPhoneNumber, UserWxBinding

@@ -21,6 +21,7 @@
 - fix: tighten Mapped[dict] to Mapped[dict[str, Any]] on Device.last_state / DeviceTemplate.payload (mypy --strict)
 - breaking: SHARED_SCHEMA_VERSION 20260413 → 20260414 (spec v1.3.3 §4.2: new maintain_plans/maintain_actions + timing_plans rewrite with usr_group/deleted_at/updated_at/RLS)
 - feature: add TimingPlan + MaintainPlan + MaintainAction models (spec §4.2 v1.3.3); action_uuid ULID idempotency key; maintain_plans next_due_at 60s clock-drift tolerance
+- feature: add ScenePage + SceneView models (spec §4.2 v1.3.4); partial UNIQUE `(usr_group, owner_user_name, page_name)` / `(scene_page_id, dev_number)` WHERE `deleted_at IS NULL`; zh-x-icu collation on `page_name` / `sonpage_name`; `pos_x`/`pos_y` Numeric(10,2) + sanity bounds CHECK; `radius` Numeric(8,2) CHECK (0.01–100000); PL/pgSQL triggers `enforce_scene_tenant_consistency` / `fill_scene_views_snapshot` deferred to Stage D alembic (spec §4.1.1 (4)(5)); SHARED_SCHEMA_VERSION unchanged (non-breaking DB schema extension; no shared Pydantic/enum impact)
 
 ## 2026-04-13 v0.1.0
 

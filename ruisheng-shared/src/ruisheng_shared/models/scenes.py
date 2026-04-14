@@ -23,6 +23,15 @@
 CI lint 扫描 gw 代码库 SQL 字面量禁出现这两张表名，违规 P0 阻塞合并。
 
 **ZTPageInf / ZTViewInf 迁移**（§4.5）：旧表映射非直通，一次性 ETL 导入。
+
+WARN（运行期语义，非 Python 层校验）：
+
+- 父 ``ScenePage`` 软删不级联 ``SceneView``，API 层需批量软删（spec §3.7 禁止
+  ``ON DELETE CASCADE``；软删使用 ``deleted_at`` 时间戳而非物理删除）。
+- 触发器 ``enforce_scene_tenant_consistency`` 读 ``users.usr_group`` 时不过滤
+  ``deleted_at``；owner 用户软删后，已存在的 ``SceneView`` 行仍可 UPDATE 成功。
+- Q-B08 TODO（子页面多级树形 / 背景图分辨率限制 / SVG 支持）：当前直通单层
+  ``sonpage_name`` + ``sonpage_pic``；多级化需加 ``parent_id`` + 防环 CHECK。
 """
 
 from __future__ import annotations
@@ -119,6 +128,7 @@ class SceneView(Base, TimestampMixin, SoftDeleteMixin):
         Index("ix_scene_views_dev_number", "dev_number"),
         Index("ix_scene_views_owner", "owner_user_name"),
         # partial UNIQUE：同页同设备只配 1 个热点；软删后同组合可重建。
+        # 若未来支持同设备多视角，扩展为 (scene_page_id, dev_number, view_kind)
         Index(
             "ux_scene_views_page_dev",
             "scene_page_id",

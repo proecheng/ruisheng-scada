@@ -1,5 +1,6 @@
 """Spec §4.2 scenes: scene_pages / scene_views (v1.3.4)."""
 
+import pytest
 from ruisheng_shared.models.scenes import ScenePage, SceneView
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex
@@ -123,6 +124,7 @@ def test_scene_pages_index_owner() -> None:
 
 
 def test_scene_pages_unique_partial_owner_page_name() -> None:
+    """partial UNIQUE：同租户同归属人内 page_name 唯一，软删后同名可重建（§4.2 DDL）。"""
     idx = next(
         ix for ix in ScenePage.__table__.indexes if ix.name == "ux_scene_pages_owner_page_name"
     )
@@ -209,6 +211,7 @@ def test_scene_views_nullability() -> None:
 
 
 def test_scene_views_scene_page_id_fk_restrict() -> None:
+    """FK ondelete='RESTRICT'（§3.7 软删语义，禁止 CASCADE 物理删除父行）。"""
     col = SceneView.__table__.columns["scene_page_id"]
     fks = list(col.foreign_keys)
     assert len(fks) == 1
@@ -280,6 +283,7 @@ def test_scene_views_index_owner() -> None:
 
 
 def test_scene_views_unique_partial_page_dev() -> None:
+    """partial UNIQUE：同 scene_page 内 dev_number 唯一，软删后同组合可重建（§4.2 DDL）。"""
     idx = next(ix for ix in SceneView.__table__.indexes if ix.name == "ux_scene_views_page_dev")
     assert idx.unique is True
     ddl = str(CreateIndex(idx).compile(dialect=postgresql.dialect()))
@@ -298,8 +302,9 @@ def test_scene_views_has_timestamp_and_soft_delete() -> None:
 
 
 def test_scene_views_company_department_nullable_snapshot() -> None:
-    """展示快照语义（§3.8.18）：API 未传时由 trg_scene_views_fill_snapshot
-    从 users(owner_user_name).company/department 自动填充；故列级可为 NULL。"""
+    """快照列允许 NULL（§3.8.18；触发器 Stage D 兜底填充）：API 未传时由
+    trg_scene_views_fill_snapshot 从 users(owner_user_name).company/department
+    自动填充；故列级可为 NULL。"""
     t = SceneView.__table__
     assert t.columns["company"].nullable is True
     assert t.columns["department"].nullable is True
@@ -313,3 +318,30 @@ def test_models_reexport() -> None:
 
     assert m.ScenePage is ScenePage
     assert m.SceneView is SceneView
+
+
+# ---------------------------------------------------------------------------
+# Stage D alembic integration placeholders（PL/pgSQL 触发器集成测试占位）
+# ---------------------------------------------------------------------------
+@pytest.mark.skip(reason="Stage D alembic integration: enforce_scene_tenant_consistency trigger")
+def test_enforce_scene_tenant_consistency_stage_d() -> None:
+    """占位：待 Stage D alembic 落 PL/pgSQL 触发器后实装。
+
+    预期行为（spec §4.1.1 (4)）：
+    - scene_pages INSERT/UPDATE 时校验 usr_group == users(owner_user_name).usr_group
+    - scene_views INSERT/UPDATE 时额外校验 scene_pages(scene_page_id).usr_group
+      与 devices(dev_number).usr_group 三方一致
+    - 不一致 → RAISE EXCEPTION 'scene_tenant_violation' ERRCODE 23514
+    """
+
+
+@pytest.mark.skip(reason="Stage D alembic integration: fill_scene_views_snapshot trigger")
+def test_fill_scene_views_snapshot_stage_d() -> None:
+    """占位：待 Stage D alembic 落 PL/pgSQL 触发器后实装。
+
+    预期行为（spec §3.8.18 + §4.1.1 (5)）：
+    - BEFORE INSERT ON scene_views：若 NEW.company/department 为 NULL，
+      从 users(owner_user_name) 反查填入
+    - API 层可显式传值覆盖（不强制反查一致）
+    - UPDATE 不自动同步（调岗后保留历史快照）
+    """
