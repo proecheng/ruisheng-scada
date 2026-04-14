@@ -8,6 +8,10 @@
 - `fix:` — 错误修正
 - `chore:` — 重构、重命名、注释（无语义变化）
 
+## 2026-04-14
+
+- feature: SQLAlchemy Base + TimestampMixin + SoftDeleteMixin
+
 ## 2026-04-13 v0.1.0
 
 - chore: 初始版本，SHARED_SCHEMA_VERSION=20260413
