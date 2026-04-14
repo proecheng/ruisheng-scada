@@ -6,6 +6,7 @@ from .alarms import AlarmOutbox, AlarmRecord, DeviceWaringCfg
 from .base import Base, SoftDeleteMixin, TimestampMixin
 from .control import UserControlAction
 from .devices import Device, DevicePoint, DeviceStaticData, DeviceTemplate, SimCard
+from .pay import PayOrder, PayOrderSeen
 from .plans import MaintainAction, MaintainPlan, TimingPlan
 
 # NOTE: ScenePage / SceneView 仅 api 服务使用；gw（后台采集/控制）不得 import（spec §3.7）
@@ -24,6 +25,8 @@ __all__ = [
     "DeviceWaringCfg",
     "MaintainAction",
     "MaintainPlan",
+    "PayOrder",
+    "PayOrderSeen",
     "ScenePage",
     "SceneView",
     "SimCard",
