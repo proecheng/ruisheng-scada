@@ -5,15 +5,15 @@
 
 ---
 
-## 当前状态：Plan 0 Stage C 进行中（8/22）
+## 当前状态：Plan 0 Stage C 进行中（9/22）
 
-**最后更新**：2026-04-14（Stage C C8 完成后）
+**最后更新**：2026-04-14（Stage C C9 完成后）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`2e41292 fix(shared): C8 post-review fixup — CHANGELOG + Stage D skip-tests + semantic warnings`
+**最近 commit**（worktree）：`7517879 fix(shared): C9 post-review fixup — _HTTP_MAP PAY_* + SHARED_SCHEMA_VERSION 20260415 + test coverage`
 **最新 tag**：`plan-0-stage-b-complete`（Stage C 未打 tag）
-**master 最新 commit**：`0daa0d2 docs(spec): v1.3.4 — scene_pages / scene_views DDL + tenant-consistency + snapshot triggers`
-**SHARED_SCHEMA_VERSION**：`20260414`（v1.3.4 保持，非破坏性扩展）
-**测试状态**：189 passed + 2 skipped = 191 collected（Stage B 52 + C1–C7 99 + C8 38 + 2 Stage D 占位 skip）
+**master 最新 commit**：`eebf554 docs(spec): v1.3.5 — pay_orders DDL补强 + pay_orders_seen迁入§4.2 + PAY_* ErrCode`
+**SHARED_SCHEMA_VERSION**：`20260415`（v1.3.5 breaking bump：pay_orders ORM + PAY_* ErrCode 6 项）
+**测试状态**：237 passed + 4 skipped = 241 collected（Stage B 52 + C1–C8 137 + C9 40 + 4 Stage D/E 占位 skip）
 
 ---
 
@@ -45,14 +45,16 @@
 | C6 | UserControlAction | `dfe10cb` + fixup `a7ae395` | 11 tests；单 commit（无 side-fix 混入）；fixup 补 CHANGELOG + 加 biconditional CK 注释 |
 | C7 | TimingPlan + MaintainPlan + MaintainAction | `12bf516` + fixup `171b474` | 36 tests；2 轮审查 → spec v1.3.3（5 BLOCKER + 8 MAJOR inline 修）；fixup 补 SHARED_SCHEMA_VERSION bump + CHANGELOG 前缀 |
 | C8 | ScenePage + SceneView | `4d8950e` + fixup `2e41292` | 38 tests + 2 Stage D 占位 skip；派发前 2 轮 review → spec v1.3.4（0 BLOCKER + 3 MAJOR inline 修，含 scene_* 租户一致性触发器 + 展示快照语义）；post-impl 2 轮 review → fixup（CHANGELOG + 3 语义警示 + skip-test 占位）；SHARED_SCHEMA_VERSION 保持 20260414（非破坏性扩展） |
+| C9 | PayOrder + PayOrderSeen + ErrCode PAY_* | `232d413` + fixup `7517879` | 40 tests + 2 Stage D/E 占位 skip（+ErrCode 6 个）；派发前预检查发现 pay_orders DDL 未升级到 v1.3.3+ 通用规范 → 2 轮 review → spec v1.3.5（支付模块 DDL 补强 + gw_pool 回调路径 + 6 PAY_* ErrCode + §3.8.16 脱敏 + §5.10 两个 Job）；post-impl 2 轮 review → fixup（_HTTP_MAP 补 6 PAY_* + SHARED_SCHEMA_VERSION 20260414→20260415 breaking bump + CHANGELOG + http_status 测试 + skip-test 占位） |
 
-**Stage C 至今发现 6 个 plan bug（已全部反向 fix 到 master）：**
+**Stage C 至今发现 7 个 plan bug（已全部反向 fix 到 master）：**
 
 1. **C1 patch**：Plan 原未加 `Base.metadata.naming_convention`，code review 抓到。加后约束名对 Alembic 稳定。Master `f4e66db`。
 2. **CK/UQ name 双叠**：Plan 原写 `name="ck_users_user_name_format"` → 与 naming_convention 模板叠加成 `ck_users_ck_users_user_name_format`。改为裸名 `name="user_name_format"`。Master `e32493e`。C3 第一次 revert 源于此。
 3. **UQ 模板不支持多列**：原模板 `%(column_0_name)s` 对多列 UQ 只取第一列名，且 `unique=True` 也受影响。改为 `%(constraint_name)s` 并强制所有 UQ 显式 `name=`。Master `8463b94`。C4 第一次 revert 源于此。
 4. **C6 control CK 误值 'paid'**：Plan 原写 `CheckConstraint("(result = 'paid') = (completed_at IS NOT NULL)")`，但 `result` 合法值是 `pending/success/failed/timeout/cancelled`，无 'paid'。改为 `(result = 'pending') = (completed_at IS NULL)`。Master `54e3e6d`。派发前 controller 预检查抓到（未触发 revert）。
 5. **C7 spec §4.2 缺 maintain_* DDL + timing_plans 不完整**：spec §4.3 表清单提了 `maintain_plans / maintain_actions` 但 §4.2 只有 `timing_plans` 原始 12 年前老 DDL（无 usr_group/deleted_at/updated_at/RLS），两张保养表 DDL 完全缺失。Controller 派 2 轮 reviewer（schema + 端到端数据流/UX），抓出 5 BLOCKER（RLS session 变量名、CK 命名双叠、软删+FK 语义、gw BYPASSRLS、并发推进）+ 8 MAJOR（partial unique alembic 幽灵、触发器/policy op.execute、timing_plans breaking、dead update_flag、幂等 action_uuid、user_name 索引、60s 时间容差、FK 命名交 convention）+ 9 MINOR。全部 BLOCKER+MAJOR inline 改入 spec v1.3.3（commit `879629b`），MINOR 按"延后 Plan 2/3"或 spec TODO。SHARED_SCHEMA_VERSION 20260413→20260414（breaking）。
+7. **C9 spec §4.2 pay_orders DDL 未升级到 v1.3.3+ 通用规范**：pay_orders 原始 DDL（v1.3.2 旧版）缺 usr_group / updated_at / deleted_at / refund_at / RLS / 索引；pay_state 仅 4 值无 cancelled/expired；pay_orders_seen 嵌在 §3.5 代码片段而非 §4.2 表定义区。2 轮 reviewer 产出 5 MAJOR（全修）：(A) pay_orders_seen RLS 简化为角色授权 + gw_pool 回调路径；(B) 迁移阻塞方案（拒兜底租户）；(C) SHARED_SCHEMA_VERSION breaking bump；(D) openid 无 CHECK 决策；(E) mark_paid 终态转移收紧至 {pending,failed} → paid。post-impl 两轮 review 另抓 1 BLOCKER（_HTTP_MAP 缺 PAY_*）。spec v1.3.5（commit `eebf554`，+131/-21 行）。SHARED_SCHEMA_VERSION 20260414→20260415（breaking）。
 6. **C8 spec §4.2 缺 scene_pages / scene_views DDL**：spec §4.3 表清单提了"组态 (2): scene_pages, scene_views"，§4.5 L1342 只一行"直通"，但 §4.2 **完整 DDL 区空白**；旧表 `ZTPageInf` / `ZTViewInf` 无 UsrGroup/deleted_at/updated_at/RLS。Controller 派 2 轮 reviewer：第 1 轮产 DDL 初稿 + 抓 Q-B08 TODO；第 2 轮 Controller 追加 2 个 MAJOR（跨表租户一致性不变量 + Company/Department 快照语义），reviewer 回复最终方案（BEFORE INSERT/UPDATE 触发器 `enforce_scene_tenant_consistency` + BEFORE INSERT `fill_scene_views_snapshot`）+ 自抓 3 MAJOR（partial unique 字段从 4 元 `(page_id, dev, pos_x, pos_y)` 收敛到 2 元 `(page_id, dev)`、第 1 轮 §4.5"直通"误判必改非直通、pgloader AFTER LOAD 完整 SQL 块）。总计 0 BLOCKER + 3 MAJOR + 5 MINOR，全部 MAJOR inline 改入 spec v1.3.4（commit `0daa0d2`，+225/-2 行）。SHARED_SCHEMA_VERSION **保持 20260414**（仅 DB schema 扩展，未改 shared Pydantic/enum）。Q-B08（子页面层级 / 背景图分辨率 / SVG 支持）保留为 §4.2 DDL 顶部 TODO。
 
 **Process 教训（2 次 implementer 静默改 spec）：**
