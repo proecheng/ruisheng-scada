@@ -20,11 +20,12 @@
 - **GitHub**：https://github.com/proecheng/ruisheng-scada （Private）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **主分支 commit**（master 最新）：`69b344e chore(git): ignore .claude/worktrees/`
-- **worktree 实施分支 commit**（feature/plan-0-foundation 最新）：`a787cff`
+- **主分支 commit**（master 最新）：`1532507 docs(progress): Stage B complete`
+- **worktree 实施分支 commit**（feature/plan-0-foundation 最新）：`97f38b1 feat(shared): schemas package with generic ApiResponse shell`
 - **两个 worktree**：
-  - `D:/江苏润盛` → master
-  - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation
+  - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
+  - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation（实际代码）
+- **已 push 的 tag**：`plan-0-stage-a-complete`、`plan-0-stage-b-complete`
 
 ---
 
@@ -91,13 +92,13 @@
 
 ## 2026-04-14 结构复核结论（进 Stage B 前）
 
-Stage B-G 复核完成，已做 3 处 Plan 修订：
+Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 master**：
 
 | 位置 | 修订 | commit |
 |---|---|---|
-| Stage D 开头 | 插入 Task **D0**：Docker / docker-compose / PG / TimescaleDB 扩展 / Redis 前置校验（7 steps 具体命令，无 commit，仅验证） | 待 commit |
-| Stage G 末尾 | 新增 Task **G6**：迁移 `[tool.uv] dev-dependencies` → PEP 735 `[dependency-groups]`，顺便再测 `testcontainers[postgres]` 能否自带 `asyncpg`（处理遗留技术债 #1 + #3） | 待 commit |
-| Stage G 末尾 | 新增 Task **G7**：ruisheng-shared release workflow（semver + SHARED_SCHEMA_VERSION + CHANGELOG + GitHub Release，**不发 PyPI**） | 待 commit |
+| Stage D 开头 | 插入 Task **D0**：Docker / docker-compose / PG / TimescaleDB 扩展 / Redis 前置校验（7 steps 具体命令，无 commit，仅验证） | `ba6bfeb` |
+| Stage G 末尾 | 新增 Task **G6**：迁移 `[tool.uv] dev-dependencies` → PEP 735 `[dependency-groups]`，顺便再测 `testcontainers[postgres]` 能否自带 `asyncpg`（处理遗留技术债 #1 + #3） | `ba6bfeb` |
+| Stage G 末尾 | 新增 Task **G7**：ruisheng-shared release workflow（semver + SHARED_SCHEMA_VERSION + CHANGELOG + GitHub Release，**不发 PyPI**） | `ba6bfeb` |
 
 **审查员误判已否决**（不改）：
 - B11 已经是 schemas 骨架（含 ApiResponse 泛型壳 + 2 个测试）→ 无需再插 B12a
@@ -105,7 +106,7 @@ Stage B-G 复核完成，已做 3 处 Plan 修订：
 
 **风险确认**：
 - ✅ docker-compose.dev.yml 用的是 `timescale/timescaledb:2.16.1-pg15`（不是普通 postgres:15），TimescaleDB 扩展风险 **不存在**
-- ⚠️ Docker Desktop 仍未装 — **进 Stage D 前必须装**（Stage B/C 不需要）
+- ⚠️ Docker Desktop 仍未装 — **进 Stage D 前必须装**（Stage C 仍是纯 Python，不受影响）
 
 ---
 
@@ -131,11 +132,18 @@ Stage B-G 复核完成，已做 3 处 Plan 修订：
 
 ## 恢复步骤（下次续跑）
 
-1. 打开 `D:\江苏润盛`，本次重新连接 Claude Code session
+1. 打开 `D:\江苏润盛`，重新连接 Claude Code session
 2. 指向本文件：让 Claude 读 `docs/superpowers/plans/PROGRESS.md` 恢复状态
 3. （可选）同步远端：`cd D:\江苏润盛\.claude\worktrees\plan-0-foundation && git pull`
-4. Claude 按本文件 "下一步待办" 接着从 **Stage B / Task B1** 开始
+4. Claude 按本文件 "下一步待办" 接着从 **Stage C / Task C1（base.py — Declarative Base + 通用 mixin）** 开始
 5. 继续 subagent-driven-development 流程（implementer → spec review → quality review）
+
+### Stage C 快速导航
+
+- Plan 位置：`docs/superpowers/plans/2026-04-13-plan-0-foundation.md` §阶段 C（line 2341+）
+- Task 结构：C1 base.py → C2 wx_groups → C3 users/bindings/phones/emails → C4 devices/points/sims/templates → C5–C20 其余业务表 → C21 __init__ 汇总 → C22 收尾 tag
+- 依赖：Stage B 的 enums（AlarmType / ControlStatus / Authority）直接被 ORM model 的 Enum column 引用
+- 仍是纯 Python（SQLAlchemy + pydantic），不需要 Docker — Docker 仅在 Stage D（alembic migrations）开始需要
 
 ---
 
