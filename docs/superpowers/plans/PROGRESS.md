@@ -5,13 +5,13 @@
 
 ---
 
-## 当前状态：Plan 0 Stage A 完成 + 结构复核已完成，Stage B 待启动
+## 当前状态：Plan 0 Stage B 完成，Stage C 待启动
 
-**最后更新**：2026-04-14（结构复核后）
+**最后更新**：2026-04-14（Stage B 收尾后）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`a787cff chore(dev): add one-shot 'task bootstrap'`
-**最新 tag**：`plan-0-stage-a-complete`（已 push）
-**master 分支待 commit**：Plan 0 本次结构复核修订（D0 + G6 + G7）
+**最近 commit**（worktree）：`97f38b1 feat(shared): schemas package with generic ApiResponse shell`
+**最新 tag**：`plan-0-stage-b-complete`（已 push）
+**master 最新 commit**：`479dcdf docs(plan): fix B10 min_poll_interval formula`
 
 ---
 
@@ -33,6 +33,29 @@
 ### 文档阶段（master 分支）
 
 9 次 commit 从 spec v1.0 → v1.3.2（5 角色审查 + 一致性 + 边界/数据流三轮）+ Plan 0 完整实施计划 2678/4265 行。
+
+### Plan 0 Stage B（feature 分支，12/12 ✅）
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| B1 | enums/__init__.py 骨架 | `b05279d` | 调整为 bare skeleton（B2–B6 增量追加 re-export） |
+| B2 | FunCode 枚举 + normalize | `b8354b9` | 9 tests |
+| B3 | AlarmType 枚举 | `fa1c068` | 7 tests |
+| B4 | AlarmAction + PhoneAlarm 位编解码 | `6a4e1e2` | 3 tests；plan 错算修正见 master `ee8c309` |
+| B5 | ControlStatus 枚举 | `bff1238` | 3 tests |
+| B6 | Authority 4 级 RBAC | `ada7097` | 5 tests |
+| B7 | ErrCode + BizError | `82b3dba` | 4 tests |
+| B8 | constants/protocol.py | `97ad575` | 5 tests |
+| B9 | constants/limits.py | `c82ae9d` | 5 tests |
+| B10 | validators/rs485.py | `841dcb2` | 7 tests；plan 公式 bug 修正见 master `479dcdf` |
+| B11 | schemas/ + ApiResponse | `97f38b1` | 2 tests |
+| B12 | 覆盖率 + tag | tag `plan-0-stage-b-complete` | 52 tests pass，覆盖率 97.24% |
+
+**Stage B 发现 2 个 plan bug（已改 master）：**
+1. B4 测试用 `call_on_reset=False` 但期望 `0x2103`（数学上需 True）→ implementer 静默改了（process 违规）→ controller 后续加了"never silently modify"的 guard，并反向 fix plan
+2. B10 `min_poll_interval_decisec` 原公式 `(ms+999)//100 + 10` 把 ms 按 centisec 除，× 10 offset 也不对 → 所有 5 个测试都 fail → controller 预检查后给 implementer 正确公式 `((ms+999)//1000) * 10`
+
+---
 
 ### Plan 0 Stage A（feature 分支，15/15 ✅）
 
@@ -57,24 +80,6 @@
 ---
 
 ## 下一步待办
-
-### Stage B（12 task，纯 Python，不需 Docker）
-
-按顺序：
-- B1 enums/__init__.py 骨架
-- B2 FunCode 枚举（TDD）
-- B3 AlarmType 枚举
-- B4 AlarmAction 枚举（PhoneAlarm 位编解码）
-- B5 ControlStatus 枚举
-- B6 Authority 枚举（4 级 RBAC）
-- B7 errors/codes.py（ErrCode + BizError）
-- B8 constants/protocol.py（CRC / 端口 / 帧界 / 心跳 / 地址范围）
-- B9 constants/limits.py（batch / JWT / Stream / WS / 日志磁盘）
-- B10 validators/rs485.py（波特率约束表）
-- B11 schemas/ 骨架（ApiResponse 通用壳）
-- B12 Stage B 覆盖率检查 + tag
-
-完整 task 描述见 plan 文件 §阶段 B：`docs/superpowers/plans/2026-04-13-plan-0-foundation.md`
 
 ### Stage C（23 task，ORM 模型）
 ### Stage D（8 task，Alembic 迁移，需 Docker）— 含新增 **D0 Docker + TimescaleDB 环境前置校验**
