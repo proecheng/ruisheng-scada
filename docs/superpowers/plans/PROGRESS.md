@@ -5,14 +5,14 @@
 
 ---
 
-## 当前状态：Plan 0 Stage C 进行中（4/22）
+## 当前状态：Plan 0 Stage C 进行中（5/22）
 
-**最后更新**：2026-04-14（Stage C C1–C4 完成后）
+**最后更新**：2026-04-14（Stage C C5 完成后）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`c03db3c feat(shared): Device + Point + StaticData + SimCard + Template models`
+**最近 commit**（worktree）：`ecdbefe fix(shared): alarm_records index — DESC on triggered_at to match spec`
 **最新 tag**：`plan-0-stage-b-complete`（Stage C 未打 tag）
 **master 最新 commit**：`8463b94 docs(plan): fix UQ naming_convention template (second plan bug found during C4)`
-**测试状态**：86/86 passing（Stage B 52 + C1–C4 34）
+**测试状态**：104/104 passing（Stage B 52 + C1–C5 52）
 
 ---
 
@@ -32,7 +32,7 @@
 
 ## 已完成
 
-### Plan 0 Stage C（feature 分支，4/22 ✅）
+### Plan 0 Stage C（feature 分支，5/22 ✅）
 
 | # | Task | Commit | Notes |
 |---|---|---|---|
@@ -40,6 +40,7 @@
 | C2 | WxGroup (wx_groups) | `a27033c` | 3 tests |
 | C3 | User + WxBinding + Phone + Email | `71eb752` | 12 tests；**2 次 revert**（详见下） |
 | C4 | Device + Point + Static + Sim + Template | `8a770e7` retrofit + `c03db3c` 实现 | 16 tests；retrofit UQ template |
+| C5 | DeviceWaringCfg + AlarmRecord + AlarmOutbox | `eef06ca` + fixup `ecdbefe` | 18 tests；spec review 抓出索引缺 DESC，已修；side-fix（devices.py mypy 紧化）被混入 feat commit（process 警告，已存 memory） |
 
 **Stage C 至今发现 3 个 plan bug（已全部反向 fix 到 master）：**
 
