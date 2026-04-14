@@ -5,12 +5,13 @@
 
 ---
 
-## 当前状态：Plan 0 Stage A 完成，Stage B 未开始
+## 当前状态：Plan 0 Stage A 完成 + 结构复核已完成，Stage B 待启动
 
-**最后更新**：2026-04-14
+**最后更新**：2026-04-14（结构复核后）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**：`a787cff chore(dev): add one-shot 'task bootstrap'`
+**最近 commit**（worktree）：`a787cff chore(dev): add one-shot 'task bootstrap'`
 **最新 tag**：`plan-0-stage-a-complete`（已 push）
+**master 分支待 commit**：Plan 0 本次结构复核修订（D0 + G6 + G7）
 
 ---
 
@@ -76,10 +77,30 @@
 完整 task 描述见 plan 文件 §阶段 B：`docs/superpowers/plans/2026-04-13-plan-0-foundation.md`
 
 ### Stage C（23 task，ORM 模型）
-### Stage D（7 task，Alembic 迁移，需 Docker）
+### Stage D（8 task，Alembic 迁移，需 Docker）— 含新增 **D0 Docker + TimescaleDB 环境前置校验**
 ### Stage E（7 task，测试基建 + seeds，需 Docker）
 ### Stage F（6 task，PCAP 生成器）
-### Stage G（5 task，CI 完备 + 文档）
+### Stage G（7 task，CI 完备 + 文档 + release + 技术债清理）— 新增 **G6 deps 迁移**、**G7 release workflow**
+
+---
+
+## 2026-04-14 结构复核结论（进 Stage B 前）
+
+Stage B-G 复核完成，已做 3 处 Plan 修订：
+
+| 位置 | 修订 | commit |
+|---|---|---|
+| Stage D 开头 | 插入 Task **D0**：Docker / docker-compose / PG / TimescaleDB 扩展 / Redis 前置校验（7 steps 具体命令，无 commit，仅验证） | 待 commit |
+| Stage G 末尾 | 新增 Task **G6**：迁移 `[tool.uv] dev-dependencies` → PEP 735 `[dependency-groups]`，顺便再测 `testcontainers[postgres]` 能否自带 `asyncpg`（处理遗留技术债 #1 + #3） | 待 commit |
+| Stage G 末尾 | 新增 Task **G7**：ruisheng-shared release workflow（semver + SHARED_SCHEMA_VERSION + CHANGELOG + GitHub Release，**不发 PyPI**） | 待 commit |
+
+**审查员误判已否决**（不改）：
+- B11 已经是 schemas 骨架（含 ApiResponse 泛型壳 + 2 个测试）→ 无需再插 B12a
+- B4 已经包含完整位编码测试（decode 0x0103 + encode 0x2103）→ 无需补
+
+**风险确认**：
+- ✅ docker-compose.dev.yml 用的是 `timescale/timescaledb:2.16.1-pg15`（不是普通 postgres:15），TimescaleDB 扩展风险 **不存在**
+- ⚠️ Docker Desktop 仍未装 — **进 Stage D 前必须装**（Stage B/C 不需要）
 
 ---
 

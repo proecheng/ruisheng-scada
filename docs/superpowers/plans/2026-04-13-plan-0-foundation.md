@@ -157,10 +157,10 @@ D:\江苏润盛\
 | A | 仓库骨架 + 工具链 | 15 |
 | B | `ruisheng-shared` enums/errors/constants/validators | 18 |
 | C | `ruisheng-shared` ORM 模型 23 表 | 28 |
-| D | Alembic 迁移 + hypertable + compression + retention | 14 |
+| D | Alembic 迁移 + hypertable + compression + retention | 15（含 D0 环境前置校验）|
 | E | testcontainers + embedded PG fallback + seeds | 12 |
 | F | 伪设备 PCAP 生成器雏形 | 10 |
-| G | CI 流水线完备 + 文档 | 13 |
+| G | CI 流水线完备 + 文档 + release + 技术债清理 | 15（G1–G5 + G6 deps 迁移 + G7 release workflow）|
 
 ---
 
@@ -2823,6 +2823,61 @@ git tag -a plan-0-stage-c-complete -m "Stage C: 23 ORM tables complete"
 
 # 阶段 D — Alembic 迁移 + hypertable + compression + retention
 
+## Task D0：Docker + TimescaleDB 环境前置校验
+
+**目的：** Stage D/E 依赖真实 PG + Redis 容器。此 task 在进入 D1 前验证环境可用，避免后续 task 因环境问题反复失败。
+
+**Files：** 无（只做环境验证）
+
+**前置条件：** Docker Desktop 已装且 daemon 运行中。Windows 用户需已启用 WSL2 后端。
+
+- [ ] **Step 1：确认 docker / docker-compose 可用**
+
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+docker --version
+docker compose version
+```
+期望：docker 24+ / compose v2+；命令不报错。若 `docker` 不存在 → 安装 Docker Desktop 后重试。
+
+- [ ] **Step 2：拉起 dev 容器**
+
+```bash
+uv run task up
+```
+期望：`ruisheng-postgres-dev` 和 `ruisheng-redis-dev` 两个容器 healthy。若失败读 `docker compose -f docker-compose.dev.yml logs`。
+
+- [ ] **Step 3：验证 PG 连接**
+
+```bash
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng -c "SELECT version();"
+```
+期望：返回 PostgreSQL 15.x + TimescaleDB 版本信息。
+
+- [ ] **Step 4：验证 TimescaleDB 扩展可启用**
+
+```bash
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng -c "CREATE EXTENSION IF NOT EXISTS timescaledb; SELECT extname, extversion FROM pg_extension WHERE extname='timescaledb';"
+```
+期望：返回 `timescaledb | 2.16.x`（或 docker-compose.dev.yml 中 pin 的版本）。若无扩展 → 镜像不对，改回 `timescale/timescaledb:2-latest-pg15`。
+
+- [ ] **Step 5：验证 Redis 连接**
+
+```bash
+docker exec -i ruisheng-redis-dev redis-cli -a dev-redis-pw PING
+```
+期望：`PONG`。
+
+- [ ] **Step 6：关闭容器**
+
+```bash
+uv run task down
+```
+
+- [ ] **Step 7：无需 commit**（纯验证 task；若发现 docker-compose.dev.yml 需修正，另开 fixup commit）
+
+---
+
 ## Task D1：初始化 alembic
 
 **Files:**
@@ -4208,6 +4263,209 @@ git add README.md
 git commit -m "docs: mark Plan 0 complete in README"
 git tag -a plan-0-complete -m "Plan 0 Foundation fully complete (2026-04-13)"
 ```
+
+---
+
+## Task G6：技术债清理 — 迁移 `[tool.uv] dev-dependencies` → `[dependency-groups]`
+
+**目的：** Stage A 用了 uv 已弃用的 `[tool.uv] dev-dependencies` 写法（每次 `uv sync` 报 warning）。PEP 735 `[dependency-groups]` 是 uv 新推荐写法。同时借此根治 Stage A 遗留的 `testcontainers[postgres]` extra 解析问题（当时靠显式加 `asyncpg` 绕过）。
+
+**Files：**
+- Modify: `D:\江苏润盛\pyproject.toml`
+- Modify: `D:\江苏润盛\uv.lock`
+- Modify: `D:\江苏润盛\.github\workflows\ci.yml`（若 sync 命令需改为 `--group dev`）
+
+- [ ] **Step 1：备份当前 pyproject.toml**
+
+```bash
+cp pyproject.toml pyproject.toml.bak
+```
+
+- [ ] **Step 2：把 `[tool.uv] dev-dependencies` 块改为 `[dependency-groups] dev`**
+
+Edit `D:\江苏润盛\pyproject.toml`，删除：
+```toml
+[tool.uv]
+dev-dependencies = [ ... ]
+```
+替换为：
+```toml
+[dependency-groups]
+dev = [
+    # 把原 dev-dependencies 的条目完整复制到这里
+]
+```
+
+- [ ] **Step 3：尝试去掉显式 `asyncpg`**
+
+在 `[project]` 的 `dependencies` 里先把 `asyncpg` 注释掉，保留 `testcontainers[postgres]`。
+
+- [ ] **Step 4：重新解析 + 测试 testcontainers extra**
+
+```bash
+rm uv.lock
+uv sync --group dev
+uv run python -c "import testcontainers.postgres; import asyncpg; print('ok')"
+```
+期望：无警告；`asyncpg` 能被间接拉入（通过 testcontainers[postgres]）。
+
+若 testcontainers 仍未把 asyncpg 带进来 → 保留 `asyncpg` 显式依赖（只做 dependency-groups 迁移部分即可）。
+
+- [ ] **Step 5：跑全量测试**
+
+```bash
+uv run pytest tests/ --cov --cov-fail-under=90
+```
+期望：全部通过；无 dev-dependencies 弃用警告。
+
+- [ ] **Step 6：更新 CI（如需要）**
+
+检查 `.github/workflows/ci.yml` 的 `uv sync` 命令，若仍用旧写法需改为 `uv sync --group dev`（或 `--all-groups`，视 CI job 需求）。
+
+- [ ] **Step 7：删除备份 + Commit**
+
+```bash
+rm pyproject.toml.bak
+git add pyproject.toml uv.lock .github/workflows/ci.yml
+git commit -m "chore(deps): migrate to PEP 735 dependency-groups; retry testcontainers extras"
+```
+
+---
+
+## Task G7：ruisheng-shared release workflow
+
+**目的：** ruisheng-shared 将被 Plan 1（gw）/ Plan 2（api）通过 `SHARED_SCHEMA_VERSION` 引用。Plan 0 完成时需要一个清晰的版本发布流程：semver bump + CHANGELOG + git tag + GitHub Release。**不做 PyPI publish**（私有仓）。
+
+**Files：**
+- Create: `D:\江苏润盛\ruisheng-shared\CHANGELOG.md`
+- Create: `D:\江苏润盛\.github\workflows\release-shared.yml`
+- Modify: `D:\江苏润盛\ruisheng-shared\pyproject.toml`（version 字段保持 `0.1.0`）
+- Modify: `D:\江苏润盛\ruisheng-shared\src\ruisheng_shared\__init__.py`（暴露 `SHARED_SCHEMA_VERSION`）
+
+- [ ] **Step 1：在 ruisheng_shared 包暴露 SHARED_SCHEMA_VERSION**
+
+Edit `D:\江苏润盛\ruisheng-shared\src\ruisheng_shared\__init__.py`：
+```python
+"""Ruisheng shared package（跨 gw / api / web 的类型、枚举、常量、schemas）。"""
+
+SHARED_SCHEMA_VERSION = "0.1.0"  # 与 pyproject.toml version 同步；breaking 变更须 bump major
+__version__ = SHARED_SCHEMA_VERSION
+```
+
+- [ ] **Step 2：写 CHANGELOG.md 初始条目**
+
+Create `D:\江苏润盛\ruisheng-shared\CHANGELOG.md`:
+```markdown
+# Changelog
+
+遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) + [SemVer](https://semver.org/lang/zh-CN/)。
+
+## [Unreleased]
+
+## [0.1.0] - 2026-04-XX
+### Added
+- Plan 0 基础建设：enums / errors / constants / validators / schemas 骨架
+- ORM 23 张表 + Alembic 初始迁移（含 TimescaleDB hypertable / compression / retention）
+- PCAP 生成器雏形（15 个 corpus 场景）
+- CI：lint / unit / integration / alembic-check / schema-guard
+```
+
+- [ ] **Step 3：创建 release workflow**
+
+Create `D:\江苏润盛\.github\workflows\release-shared.yml`:
+```yaml
+name: Release ruisheng-shared
+
+on:
+  push:
+    tags:
+      - "shared-v*.*.*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#shared-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify pyproject version matches tag
+        run: |
+          PY_VER=$(grep -E '^version\s*=' ruisheng-shared/pyproject.toml | head -1 | sed -E 's/.*"(.+)".*/\1/')
+          if [ "$PY_VER" != "${{ steps.version.outputs.VERSION }}" ]; then
+            echo "::error::pyproject version $PY_VER != tag ${{ steps.version.outputs.VERSION }}"
+            exit 1
+          fi
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          awk "/^## \\[${{ steps.version.outputs.VERSION }}\\]/,/^## \\[/" ruisheng-shared/CHANGELOG.md \
+            | sed '$d' > /tmp/release-notes.md
+          cat /tmp/release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/release-notes.md
+          name: ruisheng-shared ${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: false
+```
+
+- [ ] **Step 4：写 docs/RELEASE.md 简短流程说明**
+
+Create `D:\江苏润盛\docs\RELEASE.md`:
+```markdown
+# ruisheng-shared 发布流程
+
+1. 在 master 分支更新 `ruisheng-shared/pyproject.toml` 的 `version`（遵 semver）
+2. 同步更新 `src/ruisheng_shared/__init__.py` 的 `SHARED_SCHEMA_VERSION`
+3. 在 `ruisheng-shared/CHANGELOG.md` 把 `[Unreleased]` 下的条目搬到新版本下
+4. Commit：`chore(release): ruisheng-shared vX.Y.Z`
+5. 打 tag：`git tag -a shared-vX.Y.Z -m "..."`
+6. Push：`git push && git push --tags`
+7. GitHub Actions 会自动创建 Release（含 CHANGELOG 提取段）
+
+## SemVer 规则
+
+- **major**：shared 的 schema 接口（enum 值、常量、错误码、pydantic model 字段）有 **breaking** 改动
+- **minor**：新增枚举值 / 新增 schema 字段（向后兼容）
+- **patch**：文档、测试、内部实现改动
+```
+
+- [ ] **Step 5：测试 tag 提取逻辑（dry run）**
+
+```bash
+# 本地模拟：确认 awk 能提取 CHANGELOG 里的 0.1.0 段
+awk "/^## \\[0.1.0\\]/,/^## \\[/" ruisheng-shared/CHANGELOG.md | sed '$d'
+```
+期望：输出 0.1.0 段的 Added 列表。
+
+- [ ] **Step 6：Commit**
+
+```bash
+git add ruisheng-shared/CHANGELOG.md \
+        ruisheng-shared/src/ruisheng_shared/__init__.py \
+        .github/workflows/release-shared.yml \
+        docs/RELEASE.md
+git commit -m "feat(release): ruisheng-shared release workflow with SHARED_SCHEMA_VERSION"
+```
+
+- [ ] **Step 7：（可选）实际打首个 tag**
+
+> 只在 Plan 0 **全部完成后** 再做。此 step 可以延到 G5 的最终 tag 之后。
+>
+> ```bash
+> git tag -a shared-v0.1.0 -m "ruisheng-shared 0.1.0 — Plan 0 foundation"
+> git push origin shared-v0.1.0
+> ```
 
 ---
 
