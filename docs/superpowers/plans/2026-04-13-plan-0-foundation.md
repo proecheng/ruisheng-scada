@@ -2371,6 +2371,14 @@ def test_subclass_has_created_updated() -> None:
 
 def test_tablename_snake_case() -> None:
     assert _Sample.__tablename__ == "_sample"
+
+
+def test_naming_convention_registered() -> None:
+    """约束命名模板必须注入 metadata，Stage D 的 Alembic 依赖它。"""
+    nc = Base.metadata.naming_convention
+    assert nc["pk"] == "pk_%(table_name)s"
+    assert nc["fk"] == "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s"
+    assert set(nc.keys()) == {"ix", "uq", "ck", "fk", "pk"}
 ```
 
 - [ ] **Step 2：失败**
@@ -2394,12 +2402,24 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, func
+from sqlalchemy import DateTime, MetaData, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# Alembic 约束命名模板：让自动生成的 migration 约束名稳定、可预测。
+# 必须在 C2 之前定型，否则后续重命名会触发大量迁移。
+NAMING_CONVENTION = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
 
 
 class Base(DeclarativeBase):
     """所有表的基类。"""
+
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
 class TimestampMixin:
