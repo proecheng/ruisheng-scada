@@ -3,11 +3,17 @@
 """
 
 from .base import Base, SoftDeleteMixin, TimestampMixin
+from .devices import Device, DevicePoint, DeviceStaticData, DeviceTemplate, SimCard
 from .tenants import WxGroup
 from .users import User, UserEmail, UserPhoneNumber, UserWxBinding
 
 __all__ = [
     "Base",
+    "Device",
+    "DevicePoint",
+    "DeviceStaticData",
+    "DeviceTemplate",
+    "SimCard",
     "SoftDeleteMixin",
     "TimestampMixin",
     "User",

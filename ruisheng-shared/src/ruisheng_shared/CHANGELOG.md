@@ -15,6 +15,7 @@
 - feature: add WxGroup (wx_groups) tenant model
 - feature: add User + UserWxBinding + UserPhoneNumber + UserEmail models
 - chore: refactor UQ naming_convention uses constraint_name; User.user_name UQ declared explicitly
+- feature: add Device + DevicePoint + DeviceStaticData + SimCard + DeviceTemplate models
 
 ## 2026-04-13 v0.1.0
 
