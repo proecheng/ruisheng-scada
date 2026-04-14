@@ -1,6 +1,6 @@
 # 江苏润盛 IoT 监控平台 — 重做设计文档
 
-> **版本**：v1.3.3 / 2026-04-14
+> **版本**：v1.3.4 / 2026-04-14
 > **状态**：5 角色审查合并 + 一致性轮 + 边界/数据流轮 全部完成；等待最终 ack → writing-plans
 > **关联文档**：
 > - 需求基线：`D:\江苏润盛\需求清单\功能全景清单.md` v2.2（1609 行）
@@ -719,6 +719,7 @@ def inject_tenant_filter(query):
 - `CREATE ROLE ruisheng_gw BYPASSRLS LOGIN PASSWORD '...'`（gw 是后台服务，无 HTTP 上下文）
 - 所有 gw SQL 由 CI lint 强制带 `WHERE usr_group = ?` 过滤（负向 test：构造跨租户 join，断言拒绝合并）
 - api 继续用普通角色 + `SET LOCAL app.tenant_id` 走 RLS
+- **gw 禁止访问 `scene_pages` / `scene_views`**（v1.3.4 新增）：组态是 UI 配置类数据，gw（实时/控制通路）无业务理由读写；CI lint 扫描 gw 代码库 SQL 字面量禁止出现这两张表名，违规 P0 阻塞合并
 
 ### 3.8 边界情况与数据流细则（v1.3.2 新增）
 
@@ -930,6 +931,18 @@ COMMIT;
 
 **时间容差**（v1.3.3 通用约定）：所有表单时间字段允许 ≤ 60s 早于服务端 now()（应对浏览器时钟偏差）；CHECK 约束写作 `next_due_at >= created_at - INTERVAL '1 minute'`。
 
+#### 3.8.18 scene_views 展示快照规则（v1.3.4 新增）
+
+**场景**：`scene_views` 保留 `company` / `department` 冗余列（非 FK），用于组态画面展示"所属公司/部门"，避免渲染时跨 JOIN `users` 的开销。
+
+**规则**：
+- **INSERT 时**：若 API 层未传 `company` / `department`，DB 触发器 `trg_scene_views_fill_snapshot` 自动从 `users(owner_user_name).company/department` 填充（BEFORE INSERT，见 §4.1.1 (5)）
+- **允许覆盖**：API 层可显式传值（如运营期手改"某视图显示为『旧公司名』"），DB 不强制反查一致
+- **UPDATE 时**：**不自动同步**。用户调岗后 `users.company` 变化，`scene_views.company` 保持创建时值。业务需批量刷新时，由 API 提供显式"同步展示信息"操作（`UPDATE scene_views SET company = u.company FROM users u WHERE ...`）
+- **软删后**：owner 用户被软删 → `scene_views` 保留原 company/department 快照；列表页 `LEFT JOIN + COALESCE` 降级（遵循 §3.7 软删规则）
+
+**与租户一致性的关系**：`company`/`department` 不参与 RLS（`usr_group` 单独负责隔离）；租户一致性由 `trg_scene_views_enforce_tenant` 保证（§4.1.1 (4)）。
+
 ---
 
 ## §4 数据模型
@@ -970,6 +983,70 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ruisheng_
 -- api 每个请求 begin tx 后：
 --   SET LOCAL app.tenant_id = '<user.usr_group>';
 --   SET LOCAL app.role      = '<user.authority>';  -- Administrators/GroupCompany/Company/User
+
+-- (4) scene_* 租户一致性触发器（v1.3.4 新增）
+--     BEFORE INSERT/UPDATE 校验 scene_pages/scene_views 的 usr_group
+--     与 users(owner_user_name) / scene_pages(scene_page_id) / devices(dev_number) 一致；
+--     不一致 RAISE EXCEPTION 23514（补 RLS 只防读不防跨表写的盲点）
+CREATE OR REPLACE FUNCTION enforce_scene_tenant_consistency() RETURNS TRIGGER AS $$
+DECLARE
+  v_owner_ug VARCHAR(50);
+  v_page_ug  VARCHAR(50);
+  v_dev_ug   VARCHAR(50);
+BEGIN
+  SELECT usr_group INTO v_owner_ug FROM users
+    WHERE user_name = NEW.owner_user_name AND deleted_at IS NULL;
+  IF v_owner_ug IS NULL THEN
+    RAISE EXCEPTION 'scene_tenant_violation: owner_user_name=% not found or soft-deleted',
+      NEW.owner_user_name USING ERRCODE = '23514';
+  END IF;
+  IF v_owner_ug <> NEW.usr_group THEN
+    RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches users(%).usr_group=%',
+      NEW.usr_group, NEW.owner_user_name, v_owner_ug USING ERRCODE = '23514';
+  END IF;
+
+  IF TG_TABLE_NAME = 'scene_views' THEN
+    SELECT usr_group INTO v_page_ug FROM scene_pages
+      WHERE id = NEW.scene_page_id AND deleted_at IS NULL;
+    IF v_page_ug IS NULL THEN
+      RAISE EXCEPTION 'scene_tenant_violation: scene_page_id=% not found or soft-deleted',
+        NEW.scene_page_id USING ERRCODE = '23514';
+    END IF;
+    IF v_page_ug <> NEW.usr_group THEN
+      RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches scene_pages(id=%).usr_group=%',
+        NEW.usr_group, NEW.scene_page_id, v_page_ug USING ERRCODE = '23514';
+    END IF;
+
+    SELECT usr_group INTO v_dev_ug FROM devices
+      WHERE dev_number = NEW.dev_number AND deleted_at IS NULL;
+    IF v_dev_ug IS NULL THEN
+      RAISE EXCEPTION 'scene_tenant_violation: dev_number=% not found or soft-deleted',
+        NEW.dev_number USING ERRCODE = '23514';
+    END IF;
+    IF v_dev_ug <> NEW.usr_group THEN
+      RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches devices(%).usr_group=%',
+        NEW.usr_group, NEW.dev_number, v_dev_ug USING ERRCODE = '23514';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+-- (5) scene_views 展示快照自动填充触发器（v1.3.4 新增，见 §3.8.18）
+--     BEFORE INSERT 时若 company/department 为 NULL，从 users 反查填入；
+--     允许 API 显式覆盖；UPDATE 不自动同步（调岗后保留历史快照）
+CREATE OR REPLACE FUNCTION fill_scene_views_snapshot() RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.company IS NULL OR NEW.department IS NULL THEN
+    SELECT
+      COALESCE(NEW.company, u.company),
+      COALESCE(NEW.department, u.department)
+    INTO NEW.company, NEW.department
+    FROM users u
+    WHERE u.user_name = NEW.owner_user_name AND u.deleted_at IS NULL;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
 ```
 
 ### 4.2 核心表 DDL 节选
@@ -1267,6 +1344,100 @@ CREATE TABLE soft_logs (
 SELECT create_hypertable('soft_logs', 'recorded_at',
   chunk_time_interval => INTERVAL '1 month');
 SELECT add_retention_policy('soft_logs', INTERVAL '1 year');
+
+-- scene_pages（v1.3.4 新增：组态画面模板；旧映射 ZTPageInf 非直通）
+-- TODO(Q-B08): 待澄清
+--   (1) 子页面层级深度：当前直通旧表单层（sonpage_name / sonpage_pic）；若业务确认树形多级，
+--       需追加 parent_id BIGINT REFERENCES scene_pages(id) ON DELETE RESTRICT + CHECK 防环
+--   (2) 背景图分辨率限制：由前端 / 对象存储层控制；DDL 不约束
+--   (3) SVG 支持：sonpage_pic 存对象存储 key，MIME 由 API 层白名单验证（png/jpg/svg/webp）
+CREATE TABLE scene_pages (
+  id                BIGSERIAL PRIMARY KEY,
+  owner_user_name   VARCHAR(50) NOT NULL REFERENCES users(user_name) ON DELETE RESTRICT,
+  page_name         VARCHAR(100) COLLATE "zh-x-icu" NOT NULL,
+  sonpage_name      VARCHAR(100) COLLATE "zh-x-icu",
+  sonpage_pic       VARCHAR(500),                          -- 对象存储 key：s3://{bucket}/{usr_group}/scene/{page_id}/...
+  pos_x             NUMERIC(10, 2) NOT NULL,               -- vue-konva 世界坐标，允许负
+  pos_y             NUMERIC(10, 2) NOT NULL,
+  radius            NUMERIC(8, 2)  NOT NULL,               -- 热点半径
+  usr_group         VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT,
+  deleted_at        timestamptz,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  CHECK (radius BETWEEN 0.01 AND 100000),
+  CHECK (pos_x  BETWEEN -1000000 AND 1000000),
+  CHECK (pos_y  BETWEEN -1000000 AND 1000000)
+);
+CREATE INDEX ix_scene_pages_usr_group ON scene_pages (usr_group);
+CREATE INDEX ix_scene_pages_owner     ON scene_pages (owner_user_name);
+-- partial unique：同租户同归属人内 page_name 唯一；软删后同名可重建
+CREATE UNIQUE INDEX ux_scene_pages_owner_page_name
+  ON scene_pages (usr_group, owner_user_name, page_name) WHERE deleted_at IS NULL;
+
+CREATE TRIGGER trg_scene_pages_updated
+  BEFORE UPDATE ON scene_pages
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_scene_pages_enforce_tenant
+  BEFORE INSERT OR UPDATE OF owner_user_name, usr_group ON scene_pages
+  FOR EACH ROW EXECUTE FUNCTION enforce_scene_tenant_consistency();
+
+ALTER TABLE scene_pages ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON scene_pages USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
+);
+
+-- scene_views（v1.3.4 新增：画布上"设备热点"的绑定；旧映射 ZTViewInf 非直通）
+CREATE TABLE scene_views (
+  id                BIGSERIAL PRIMARY KEY,
+  scene_page_id     BIGINT NOT NULL REFERENCES scene_pages(id) ON DELETE RESTRICT,
+  owner_user_name   VARCHAR(50) NOT NULL REFERENCES users(user_name) ON DELETE RESTRICT,
+  company           VARCHAR(100),                          -- 展示快照，见 §3.8.18
+  department        VARCHAR(100),                          -- 展示快照，见 §3.8.18
+  dev_number        VARCHAR(50) NOT NULL REFERENCES devices(dev_number) ON DELETE RESTRICT,
+  pos_x             NUMERIC(10, 2) NOT NULL,
+  pos_y             NUMERIC(10, 2) NOT NULL,
+  radius            NUMERIC(8, 2)  NOT NULL,
+  usr_group         VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT,
+  deleted_at        timestamptz,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  CHECK (radius BETWEEN 0.01 AND 100000),
+  CHECK (pos_x  BETWEEN -1000000 AND 1000000),
+  CHECK (pos_y  BETWEEN -1000000 AND 1000000)
+);
+CREATE INDEX ix_scene_views_usr_group  ON scene_views (usr_group);
+CREATE INDEX ix_scene_views_page_id    ON scene_views (scene_page_id);
+CREATE INDEX ix_scene_views_dev_number ON scene_views (dev_number);
+CREATE INDEX ix_scene_views_owner      ON scene_views (owner_user_name);
+-- partial unique：同页同设备只配 1 个热点；软删后同组合可重建
+CREATE UNIQUE INDEX ux_scene_views_page_dev
+  ON scene_views (scene_page_id, dev_number) WHERE deleted_at IS NULL;
+
+CREATE TRIGGER trg_scene_views_updated
+  BEFORE UPDATE ON scene_views
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- 触发器执行序（PG 按字母序）：enforce → fill → updated_at
+CREATE TRIGGER trg_scene_views_enforce_tenant
+  BEFORE INSERT OR UPDATE OF owner_user_name, usr_group, scene_page_id, dev_number ON scene_views
+  FOR EACH ROW EXECUTE FUNCTION enforce_scene_tenant_consistency();
+
+CREATE TRIGGER trg_scene_views_fill_snapshot
+  BEFORE INSERT ON scene_views
+  FOR EACH ROW EXECUTE FUNCTION fill_scene_views_snapshot();
+
+ALTER TABLE scene_views ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON scene_views USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
+);
+
+COMMENT ON COLUMN scene_views.company IS
+  '展示快照：INSERT 时从 users(owner_user_name).company 自动填充（API 可显式覆盖）；用户调岗后不自动同步，需 API 显式 UPDATE。见 §3.8.18。';
+COMMENT ON COLUMN scene_views.department IS
+  '展示快照：同 company，见 §3.8.18。';
 ```
 
 ### 4.3 表清单总览（共 26 张，v1.3.3 修正计数）
@@ -1339,7 +1510,8 @@ SELECT add_retention_policy('soft_logs', INTERVAL '1 year');
 | `PayOrder` | `pay_orders` | 直通 |
 | `SoftLog` | `soft_logs` | 直通 |
 | `TimingPlan` | `timing_plans` | **非直通**（v1.3.3）：usr_group 从 `devices.usr_group` 按 `dev_number` 反查填入；`deleted_at = null`；`updated_at = created_at`；`DEL_xxx_ts` 前缀记录转 `deleted_at` |
-| `ZTPageInf` / `ZTViewInf` | `scene_pages` / `scene_views` | 直通 |
+| `ZTPageInf` | `scene_pages` | **非直通**（v1.3.4）：`UserName → owner_user_name`；`usr_group` 从 `users(OwnerUserName).usr_group` 反查填入；`EnterTime → created_at`（保留旧值，不覆盖）；`deleted_at = null`；`updated_at = created_at`；`SonPagePic` 文件从旧目录上传对象存储并重写为 `s3://{bucket}/{usr_group}/scene/{page_id}/sonpage.{ext}` key；坐标若旧库为 INT 则 `::NUMERIC(10,2)` |
+| `ZTViewInf` | `scene_views` | **非直通**（v1.3.4）：`UserName → owner_user_name`；`usr_group` 反查同上；`company` / `department` 若旧库缺失则从 `users` 快照（触发器 §4.1.1 (5) 兜底）；`scene_page_id` 两步映射：`(ZTViewInf.PageName, OwnerUserName, usr_group) → scene_pages.id`（找不到记 DLQ 人工 review）；`dev_number` 按 `devices.dev_number` 校验（找不到跳过） |
 | `DEL_xxx_ts` 软删前缀 | `deleted_at` 字段 | 正则提取原 DevNumber + 时间戳 |
 
 **工具链**
@@ -1365,6 +1537,48 @@ LOAD DATABASE
 
 - `SELECT COUNT(*), MIN(ts), MAX(ts), SUM(value)` 各表分别对比
 - 差异 > 0.1% 邮件告警 + 暂停切流
+
+**scene_\* AFTER LOAD 扩展**（v1.3.4 新增，pgloader AFTER LOAD DO 内嵌）
+
+```sql
+-- 1. 禁用 scene_* 租户一致性触发器（迁移期批量导入）
+ALTER TABLE scene_pages DISABLE TRIGGER trg_scene_pages_enforce_tenant;
+ALTER TABLE scene_views DISABLE TRIGGER trg_scene_views_enforce_tenant;
+ALTER TABLE scene_views DISABLE TRIGGER trg_scene_views_fill_snapshot;
+
+-- 2. usr_group 反查填充（旧表无 UsrGroup 字段）
+UPDATE scene_pages sp
+   SET usr_group = u.usr_group
+  FROM users u
+ WHERE sp.owner_user_name = u.user_name AND sp.usr_group IS NULL;
+
+UPDATE scene_views sv
+   SET usr_group  = u.usr_group,
+       company    = COALESCE(sv.company, u.company),
+       department = COALESCE(sv.department, u.department)
+  FROM users u
+ WHERE sv.owner_user_name = u.user_name
+   AND (sv.usr_group IS NULL OR sv.company IS NULL OR sv.department IS NULL);
+
+-- 3. 对账断言：任何 usr_group IS NULL 直接失败（说明旧 OwnerUserName 在 users 表找不到）
+DO $$
+DECLARE n_bad INT;
+BEGIN
+  SELECT COUNT(*) INTO n_bad FROM scene_pages WHERE usr_group IS NULL;
+  IF n_bad > 0 THEN RAISE EXCEPTION 'scene_pages: % rows have NULL usr_group', n_bad; END IF;
+  SELECT COUNT(*) INTO n_bad FROM scene_views WHERE usr_group IS NULL;
+  IF n_bad > 0 THEN RAISE EXCEPTION 'scene_views: % rows have NULL usr_group', n_bad; END IF;
+END $$;
+
+-- 4. 重新启用触发器
+ALTER TABLE scene_pages ENABLE TRIGGER trg_scene_pages_enforce_tenant;
+ALTER TABLE scene_views ENABLE TRIGGER trg_scene_views_enforce_tenant;
+ALTER TABLE scene_views ENABLE TRIGGER trg_scene_views_fill_snapshot;
+
+-- 5. 事后校验：空 UPDATE 走一遍让触发器校验每一行（数据量小，耗时可控）
+UPDATE scene_pages SET usr_group = usr_group;
+UPDATE scene_views SET usr_group = usr_group;
+```
 
 ### 4.6 关键设计点
 
@@ -2536,6 +2750,15 @@ T+3min+3s 设备 ACK 停机 → 成功通知用户
   - (10) **§4.5 line 1341** `TimingPlan` 迁移规则从"直通"改为"非直通"：usr_group 从 devices 反查填入 + `updated_at = created_at` + `DEL_xxx_ts → deleted_at`；
   - (11) **§5.1** 追加 PG SQLSTATE → ErrCode 中文映射表（TODO Plan 2 实现 `app/core/exception_handler.py`）；
   - (12) 本轮审查产出含 5 BLOCKER + 8 MAJOR + 9 MINOR，全部 BLOCKER+MAJOR 已落地本次 commit，MINOR 按"延后 Plan 2/3"或 spec TODO 处理。
+- **v1.3.4 / 2026-04-14**：**组态 2 张表 DDL + 租户一致性触发器 + 展示快照语义（Plan 0 Stage C Task C8 派发前 2 轮审查产出）**。`SHARED_SCHEMA_VERSION` **保持 20260414**（仅 DB schema 扩展，未改 shared Pydantic/enum）。关键修订：
+  - (1) **§4.2 新增 `scene_pages` / `scene_views` DDL**（组态 2 张表；NUMERIC(10,2) 坐标 + sanity bounds CHECK；owner_user_name / dev_number 单 FK；RLS policy；partial unique `(scene_page_id, dev_number) WHERE deleted_at IS NULL` 业务语义："同页同设备只配 1 个热点"）
+  - (2) **§3.8.18 新增**：`scene_views` company/department 展示快照规则——INSERT 触发器自动填充、允许 API 覆盖、UPDATE 不自动同步
+  - (3) **§4.1.1 新增**：`enforce_scene_tenant_consistency()` 触发器函数（scene_pages/scene_views 的 BEFORE INSERT/UPDATE 校验 usr_group 与 users/scene_pages/devices 一致，RAISE EXCEPTION 23514，补 RLS 只防读不防跨表写盲点）+ `fill_scene_views_snapshot()` 触发器函数
+  - (4) **§3.7 追加**："gw 禁止访问 scene_pages / scene_views"（组态是 UI 配置类数据，CI lint 扫描违规 P0 阻塞）
+  - (5) **§4.5 L1342 展开**：`ZTPageInf / ZTViewInf` 从"直通"改为 2 行"非直通"迁移映射（usr_group 从 users 反查；scene_page_id 两步映射；company/department 快照兜底）+ pgloader AFTER LOAD DO 完整 SQL 块（禁用触发器 → 反查填充 → NULL 断言 → 启用触发器 → 空 UPDATE 事后校验）
+  - (6) Q-B08（子页面层级 / 背景图分辨率 / SVG 支持）保留为 §4.2 DDL 块顶部 TODO 注释，不阻塞 Plan 0；业务确认后再补 `parent_id` 列
+  - (7) 本轮审查产出 0 BLOCKER + 3 MAJOR + 5 MINOR，全部 MAJOR 已落地本次 commit（MAJOR-A 租户一致性触发器、MAJOR-B Company/Department 快照语义、MAJOR-C partial unique 字段从 (scene_page_id, dev_number, pos_x, pos_y) 收敛到 (scene_page_id, dev_number)）；MINOR 按"Alembic include_object 过滤"等 implementer 备忘处理
+  - implementer 备忘：Alembic autogenerate 对 partial unique + COLLATE "zh-x-icu" 列的幽灵 diff 处理见 C7 v1.3.3 MAJOR #1 同款 `include_object` 过滤
 
 ---
 
