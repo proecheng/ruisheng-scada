@@ -1,6 +1,6 @@
 # 江苏润盛 IoT 监控平台 — 重做设计文档
 
-> **版本**：v1.3.4 / 2026-04-14
+> **版本**：v1.3.5 / 2026-04-14
 > **状态**：5 角色审查合并 + 一致性轮 + 边界/数据流轮 全部完成；等待最终 ack → writing-plans
 > **关联文档**：
 > - 需求基线：`D:\江苏润盛\需求清单\功能全景清单.md` v2.2（1609 行）
@@ -597,27 +597,26 @@ async def on_wx_pay_notify(request):
         return xml_fail("invalid fee")
 
     # 6. 幂等（INSERT ON CONFLICT，事务内）+ 业务处理
-    async with db.transaction():
+    # v1.3.5：回调无 HTTP 租户上下文 → 切换到 gw_pool（BYPASSRLS），不依赖 SET LOCAL（§3.7 例外路径）
+    async with gw_pool.transaction() as db:
         ok = await db.execute(
             "INSERT INTO pay_orders_seen(out_trade_no, notified_at) VALUES ($1, NOW()) "
             "ON CONFLICT (out_trade_no) DO NOTHING", out_trade_no
         )
-        if not ok.rows_affected:
+        if ok.rows_affected == 0:
             return xml_ok()  # 已处理，幂等返回成功
 
-        await mark_paid(out_trade_no, total_fee, time_end)
+        try:
+            await mark_paid(db, out_trade_no, total_fee, time_end)
+        except BizError as e:
+            # 非法状态转移 / 金额不符：pay_orders_seen 已锁，仍返回 ok 避免微信重试风暴
+            soft_log.warn("wxpay mark_paid rejected",
+                          out_trade_no=out_trade_no, code=int(e.code), msg=e.msg)
 
     return xml_ok()
 ```
 
-新增辅助表：
-```sql
-CREATE TABLE pay_orders_seen (
-  out_trade_no VARCHAR(50) PRIMARY KEY,
-  notified_at  timestamptz NOT NULL DEFAULT now()
-);
-```
-用于微信回调幂等防护；每日凌晨清理 30 天以前记录。
+辅助表 `pay_orders_seen` DDL 见 §4.2；每日凌晨清理 30 天以前记录（§5.10.3）。
 
 ### 3.6 权限矩阵（4 角色 × 14 模块）
 
@@ -661,7 +660,7 @@ CREATE TABLE pay_orders_seen (
 | 12 用户/组织 | 跨租户 | ✓(OTP) | × | × | × | — |
 | 12 用户/组织 | 创建集团/平台角色 | ✓(OTP) | × | × | × | — |
 | 13 支付充值 | 充值 | ✓ | ✓ | ✓ | ✓ | 充值对象为自有设备 |
-| 13 支付充值 | 订单查询 | ✓ | ✓ | ▲本公司 | ▲本人 | — |
+| 13 支付充值 | 订单查询 | ✓ | ✓ | ▲本公司 | ▲本人 | L1 需额外 ORM filter by openid∈user_wx_bindings(current_user)（RLS 只到 usr_group 粒度） |
 | 14 运维/审计 | SoftLog/ControlAction | ✓ | R(本集团) | R(本公司) | × | 审计员只读 |
 | 14 运维 | WXGroup 配置 | ✓(OTP) | × | × | × | — |
 | 14 运维 | `/admin/log/*` 动态调级 | ✓(OTP) | × | × | × | — |
@@ -720,6 +719,7 @@ def inject_tenant_filter(query):
 - 所有 gw SQL 由 CI lint 强制带 `WHERE usr_group = ?` 过滤（负向 test：构造跨租户 join，断言拒绝合并）
 - api 继续用普通角色 + `SET LOCAL app.tenant_id` 走 RLS
 - **gw 禁止访问 `scene_pages` / `scene_views`**（v1.3.4 新增）：组态是 UI 配置类数据，gw（实时/控制通路）无业务理由读写；CI lint 扫描 gw 代码库 SQL 字面量禁止出现这两张表名，违规 P0 阻塞合并
+- **例外路径 — wxpay_notify**（v1.3.5 新增）：api 服务的微信支付回调 handler 内部使用 `gw_pool`（ruisheng_gw BYPASSRLS）连接 `pay_orders_seen`，因为回调无 HTTP 租户上下文；此路径白名单登记于 §3.5；CI lint 仅扫描 gw 代码库，不扫 api 代码库的 gw_pool 引用
 
 ### 3.8 边界情况与数据流细则（v1.3.2 新增）
 
@@ -902,6 +902,11 @@ def decode_waveform(blob: bytes) -> tuple[list[float], int]:
 - 该用户归属的设备 → 归还给上级管理员（L2 → L3 → L4）
 - 保留 `user_control_actions` 审计记录 3 年（合规），显示为"已注销用户 XXX（脱敏）"
 - `maintain_actions` 审计记录 **同款规则**：保留 3 年 + 脱敏显示（v1.3.3 追加）
+- `pay_orders` 审计记录 **同款规则**：保留 3 年（合规）+ 脱敏显示（v1.3.5 追加）：
+  - `openid` 脱敏：保留前 4 字符 + 后 4 字符，中间 `****`（如 `oABC****wXYZ`）；< 8 字符全隐 → `****`
+  - `total_fee` 展示：L4 对账可见原值；L3/L2 订单列表整元（模 100 取元，分位 **）；L1 本人订单详情可见原值，列表见 `***.**`
+  - `body` 不脱敏（商品描述，无 PII）
+  - pydantic serializer 层执行，DDL 不约束
 
 #### 3.8.17 保养计划推进状态机（v1.3.3 新增）
 
@@ -1322,17 +1327,58 @@ CREATE POLICY tenant_isolation ON maintain_actions USING (
   OR current_setting('app.role', true) = 'Administrators'
 );
 
+-- pay_orders（v1.3.5 扩展：补 usr_group / updated_at / deleted_at / refund_at / 6-值 pay_state / RLS / 索引）
+-- 审计类表：deleted_at 可软删（管理员"作废"走 deleted_at；真实 PII 脱敏见 §3.8.16，不物理删）
+-- PK 例外：out_trade_no 直接作 PK（微信协议要求；见 §4.6）
+-- 回调写入路径走 ruisheng_gw（BYPASSRLS）；api 路径走 ruisheng_api + SET LOCAL RLS
 CREATE TABLE pay_orders (
-  out_trade_no VARCHAR(50) PRIMARY KEY,
-  openid       VARCHAR(100) NOT NULL,
-  total_fee    INT NOT NULL CHECK (total_fee >= 0),
+  out_trade_no VARCHAR(50)  PRIMARY KEY,
+  openid       VARCHAR(100) NOT NULL,                        -- 与 user_wx_bindings.openid 同列宽；CHECK 交 pydantic
+  usr_group    VARCHAR(50)  NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT,
+  total_fee    INT          NOT NULL CHECK (total_fee >= 0), -- 单位：分；脱敏展示见 §3.8.16
   body         VARCHAR(255),
-  pay_state    VARCHAR(20) NOT NULL DEFAULT 'pending'
-                CHECK (pay_state IN ('pending','paid','failed','refund')),
-  created_at   timestamptz NOT NULL DEFAULT now(),
+  pay_state    VARCHAR(20)  NOT NULL DEFAULT 'pending'
+               CHECK (pay_state IN ('pending','paid','failed','refund','cancelled','expired')),
+  created_at   timestamptz  NOT NULL DEFAULT now(),
+  updated_at   timestamptz  NOT NULL DEFAULT now(),
   paid_at      timestamptz,
-  CHECK ((pay_state = 'paid') = (paid_at IS NOT NULL))
+  refund_at    timestamptz,
+  deleted_at   timestamptz,
+  -- 状态/时间戳 biconditional（类比 user_control_actions.completed_at）
+  CHECK ((pay_state = 'paid') = (paid_at IS NOT NULL)),
+  CHECK (refund_at IS NULL OR paid_at IS NOT NULL),          -- 退款必先于支付
+  CHECK (refund_at IS NULL OR refund_at >= paid_at)          -- 退款时间 ≥ 支付时间
 );
+CREATE INDEX ix_pay_orders_usr_group_created
+  ON pay_orders (usr_group, created_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX ix_pay_orders_openid_created
+  ON pay_orders (openid, created_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX ix_pay_orders_pending_created
+  ON pay_orders (created_at) WHERE pay_state = 'pending' AND deleted_at IS NULL;
+
+CREATE TRIGGER trg_pay_orders_updated BEFORE UPDATE ON pay_orders
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE pay_orders ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON pay_orders USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
+);
+
+-- pay_orders_seen（微信支付回调幂等守门表；无租户维度 → 无 RLS；30 天 TTL；见 §5.10.3）
+-- 定位：系统级幂等防护，类比 soft_logs；不参与多租户/业务查询
+-- 不加 usr_group：回调时无 tenant 上下文（类比 soft_logs）
+-- 写入：ruisheng_gw；只读审查：ruisheng_api
+CREATE TABLE pay_orders_seen (
+  out_trade_no VARCHAR(50) PRIMARY KEY,
+  notified_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_pay_orders_seen_notified_at_brin
+  ON pay_orders_seen USING BRIN (notified_at);   -- 时序追加 + 30d TTL 清理，BRIN 压缩率高
+
+REVOKE ALL ON pay_orders_seen FROM PUBLIC;
+GRANT INSERT, SELECT, DELETE ON pay_orders_seen TO ruisheng_gw;
+GRANT SELECT                  ON pay_orders_seen TO ruisheng_api;
 
 CREATE TABLE soft_logs (
   id          BIGSERIAL PRIMARY KEY,
@@ -1507,7 +1553,7 @@ COMMENT ON COLUMN scene_views.department IS
 | `DevPointData_His_*` 分表 | `point_data_history` hypertable | 按月旧表 concat + INSERT ... SELECT |
 | `His<YYYYMM>` 历史 | `point_data_history` + 波形入 `waveform_history` | 按 `data_array` 是否非空分流 |
 | `PhoneAlarmRecord` + `WXAlarmRecord` | `alarm_records` 合表 | `channels_sent` JSONB 按来源填 `{sms:"ok"}` / `{wechat:"ok"}` |
-| `PayOrder` | `pay_orders` | 直通 |
+| `PayOrder` | `pay_orders` | **非直通**（v1.3.5）：`usr_group` 从 `user_wx_bindings(openid).usr_group` 反查填入（找不到 → pgloader RAISE EXCEPTION 阻塞，不接受兜底租户；运维须 T-24h dry-run 提前列出 orphan）；`updated_at = created_at`；`paid_at` 保留旧值；`refund_at / deleted_at` = NULL；旧 `pay_state='refund'` 且无 refund_at → 以 `paid_at` 填补（历史订单无精确退款时间） |
 | `SoftLog` | `soft_logs` | 直通 |
 | `TimingPlan` | `timing_plans` | **非直通**（v1.3.3）：usr_group 从 `devices.usr_group` 按 `dev_number` 反查填入；`deleted_at = null`；`updated_at = created_at`；`DEL_xxx_ts` 前缀记录转 `deleted_at` |
 | `ZTPageInf` | `scene_pages` | **非直通**（v1.3.4）：`UserName → owner_user_name`；`usr_group` 从 `users(OwnerUserName).usr_group` 反查填入；`EnterTime → created_at`（保留旧值，不覆盖）；`deleted_at = null`；`updated_at = created_at`；`SonPagePic` 文件从旧目录上传对象存储并重写为 `s3://{bucket}/{usr_group}/scene/{page_id}/sonpage.{ext}` key；坐标若旧库为 INT 则 `::NUMERIC(10,2)` |
@@ -1580,11 +1626,54 @@ UPDATE scene_pages SET usr_group = usr_group;
 UPDATE scene_views SET usr_group = usr_group;
 ```
 
+**pay_orders AFTER LOAD 扩展**（v1.3.5 新增）
+
+```sql
+-- 1. 通过 openid 反查 usr_group（用旧库暂存表 _stg_pay_orders）
+UPDATE _stg_pay_orders s
+   SET usr_group = b.usr_group
+  FROM user_wx_bindings b
+ WHERE b.openid = s.openid AND s.usr_group IS NULL;
+
+-- 2. 强校验：无法反查的订单 → 阻塞迁移（拒绝兜底租户）
+--    T-24h dry-run：把 RAISE EXCEPTION 改 RAISE NOTICE 提前列出 orphan；运维清理后重跑
+DO $$
+DECLARE orphan_count BIGINT; sample TEXT;
+BEGIN
+  SELECT COUNT(*),
+         string_agg(out_trade_no, ',' ORDER BY created_at) FILTER (WHERE rn <= 10)
+    INTO orphan_count, sample
+  FROM (SELECT out_trade_no, created_at,
+               row_number() OVER (ORDER BY created_at) AS rn
+          FROM _stg_pay_orders WHERE usr_group IS NULL) t;
+  IF orphan_count > 0 THEN
+    RAISE EXCEPTION USING ERRCODE='RS001',
+      MESSAGE=format('MIGRATION BLOCKED: %s pay_orders rows without resolvable usr_group. Sample: %s',
+                     orphan_count, sample);
+  END IF;
+END $$;
+
+-- 3. 旧 pay_state='refund' 且 refund_at 缺失 → 以 paid_at 填补（历史订单容差）
+UPDATE _stg_pay_orders
+   SET refund_at = paid_at
+ WHERE pay_state = 'refund' AND refund_at IS NULL AND paid_at IS NOT NULL;
+
+-- 4. 通过校验后落入主表
+INSERT INTO pay_orders (out_trade_no, openid, usr_group, total_fee, body,
+                        pay_state, created_at, paid_at, refund_at, updated_at)
+SELECT out_trade_no, openid, usr_group, total_fee, COALESCE(body, ''),
+       COALESCE(pay_state, 'pending'), created_at, paid_at, refund_at, created_at
+  FROM _stg_pay_orders;
+
+DROP TABLE _stg_pay_orders;   -- 清理暂存表，防残留
+```
+
 ### 4.6 关键设计点
 
 | 点 | 选择 | 原因 |
 |---|---|---|
 | 业务键 vs 自增 ID | 双键：`id` PK + `dev_number` UNIQUE | FK 用 `dev_number` 易读，性能用 `id` |
+| `pay_orders` PK 例外 | `out_trade_no` 直接作 PK（无 `id BIGSERIAL`） | 微信协议全链路以 out_trade_no 为键（回调、退款 API、对账）；直接作 PK 让幂等表 FK 更自然；旧库直通最干净（v1.3.5） |
 | 时区 | 全 UTC，前端 +08 | 跨时区无歧义 |
 | 软删除 | `deleted_at` 字段 + 视图过滤 | 替代旧 `DEL_xxx_ts` 脏 hack |
 | `update_interval` | INT 单位 0.1s，[10..1000] | D6：1.0–100.0s，避 decimal 精度坑 |
@@ -1611,6 +1700,13 @@ class ErrCode(IntEnum):
     DEV_CRC_FAIL    = -202
     INTERNAL        = -300   # HTTP 500
     DB_UNAVAILABLE  = -301   # HTTP 503
+    # 支付相关（v1.3.5 新增）
+    PAY_SIGN_FAIL        = -400  # HTTP 400 / 微信回调 xml_fail
+    PAY_DUPLICATE        = -401  # HTTP 200，幂等命中（非错误，事件登记）
+    PAY_STATE_CONFLICT   = -402  # HTTP 409 / 回调 xml_ok（非法状态转移）
+    PAY_AMOUNT_MISMATCH  = -403  # HTTP 409 / 回调 xml_ok（金额不符）
+    PAY_EXPIRED          = -404  # HTTP 409（订单已过期不可付）
+    PAY_REFUND_FAIL      = -405  # HTTP 502（退款第三方返回非 0）
 
 class ApiResponse(BaseModel):
     code: int
@@ -1812,6 +1908,8 @@ SELECT add_compression_policy('user_control_actions', INTERVAL '30 days');
 | `bloat_check` | 每天 | 查 `pg_stat_user_tables`，bloat ratio > 3 → 告警 |
 | `archive_to_oss` | 每月 1 号 02:00 | retention policy 剔除前，先 COPY TO Parquet 上传对象存储 |
 | `redis_memory_cap` | 每 5 min | `INFO memory` > 80% → 告警，> 95% → 限流保护 |
+| `pay_orders_seen_cleanup` | 每天 02:00（ruisheng_gw 角色）| `DELETE FROM pay_orders_seen WHERE notified_at < now() - INTERVAL '30 days'`；连续 2 日 0 行删除 → P2 告警 |
+| `pay_orders_expire_scan` | 每 5 min（ruisheng_gw 角色）| `UPDATE pay_orders SET pay_state='expired' WHERE pay_state='pending' AND created_at < now() - INTERVAL '2 hours'`；失败 3 次升 P2 |
 
 **连接池扩缩规则（修复 M5）**：
 
@@ -2759,6 +2857,18 @@ T+3min+3s 设备 ACK 停机 → 成功通知用户
   - (6) Q-B08（子页面层级 / 背景图分辨率 / SVG 支持）保留为 §4.2 DDL 块顶部 TODO 注释，不阻塞 Plan 0；业务确认后再补 `parent_id` 列
   - (7) 本轮审查产出 0 BLOCKER + 3 MAJOR + 5 MINOR，全部 MAJOR 已落地本次 commit（MAJOR-A 租户一致性触发器、MAJOR-B Company/Department 快照语义、MAJOR-C partial unique 字段从 (scene_page_id, dev_number, pos_x, pos_y) 收敛到 (scene_page_id, dev_number)）；MINOR 按"Alembic include_object 过滤"等 implementer 备忘处理
   - implementer 备忘：Alembic autogenerate 对 partial unique + COLLATE "zh-x-icu" 列的幽灵 diff 处理见 C7 v1.3.3 MAJOR #1 同款 `include_object` 过滤
+- **v1.3.5 / 2026-04-14**：**支付模块 DDL 补强轮（Plan 0 Stage C Task C9 派发前 2 轮审查产出）**。`SHARED_SCHEMA_VERSION` bump `20260414 → 20260415`（breaking：新增 pay_orders ORM + §5.1 PAY_* ErrCode 6 项）。关键修订：
+  - (1) **§4.2 pay_orders 重写**：新增 usr_group FK + RLS tenant_isolation policy（NOT FORCE；回调走 ruisheng_gw BYPASSRLS）；pay_state 扩至 6 值（+cancelled +expired）；新增 updated_at / deleted_at / refund_at；biconditional CK `(pay_state='paid')=(paid_at IS NOT NULL)` + refund_at 非空 ⇒ paid_at 非空 + refund_at ≥ paid_at；3 个 partial index（usr_group+created / openid+created / pending+created 用于 expired scan）
+  - (2) **§4.2 pay_orders_seen 搬入 §4.2**（原 §3.5 片段）：无 usr_group 无 RLS，角色授权 + BRIN(notified_at)；30 天 TTL 见 §5.10
+  - (3) **§3.5 回调代码改走 gw_pool**（ruisheng_gw BYPASSRLS）；mark_paid 签名加 db 参数 + 返回 rows_affected；非法转移抛 BizError 由 handler 捕获记 soft_log 后仍返 xml_ok 防微信重试
+  - (4) **§3.7 追加 wxpay_notify 例外路径白名单**（api 服务内 gw_pool 引用）
+  - (5) **§3.8.16 脱敏规则扩展**：pay_orders.openid 前 4+后 4 脱敏；total_fee L4 原值/L3–L2 整元/L1 列表 `***.**`
+  - (6) **§3.6 L664 备注**：L1 订单查询需 ORM 额外按 openid 过滤
+  - (7) **§4.5 pay_orders 改非直通**：openid → user_wx_bindings.usr_group 反查；找不到 pgloader RAISE EXCEPTION 阻塞（拒兜底租户）；旧 refund 无 refund_at → 以 paid_at 填补
+  - (8) **§4.6 追加 pay_orders PK 例外**（out_trade_no 直接作 PK）
+  - (9) **§5.1 新增 6 个 ErrCode**（PAY_SIGN_FAIL / PAY_DUPLICATE / PAY_STATE_CONFLICT / PAY_AMOUNT_MISMATCH / PAY_EXPIRED / PAY_REFUND_FAIL）
+  - (10) **§5.10 新增 2 个 Job**（pay_orders_seen 清理 + pay_orders expired 扫描，均走 ruisheng_gw 角色）
+  - 2 轮审查产出 0 BLOCKER + 5 MAJOR（全修）+ 4 MINOR；MINOR 按"Plan 2 api 层 pydantic + body 字段长度"延后
 
 ---
 
