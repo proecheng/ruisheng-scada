@@ -225,43 +225,83 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
 1. 打开 `D:\江苏润盛`，重新连接 Claude Code session
 2. 指向本文件：让 Claude 读 `docs/superpowers/plans/PROGRESS.md` 恢复状态
 3. （可选）同步远端：`cd D:\江苏润盛\.claude\worktrees\plan-0-foundation && git pull`
-4. Claude 按本文件 "下一步待办" 接着从 **Stage D / Task D0 Docker + TimescaleDB 环境校验** 开始（阻塞：Docker Desktop 未装）
+4. Claude 按本文件 "下一步待办" 接着从 **Stage D / Task D2（autogenerate 初始 schema）** 开始
 5. 继续 subagent-driven-development 流程（implementer → spec review → quality review）
 
 ---
 
-## 🔖 会话交接点（2026-04-16）
+## 🔖 会话交接点（2026-04-16，D0+D1 完成后）
 
-**当前位置**：Stage C 全部完成 ✅，Stage D 尚未开始
+**当前位置**：Stage D 进行中，**D0 + D1 完成 (2/8)**，下一步 **D2**
 
-**立即阻塞（进入 Stage D 前必须解决）**：
-1. **Docker Desktop 未装** — 用户已同意安装，下次续跑前应完成安装 + 启动（托盘绿灯）
-2. （可选）Windows 环境变量 `PYTHONUTF8=1`（PowerShell: `[Environment]::SetEnvironmentVariable("PYTHONUTF8", "1", "User")`）
+**D2 需要做的事（autogenerate 初始 schema 迁移）**：
+1. 启动 docker stack（恢复 D0 down -v 清理的容器）：
+   ```bash
+   cd D:\江苏润盛\.claude\worktrees\plan-0-foundation
+   docker compose -f docker-compose.dev.yml up -d
+   # 等 10 秒让 healthcheck 通过；docker compose ps 确认两个 healthy
+   ```
+2. 运行 autogenerate：
+   ```bash
+   uv run alembic revision --autogenerate -m "initial schema"
+   ```
+   → 产出 `alembic/versions/2026XXXX_<rev>_initial_schema.py`
+3. **严格人工审阅生成的迁移**（autogenerate 有已知盲点）：
+   - ✅ 26 张 CREATE TABLE 都在
+   - ✅ 所有 FK/CK/UQ 名字符合 naming_convention（`ck_<table>_<name>` 等）
+   - ⚠️ **autogenerate 不检测** TimescaleDB hypertable / retention / compression — 延后到 D5
+   - ⚠️ **autogenerate 不检测** RLS / policies / roles — 延后到 D3
+   - ⚠️ **autogenerate 不检测** `postgresql_with` 表参数（fillfactor 等）— 延后到 D4
+   - ⚠️ **autogenerate 不检测** PL/pgSQL 触发器函数（`set_updated_at()`、`enforce_scene_tenant_consistency()` 等）— 延后到 D3
+4. `uv run alembic upgrade head` → 在容器 PG 里建表
+5. 核对 `docker compose exec postgres psql -U ruisheng_dev -d ruisheng -c '\dt'` → 26 张表
+6. `uv run alembic downgrade base` 回滚测试 → 回到空库
+7. 再 `uv run alembic upgrade head`（幂等性检查）
+8. commit + push
 
-**Docker 装好后下一步**（Claude 自动执行 D0 7 步校验）：
-```
-1. docker --version                    （≥ 24.0）
-2. docker compose version              （≥ v2.20）
-3. docker run --rm hello-world         （基础连通）
-4. cd worktree && docker compose -f docker-compose.dev.yml up -d
-5. docker compose exec pg psql -U ruisheng -c "SELECT extname, extversion FROM pg_extension;"
-   → 确认 TimescaleDB 扩展（timescaledb/pg 15）
-6. docker compose exec redis redis-cli ping   → PONG
-7. docker compose down -v                      （清理）
-```
+**D2 已知风险**：
+- autogenerate 可能漏掉 `naming_convention` 产生的约束名（需人工补）
+- Double/LargeBinary/INET 类型可能 autogenerate 生成为 `sa.Float`、`sa.LargeBinary` 而非 PG 特化 — 需检查
+- `default=func.now()` vs `server_default` 的 Python-side 默认 autogenerate 不生成 DDL — 需检查哪些是 server_default
 
-D0 通过后进入 **D1**（alembic baseline revision）。Stage D 共 8 个 task（D0 校验 + D1–D7 迁移），见 plan 文档 §阶段 D。
+---
 
-**当前技术栈状态**：
+## 📚 Stage D 累计关键经验（后续 task 可参考）
+
+### 镜像加速（国内必须）
+- **`timescale/timescaledb:2.16.1-pg15` 只在 `docker.1ms.run/` 可拉**
+- DaoCloud 对该镜像返 500（其他 image 正常），USTC/163 DNS 解析失败，dockerproxy IP 被污染
+- 已配置 5 个镜像源到 Docker Engine（`docker.m.daocloud.io` 等），特定 image 失败时用 `docker pull docker.1ms.run/<name> && docker tag <1ms.run/name> <name>` 变通
+
+### CJK 路径 + uv editable install
+- `D:\江苏润盛\...` 路径下，uv 写入 UTF-8 `.pth` 被 Python `mbcs` 解码器损坏 → editable install 的 `ruisheng_shared` 包 import 失败
+- 修法：alembic.ini `prepend_sys_path = . ruisheng-shared/src` + `path_separator = space`（跨平台）
+- **Stage B-C 的 pytest 配置已经 hack 过**：`pyproject.toml` `pythonpath = ["ruisheng-shared/src"]` 原因同此
+
+### Windows configparser GBK 限制
+- `alembic.ini` 的注释不能含中文（GBK 解码器会炸 `UnicodeDecodeError: 'gbk' codec can't decode`）
+- 所有 `.ini` 注释必须 ASCII/英文
+
+### Docker Desktop 配置层次
+- `C:\Users\<user>\.docker\daemon.json` — Docker CLI 配置（**Docker Desktop 不读**）
+- `%APPDATA%\Docker\settings-store.json` — Docker Desktop 应用配置（`UseContainerdSnapshotter`、`AutoStart` 等）
+- **Docker Engine 的 daemon 配置**（含 `registry-mirrors`）通过 **Docker Desktop UI → Settings → Docker Engine** 标签页编辑，存在别处，不是上面两个文件
+- 启用 containerd snapshotter 时 `registry-mirrors` 生效路径不同；本项目用默认（不启 containerd）
+
+---
+
+## 当前技术栈状态（2026-04-16 D1 完成后）
+
 - 26 张 ORM 模型全部实现，mypy 0 issues（28 files），pytest 321 passed + 8 skipped
 - `SHARED_SCHEMA_VERSION=20260415`，spec `v1.3.6`
-- Git 全部 push 完毕；tag `plan-0-stage-c-complete` 已存在
-- worktree HEAD: `9ffa248`，master HEAD: `0f9b4c9`
+- Alembic 1.13 已加为显式 dev-dep，`alembic/env.py` async 版本就绪，`alembic/versions/` 空（待 D2 填充）
+- Git 全部 push 完毕；tag `plan-0-stage-c-complete` 已存在（Stage D 未打 tag）
+- worktree HEAD: `52904f9`，master HEAD: `3e1ba92`
 
 ### Stage D 快速导航
 
 - Plan 位置：`docs/superpowers/plans/2026-04-13-plan-0-foundation.md` §阶段 D
-- Task 顺序：D0 环境校验 → D1 baseline → D2 初始 schema → D3 RLS + roles → D4 fillfactor/autovacuum → D5 hypertable + retention → D6 测试集成 → D7 收尾 tag
+- Task 顺序：~~D0 环境校验~~ ✅ → ~~D1 baseline~~ ✅ → **D2 初始 schema** ← 下一步 → D3 RLS + roles + 触发器函数 → D4 fillfactor/autovacuum → D5 hypertable + retention + compression → D6 测试集成 → D7 收尾 tag
 - 与 Stage C 的区别：**需要真实 PG + Redis 容器**（不再是纯 Python 单测）
 - 关键产出：`alembic/versions/*.py` 迁移脚本 + `tests/integration/` 集成测试
 
