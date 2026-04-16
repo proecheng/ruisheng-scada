@@ -5,17 +5,26 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage C 完成** ✅（11 业务模型 + __init__ 汇总 + tag，实际任务数按 plan 计为 11/11 主要 task）
+## 当前状态：Plan 0 **Stage D 进行中（D0+D1 完成 2/8）**
 
-**最后更新**：2026-04-16（Stage C 全部完成，tag `plan-0-stage-c-complete` 已推送）
+**最后更新**：2026-04-16（D0 环境校验通过 + D1 alembic init 完成 + 推送）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`9ffa248 feat(shared): timeseries models (PointDataRealtime, PointDataHistory, WaveformHistory)`
-**最新 tag**：`plan-0-stage-c-complete` ✅（26 张表 ORM + mypy 干净 + 321 tests）
-**master 最新 commit**：`eaba22d docs(progress): C11 done (321 tests + 8 skip), timeseries models`
+**最近 commit**（worktree）：`52904f9 fix(db): D1 alembic path_separator space (cross-platform) + explain prepend_sys_path deviation`
+**最新 tag**：`plan-0-stage-c-complete`（Stage D 未打 tag）
+**master 最新 commit**：`0f9b4c9 docs(progress): Stage C complete — 26 ORM tables + tag plan-0-stage-c-complete`（master 待更新）
 **SHARED_SCHEMA_VERSION**：`20260415`
-**测试状态**：321 passed + 8 skipped = 329 collected（Stage B 52 + C1–C11 269 + 8 Stage D/E 占位 skip）
+**测试状态**：321 passed + 8 skipped（D1 未回归）
 
-**下一步**：进入 **Stage D（Alembic 迁移）**。前置：D0 Docker + TimescaleDB 环境校验（需 Docker Desktop）。
+**下一步**：D2 — 生成初始 revision（autogenerate）。已完成 D0 环境验证 + D1 alembic 脚手架。
+
+---
+
+### Stage D 进度表
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| D0 | Docker + TimescaleDB 环境校验 | （无 commit，纯验证） | ✅ 7 步全过：docker 29.4.0 / compose v5.1.1 / hello-world / PG+Redis healthy / timescaledb 2.16.1 扩展 / redis PONG / down -v；**关键经验**：timescale/timescaledb 镜像国内仅 `docker.1ms.run` 可拉（DaoCloud 500、USTC/163 DNS 失败、dockerproxy IP 被污染） |
+| D1 | alembic init + async env.py | `edb23cf` + fixup `52904f9` | ✅ alembic 1.13 显式依赖 + env.py 加载 26 张表 metadata + DATABASE_URL 环境变量；post-review 修 `path_separator = space`（跨平台）+ 解释性注释（configparser Windows GBK 限制→注释用英文）；**关键经验**：CJK 路径下 uv UTF-8 `.pth` 被 Python mbcs 解码损坏，必须 `prepend_sys_path = . ruisheng-shared/src` |
 
 ---
 
