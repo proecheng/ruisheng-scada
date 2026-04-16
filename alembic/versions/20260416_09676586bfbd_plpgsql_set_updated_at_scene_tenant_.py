@@ -49,25 +49,26 @@ def upgrade() -> None:
     """)
 
     # 函数 2：scene 租户一致性校验（spec §4.1.1 (4)）
-    # 注意：严格按 spec L996-1038 复刻，错误消息为英文 'scene_tenant_violation: ...'
+    # 注意：严格按 spec L996-1038 复刻 —— DECLARE 用 VARCHAR(50) 匹配源列宽，
+    #       6 处 RAISE EXCEPTION 都带 % 插值（offending 字段名+值）便于运维定位
     op.execute(r"""
         CREATE OR REPLACE FUNCTION enforce_scene_tenant_consistency()
         RETURNS TRIGGER AS $$
         DECLARE
-          v_user_ug  varchar(40);
-          v_page_ug  varchar(40);
-          v_dev_ug   varchar(40);
+          v_owner_ug VARCHAR(50);
+          v_page_ug  VARCHAR(50);
+          v_dev_ug   VARCHAR(50);
         BEGIN
           -- 1) owner_user_name 存在且 usr_group 与传入一致
-          SELECT usr_group INTO v_user_ug FROM users
+          SELECT usr_group INTO v_owner_ug FROM users
             WHERE user_name = NEW.owner_user_name AND deleted_at IS NULL;
-          IF v_user_ug IS NULL THEN
-            RAISE EXCEPTION 'scene_tenant_violation: owner not found or deleted'
-              USING ERRCODE='23514';
+          IF v_owner_ug IS NULL THEN
+            RAISE EXCEPTION 'scene_tenant_violation: owner_user_name=% not found or soft-deleted',
+              NEW.owner_user_name USING ERRCODE = '23514';
           END IF;
-          IF v_user_ug <> NEW.usr_group THEN
-            RAISE EXCEPTION 'scene_tenant_violation: user/scene usr_group mismatch'
-              USING ERRCODE='23514';
+          IF v_owner_ug <> NEW.usr_group THEN
+            RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches users(%).usr_group=%',
+              NEW.usr_group, NEW.owner_user_name, v_owner_ug USING ERRCODE = '23514';
           END IF;
 
           -- 2) 若是 scene_views：scene_page_id 的 usr_group 一致
@@ -75,24 +76,24 @@ def upgrade() -> None:
             SELECT usr_group INTO v_page_ug FROM scene_pages
               WHERE id = NEW.scene_page_id AND deleted_at IS NULL;
             IF v_page_ug IS NULL THEN
-              RAISE EXCEPTION 'scene_tenant_violation: page not found or deleted'
-                USING ERRCODE='23514';
+              RAISE EXCEPTION 'scene_tenant_violation: scene_page_id=% not found or soft-deleted',
+                NEW.scene_page_id USING ERRCODE = '23514';
             END IF;
             IF v_page_ug <> NEW.usr_group THEN
-              RAISE EXCEPTION 'scene_tenant_violation: page/view usr_group mismatch'
-                USING ERRCODE='23514';
+              RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches scene_pages(id=%).usr_group=%',
+                NEW.usr_group, NEW.scene_page_id, v_page_ug USING ERRCODE = '23514';
             END IF;
 
             -- 3) dev_number 的 usr_group 一致
             SELECT usr_group INTO v_dev_ug FROM devices
               WHERE dev_number = NEW.dev_number AND deleted_at IS NULL;
             IF v_dev_ug IS NULL THEN
-              RAISE EXCEPTION 'scene_tenant_violation: device not found or deleted'
-                USING ERRCODE='23514';
+              RAISE EXCEPTION 'scene_tenant_violation: dev_number=% not found or soft-deleted',
+                NEW.dev_number USING ERRCODE = '23514';
             END IF;
             IF v_dev_ug <> NEW.usr_group THEN
-              RAISE EXCEPTION 'scene_tenant_violation: device/view usr_group mismatch'
-                USING ERRCODE='23514';
+              RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches devices(%).usr_group=%',
+                NEW.usr_group, NEW.dev_number, v_dev_ug USING ERRCODE = '23514';
             END IF;
           END IF;
 
