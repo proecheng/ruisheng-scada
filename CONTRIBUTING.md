@@ -64,3 +64,22 @@ uv sync --all-packages
 - 新代码必须带测试
 - `protocol/` 分支覆盖 95%，`domain/` 90%，`services/` 80%（见设计文档 §6.2）
 - mutmut 每周自动跑（存活率 < 10% 算有效）
+
+## 环境变量
+
+项目依赖若干环境变量；本地开发可用 `.env` 文件（gitignore 忽略），CI/生产通过 secret manager 注入。
+
+| 变量 | 用途 | 引入版本 | 遗漏后果 |
+|---|---|---|---|
+| `DATABASE_URL` | Alembic / SQLAlchemy 连接串 | Stage A | env.py 找不到 DB |
+| `REDIS_URL` | Redis 连接 | Stage A | 启动报错 |
+| `RUISHENG_SHARED_REQUIRED_VERSION` | api/gw 启动时 schema 版本校验 | Stage A | 启动拒绝 |
+| `USE_EMBEDDED_PG` | 测试模式开关（0/1） | Stage A | 默认 0（用 docker） |
+| `RUISHENG_GW_PASSWORD` | ruisheng_gw 角色密码 | **Stage D/D3** | alembic upgrade 报 RuntimeError |
+| `RUISHENG_API_PASSWORD` | ruisheng_api 角色密码 | **Stage D/D3** | alembic upgrade 报 RuntimeError |
+
+**初始化**：
+```bash
+cp .env.example .env     # 首次
+set -a; . ./.env; set +a # bash/zsh 注入当前 shell
+```
