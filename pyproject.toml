@@ -24,6 +24,7 @@ dev-dependencies = [
   "asyncpg>=0.29",
   "taskipy>=1.13",
   "fakeredis>=2.23",
+  "alembic>=1.13",
 ]
 
 [tool.ruff]
