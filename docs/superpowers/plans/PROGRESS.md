@@ -216,15 +216,45 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
 1. 打开 `D:\江苏润盛`，重新连接 Claude Code session
 2. 指向本文件：让 Claude 读 `docs/superpowers/plans/PROGRESS.md` 恢复状态
 3. （可选）同步远端：`cd D:\江苏润盛\.claude\worktrees\plan-0-foundation && git pull`
-4. Claude 按本文件 "下一步待办" 接着从 **Stage C / Task C1（base.py — Declarative Base + 通用 mixin）** 开始
+4. Claude 按本文件 "下一步待办" 接着从 **Stage D / Task D0 Docker + TimescaleDB 环境校验** 开始（阻塞：Docker Desktop 未装）
 5. 继续 subagent-driven-development 流程（implementer → spec review → quality review）
 
-### Stage C 快速导航
+---
 
-- Plan 位置：`docs/superpowers/plans/2026-04-13-plan-0-foundation.md` §阶段 C（line 2341+）
-- Task 结构：C1 base.py → C2 wx_groups → C3 users/bindings/phones/emails → C4 devices/points/sims/templates → C5–C20 其余业务表 → C21 __init__ 汇总 → C22 收尾 tag
-- 依赖：Stage B 的 enums（AlarmType / ControlStatus / Authority）直接被 ORM model 的 Enum column 引用
-- 仍是纯 Python（SQLAlchemy + pydantic），不需要 Docker — Docker 仅在 Stage D（alembic migrations）开始需要
+## 🔖 会话交接点（2026-04-16）
+
+**当前位置**：Stage C 全部完成 ✅，Stage D 尚未开始
+
+**立即阻塞（进入 Stage D 前必须解决）**：
+1. **Docker Desktop 未装** — 用户已同意安装，下次续跑前应完成安装 + 启动（托盘绿灯）
+2. （可选）Windows 环境变量 `PYTHONUTF8=1`（PowerShell: `[Environment]::SetEnvironmentVariable("PYTHONUTF8", "1", "User")`）
+
+**Docker 装好后下一步**（Claude 自动执行 D0 7 步校验）：
+```
+1. docker --version                    （≥ 24.0）
+2. docker compose version              （≥ v2.20）
+3. docker run --rm hello-world         （基础连通）
+4. cd worktree && docker compose -f docker-compose.dev.yml up -d
+5. docker compose exec pg psql -U ruisheng -c "SELECT extname, extversion FROM pg_extension;"
+   → 确认 TimescaleDB 扩展（timescaledb/pg 15）
+6. docker compose exec redis redis-cli ping   → PONG
+7. docker compose down -v                      （清理）
+```
+
+D0 通过后进入 **D1**（alembic baseline revision）。Stage D 共 8 个 task（D0 校验 + D1–D7 迁移），见 plan 文档 §阶段 D。
+
+**当前技术栈状态**：
+- 26 张 ORM 模型全部实现，mypy 0 issues（28 files），pytest 321 passed + 8 skipped
+- `SHARED_SCHEMA_VERSION=20260415`，spec `v1.3.6`
+- Git 全部 push 完毕；tag `plan-0-stage-c-complete` 已存在
+- worktree HEAD: `9ffa248`，master HEAD: `0f9b4c9`
+
+### Stage D 快速导航
+
+- Plan 位置：`docs/superpowers/plans/2026-04-13-plan-0-foundation.md` §阶段 D
+- Task 顺序：D0 环境校验 → D1 baseline → D2 初始 schema → D3 RLS + roles → D4 fillfactor/autovacuum → D5 hypertable + retention → D6 测试集成 → D7 收尾 tag
+- 与 Stage C 的区别：**需要真实 PG + Redis 容器**（不再是纯 Python 单测）
+- 关键产出：`alembic/versions/*.py` 迁移脚本 + `tests/integration/` 集成测试
 
 ---
 
