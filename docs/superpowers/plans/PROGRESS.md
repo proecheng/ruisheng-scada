@@ -32,15 +32,20 @@
 
 ## 仓库关键坐标
 
-- **GitHub**：https://github.com/proecheng/ruisheng-scada （Private）
+- **GitHub**：https://github.com/proecheng/ruisheng-scada （Private，账号 proecheng）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **主分支 commit**（master 最新）：`1532507 docs(progress): Stage B complete`
-- **worktree 实施分支 commit**（feature/plan-0-foundation 最新）：`97f38b1 feat(shared): schemas package with generic ApiResponse shell`
+- **master 最新 commit**：`045c14f docs(progress): D3 complete — DB roles + GRANT baseline (4/10 in Stage D)`
+- **worktree 实施分支最新 commit**：`d806a45 style(db): fixup D3 ruff-format + ruff-check`（前置 `2474275` feat D3）
+- **alembic current**：`e74ffa548c2f (head)` — D3 migration
 - **两个 worktree**：
   - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
   - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation（实际代码）
-- **已 push 的 tag**：`plan-0-stage-a-complete`、`plan-0-stage-b-complete`
+- **已 push 的 tag**：`plan-0-stage-a-complete`、`plan-0-stage-b-complete`、`plan-0-stage-c-complete`
+- **Docker stack**：运行中 (`docker compose -f docker-compose.dev.yml ps` 在 worktree)
+  - `ruisheng-postgres-dev` (timescale/timescaledb:2.16.1-pg15) healthy，0.0.0.0:5432
+  - `ruisheng-redis-dev` (redis:7-alpine) healthy，0.0.0.0:6379
+  - 运行时长 ~1h+，内含 D3 应用的 26 张表 + 2 DB 角色 + GRANT
 
 ---
 
@@ -233,9 +238,59 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
 
 ---
 
-## 🔖 会话交接点（2026-04-16，D2 完成 + Plan v1.1 重编后）
+## 🔖 会话交接点（2026-04-16，D3 完成后 — D4 准备）
 
-**当前位置**：Stage D，D0/D1/D2 完成 3/10，下一步 **新 D3（DB 角色 + GRANT）**
+**当前位置**：Stage D，D0/D1/D2/D3 完成 **4/10**，下一步 **D4（PL/pgSQL 函数 ×3）**
+
+**环境状态**（续跑直接用，无需重建）：
+- Docker stack 运行中（postgres + redis，~1h+ uptime，均 healthy）
+- alembic 当前：`e74ffa548c2f (head)` = D3 roles+grants
+- PG 库里已有：26 张表 + alembic_version + 2 角色（ruisheng_gw BYPASSRLS / ruisheng_api）+ schema/table/sequence GRANT
+- 环境变量（续跑时重新 export，shell 会话不保留）：
+  ```bash
+  export RUISHENG_GW_PASSWORD='dev-gw-change-me'
+  export RUISHENG_API_PASSWORD='dev-api-change-me'
+  ```
+  值以 `.env.example` 为准；dev 直接用占位；生产走 secret manager
+
+**本次会话（2026-04-16）主要成果**：
+1. ✅ D2 完成 — autogenerate 26 张表 + 幂等 + 双 review APPROVED（commit `9f2f102`）
+2. ✅ Plan v1.1 重编 D3-D10 — 2 轮 plan gap review 抓 5 MAJOR + 落 controller 3 顾虑（master `79119e0`）
+3. ✅ Plan bug #1 反向 fix — D3 `REVOKE FROM PUBLIC` 无法缩权 → 改 `REVOKE FROM PUBLIC, gw, api`（master `88b3576`）
+4. ✅ D3 完成 — DB 角色 + 三级 GRANT + 3 张表细粒度 + 密码 raise + 幂等 ALTER ROLE（commits `2474275` + fixup `d806a45`）
+5. ✅ Tech debt #2 全仓清扫 — D3 fixup 顺手过 `ruff format .` 清 13 个 Stage C 遗留 drift 文件
+
+**下一步：D4 — PL/pgSQL 通用函数（3 个）**
+
+**Spec 依据**：§4.1.1 (1)(4)(5) L978-1054，共 3 个函数：
+1. `set_updated_at()` — 简单 `NEW.updated_at = now()`（L978-979）
+2. `enforce_scene_tenant_consistency()` — scene_pages / scene_views BEFORE INSERT/UPDATE 校验（L996-1038）含 5 处 `RAISE EXCEPTION USING ERRCODE='23514'` 英文错误消息（**不是 CJK**）
+3. `fill_scene_views_snapshot()` — scene_views BEFORE INSERT 反查 users 填 company/department（L1043-1054）
+
+**D4 关键要点**（M3 已融合入 plan）：
+- 每个函数尾部硬绑 `SET search_path = pg_catalog, public`（函数级属性，防会话层 search_path 劫持）
+- 三函数全部 **SECURITY INVOKER**（默认，绝不用 DEFINER 否则绕 RLS）
+- 函数体所有 `WHERE ... AND deleted_at IS NULL` 必须保留（spec L1003/L1015/L1026/L1051）
+- `CREATE OR REPLACE FUNCTION` 本身幂等，downgrade 用 `DROP FUNCTION IF EXISTS` 反向
+- Dollar-quoting `$$ ... $$` 避免 Python f-string 单引号冲突；建议 `r"""..."""` 原始字符串
+
+**D4 执行路径**：
+1. `cd D:/江苏润盛/.claude/worktrees/plan-0-foundation`
+2. `uv run alembic revision -m "plpgsql: set_updated_at + scene tenant helpers"`
+3. 按 plan §Task D4 Step 2 的完整代码片段贴入生成的 migration 文件（3 段 `op.execute(r"""...""")`）
+4. `uv run alembic upgrade head` → `\df public.*` 见 3 个函数，`prosecdef=false`，`proconfig={search_path=pg_catalog, public}`
+5. downgrade `-1` → `\df` 无；再 upgrade 幂等
+6. 回归 pytest 321+8
+7. commit + push（conventional commits `feat(db): D4 plpgsql functions ...`）
+
+**D4 后的 task 链（D5-D10）**：见 plan §Stage D 完整 markdown；每个 task 都带详细 code snippet + 验证步骤 + 关键风险。
+
+**执行纪律**：
+- subagent-driven：每 task 1 implementer + 2 review（spec → quality）
+- 发现 plan/spec bug **必须 BLOCKED**，绝不静默改（已见 Plan bug #1 良好先例）
+- commit 前必须 `uv run task fmt`（D3 fixup 已验证 pre-commit format gate）
+- commit 不混 side-fix（除非与 feat 强关联，如 D3 的 `.env.example` / `CONTRIBUTING.md`）
+- 每 task 完成后立即更新 PROGRESS + push master
 
 **Plan v1.1 重编原因**：D2 完成后做 plan gap review，发现 v1.0 对 spec v1.3.3/1.3.4/1.3.6 覆盖严重不足：
 - 3 个 PL/pgSQL 函数（set_updated_at / enforce_scene_tenant_consistency / fill_scene_views_snapshot）0 task 覆盖
@@ -306,15 +361,17 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
 
 ---
 
-## 当前技术栈状态（2026-04-16 D2 完成后）
+## 当前技术栈状态（2026-04-16 D3 完成后）
 
 - 26 张 ORM 模型全部实现，mypy 0 issues（28 files），pytest 321 passed + 8 skipped
-- `SHARED_SCHEMA_VERSION=20260415`，spec `v1.3.6`
+- `SHARED_SCHEMA_VERSION=20260415`，spec `v1.3.6`（Plan v1.1 重编对应 spec v1.3.7 follow-up，见 D10）
 - Alembic 1.13 已加为显式 dev-dep，`alembic/env.py` async 版本就绪
-- **`alembic/versions/` 已有 1 个迁移**：`20260416_e05529ef4abb_initial_schema_26_tables.py`（26 张 CREATE TABLE，幂等性验证过）
-- Docker stack 运行中（postgres + redis healthy）；PG 里有完整 26 张表 + alembic_version
-- Git 全部 push 完毕；tag `plan-0-stage-c-complete` 已存在（Stage D 未打 tag）
-- worktree HEAD: `9f2f102`，master HEAD: `3e1ba92`（待 D2 PROGRESS 更新 push）
+- **`alembic/versions/` 已有 2 个迁移**：
+  - D2：`20260416_e05529ef4abb_initial_schema_26_tables.py`（26 张 CREATE TABLE）
+  - D3：`20260416_e74ffa548c2f_db_roles_ruisheng_gw_ruisheng_api_grants.py`（2 角色 + GRANT）
+- Docker stack 运行中（postgres + redis healthy）；PG 里有完整 26 张表 + alembic_version + 2 角色
+- Git 全部 push 完毕；tag `plan-0-stage-c-complete` 已存在（Stage D 未打 tag，D10 才打）
+- worktree HEAD: `d806a45`，master HEAD: `045c14f`
 
 ### Stage D 快速导航
 
