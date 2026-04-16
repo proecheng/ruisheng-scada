@@ -5,15 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 Stage C 进行中（11/22）
+## 当前状态：Plan 0 **Stage C 完成** ✅（11 业务模型 + __init__ 汇总 + tag，实际任务数按 plan 计为 11/11 主要 task）
 
-**最后更新**：2026-04-16（Stage C C11 完成后）
+**最后更新**：2026-04-16（Stage C 全部完成，tag `plan-0-stage-c-complete` 已推送）
 **工作分支**：`feature/plan-0-foundation`
 **最近 commit**（worktree）：`9ffa248 feat(shared): timeseries models (PointDataRealtime, PointDataHistory, WaveformHistory)`
-**最新 tag**：`plan-0-stage-b-complete`（Stage C 未打 tag）
-**master 最新 commit**：`01f063f docs(spec): v1.3.6 — soft_logs增强 + user_login_records新增DDL`
-**SHARED_SCHEMA_VERSION**：`20260415`（C11 不触发 bump — timeseries ORM 不含 Pydantic/Enum）
-**测试状态**：321 passed + 8 skipped = 329 collected（Stage B 52 + C1–C10 221 + C11 48 + 8 Stage D/E 占位 skip）
+**最新 tag**：`plan-0-stage-c-complete` ✅（26 张表 ORM + mypy 干净 + 321 tests）
+**master 最新 commit**：`eaba22d docs(progress): C11 done (321 tests + 8 skip), timeseries models`
+**SHARED_SCHEMA_VERSION**：`20260415`
+**测试状态**：321 passed + 8 skipped = 329 collected（Stage B 52 + C1–C11 269 + 8 Stage D/E 占位 skip）
+
+**下一步**：进入 **Stage D（Alembic 迁移）**。前置：D0 Docker + TimescaleDB 环境校验（需 Docker Desktop）。
 
 ---
 
@@ -48,6 +50,8 @@
 | C9 | PayOrder + PayOrderSeen + ErrCode PAY_* | `232d413` + fixup `7517879` | 40 tests + 2 Stage D/E 占位 skip（+ErrCode 6 个）；派发前预检查发现 pay_orders DDL 未升级到 v1.3.3+ 通用规范 → 2 轮 review → spec v1.3.5（支付模块 DDL 补强 + gw_pool 回调路径 + 6 PAY_* ErrCode + §3.8.16 脱敏 + §5.10 两个 Job）；post-impl 2 轮 review → fixup（_HTTP_MAP 补 6 PAY_* + SHARED_SCHEMA_VERSION 20260414→20260415 breaking bump + CHANGELOG + http_status 测试 + skip-test 占位） |
 | C10 | SoftLog + UserLoginRecord | `ba81585` | 36 tests + 2 Stage D 占位 skip；spec v1.3.6（soft_logs +source 字段 + level CHECK + 索引；user_login_records 全新 DDL）；spec review 抓出 5 MAJOR（全部时间列索引缺 DESC）；code review 抓出 1 IMPORTANT（ip_addr Mapped[Any]→Mapped[str] 与 devices.py 一致）+ 2 MINOR（对齐空格 + 模块 docstring 一致性）；全部 inline 修复后提交 |
 | C11 | PointDataRealtime + PointDataHistory + WaveformHistory | `9ffa248` | 48 tests + 2 Stage D 占位 skip；关键决策：(1) SQLAlchemy 2.0.49 不支持 `postgresql_with` 作表级 kwarg — fillfactor 存入 `table.info` + Stage D Task D4 `ALTER TABLE` 落地；(2) hypertable 无显式 PK → ORM 用复合 PK (dev_number, point_id, recorded_at) 符合 TimescaleDB 要求；(3) `LargeBinary` for BYTEA（项目首次）；两阶段审查均 APPROVED（无需修复） |
+| C21 | `__init__.py` 汇总 26 张表 | （增量维护完成，随每个 Cx 同步更新；无独立 commit）| 26 表全部导入 + `__all__` 排序 + scene_pages/scene_views NOTE（spec §3.7 gw 禁用）|
+| C22 | Stage C 收尾 tag `plan-0-stage-c-complete` | tag pushed | 26 张 ORM 表 + mypy 0 issues (28 files) + 321 passed + 8 skipped + SHARED_SCHEMA_VERSION 20260415 + spec v1.3.6 |
 
 **Stage C 至今发现 7 个 plan bug（已全部反向 fix 到 master）：**
 
