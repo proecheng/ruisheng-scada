@@ -3520,14 +3520,18 @@ docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng \
 # 期望：13（UPDATED_AT_TABLES 当前 13 条，与 ORM TimestampMixin 表数一致）
 
 # 手工验证一条：
+# 注意：PG `now()` 在单事务内返回事务起点 timestamp，pg_sleep 不推进；
+#       因此用"预置 updated_at 为很旧的值，再 UPDATE 其他列，看触发器是否覆盖"
 docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng <<'SQL'
 BEGIN;
-INSERT INTO wx_groups (usr_group, group_name) VALUES ('t_test', 'test') RETURNING updated_at AS before_upd;
-SELECT pg_sleep(1);
-UPDATE wx_groups SET group_name = 'test2' WHERE usr_group = 't_test' RETURNING updated_at AS after_upd;
+INSERT INTO wx_groups (usr_group, company_name, updated_at)
+  VALUES ('t_test_d5', 'test_co', '2000-01-01'::timestamptz)
+  RETURNING updated_at AS before_upd;
+UPDATE wx_groups SET company_name = 'test_co2' WHERE usr_group = 't_test_d5'
+  RETURNING updated_at AS after_upd, (updated_at > '2000-01-01'::timestamptz) AS trigger_fired;
 ROLLBACK;
 SQL
-# 期望：after_upd > before_upd（触发器生效）
+# 期望：after_upd >> before_upd（触发器把 updated_at 覆盖到 now()）；trigger_fired = t
 
 uv run alembic downgrade -1
 uv run alembic upgrade head
