@@ -3169,24 +3169,36 @@ def upgrade() -> None:
         "GRANT USAGE, SELECT ON SEQUENCES TO ruisheng_gw, ruisheng_api;"
     )
 
-    # --- 表级细粒度（spec §4.2 覆盖默认 GRANT） ---
-    # pay_orders_seen：gw 写 + 清理，api 只读
-    op.execute("REVOKE ALL ON pay_orders_seen FROM PUBLIC;")
+    # --- 表级细粒度（spec §7.8 "各限权" + §4.2 L1379-1381 / L1407-1409 / L1451-1452） ---
+    # 注意：schema 级 GRANT 已经把 gw=arw / api=arwd 给到所有 26 张表。
+    # 要实现"缩权"必须 REVOKE FROM 两个具名角色（REVOKE FROM PUBLIC 是无效的，
+    # PUBLIC 是独立 pseudo-role，不覆盖已授予具名角色的权限）。
+    # 然后重新精确 GRANT 需要的最小权限。
+
+    # pay_orders_seen：gw 写+清理（INSERT/SELECT/DELETE），api 只读（SELECT）
+    op.execute(
+        "REVOKE ALL ON pay_orders_seen FROM PUBLIC, ruisheng_gw, ruisheng_api;"
+    )
     op.execute(
         "GRANT INSERT, SELECT, DELETE ON pay_orders_seen TO ruisheng_gw;"
     )
     op.execute("GRANT SELECT ON pay_orders_seen TO ruisheng_api;")
 
-    # soft_logs：gw 只写，api 写+读
-    op.execute("REVOKE ALL ON soft_logs FROM PUBLIC;")
+    # soft_logs：gw 只写（INSERT），api 写+读（INSERT/SELECT）
+    op.execute(
+        "REVOKE ALL ON soft_logs FROM PUBLIC, ruisheng_gw, ruisheng_api;"
+    )
     op.execute("GRANT INSERT ON soft_logs TO ruisheng_gw;")
     op.execute("GRANT INSERT, SELECT ON soft_logs TO ruisheng_api;")
 
-    # user_login_records：只 api 写+读（gw 不涉登录）
-    op.execute("REVOKE ALL ON user_login_records FROM PUBLIC;")
+    # user_login_records：只 api 写+读（gw 不涉登录；spec §4.2 L1451-1452）
+    op.execute(
+        "REVOKE ALL ON user_login_records FROM PUBLIC, ruisheng_gw, ruisheng_api;"
+    )
     op.execute(
         "GRANT INSERT, SELECT ON user_login_records TO ruisheng_api;"
     )
+    # gw 不 GRANT（符合"gw 不涉登录"；若将来 gw 需要读登录审计，另起迁移补）
 
 
 def downgrade() -> None:
