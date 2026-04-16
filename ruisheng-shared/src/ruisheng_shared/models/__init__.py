@@ -13,6 +13,7 @@ from .plans import MaintainAction, MaintainPlan, TimingPlan
 # NOTE: ScenePage / SceneView 仅 api 服务使用；gw（后台采集/控制）不得 import（spec §3.7）
 from .scenes import ScenePage, SceneView
 from .tenants import WxGroup
+from .timeseries import PointDataHistory, PointDataRealtime, WaveformHistory
 from .users import User, UserEmail, UserPhoneNumber, UserWxBinding
 
 __all__ = [
@@ -28,6 +29,8 @@ __all__ = [
     "MaintainPlan",
     "PayOrder",
     "PayOrderSeen",
+    "PointDataHistory",
+    "PointDataRealtime",
     "ScenePage",
     "SceneView",
     "SimCard",
@@ -41,5 +44,6 @@ __all__ = [
     "UserLoginRecord",
     "UserPhoneNumber",
     "UserWxBinding",
+    "WaveformHistory",
     "WxGroup",
 ]
