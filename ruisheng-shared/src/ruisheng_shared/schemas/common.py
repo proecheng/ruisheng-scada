@@ -1,4 +1,5 @@
 """通用 API 响应壳。对应 spec §5.1。"""
+
 from __future__ import annotations
 
 from typing import Generic, TypeVar

@@ -69,13 +69,13 @@ def upgrade() -> None:
 
     # --- schema 级 GRANT（对现存 26 张表 + 未来新表） ---
     op.execute("GRANT USAGE ON SCHEMA public TO ruisheng_gw, ruisheng_api;")
-    op.execute("GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public " "TO ruisheng_gw;")
+    op.execute("GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO ruisheng_gw;")
     op.execute(
-        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public " "TO ruisheng_api;"
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ruisheng_api;"
     )
     # BIGSERIAL 列依赖 sequence USAGE（否则 INSERT 42501）
     op.execute(
-        "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public " "TO ruisheng_gw, ruisheng_api;"
+        "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ruisheng_gw, ruisheng_api;"
     )
     # 未来新表/新序列自动继承权限
     op.execute(

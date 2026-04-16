@@ -1,4 +1,5 @@
 """Spec §4.2 wx_groups"""
+
 from ruisheng_shared.models.tenants import WxGroup
 
 
@@ -9,9 +10,17 @@ def test_tablename() -> None:
 def test_columns_exist() -> None:
     cols = {c.name for c in WxGroup.__table__.columns}
     assert cols >= {
-        "usr_group", "appid", "appsecret", "token",
-        "token_expires_at", "template_id", "company_name",
-        "sys_title", "remark", "created_at", "updated_at",
+        "usr_group",
+        "appid",
+        "appsecret",
+        "token",
+        "token_expires_at",
+        "template_id",
+        "company_name",
+        "sys_title",
+        "remark",
+        "created_at",
+        "updated_at",
     }
 
 

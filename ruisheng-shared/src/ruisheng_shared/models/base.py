@@ -1,4 +1,5 @@
 """SQLAlchemy 2.0 Declarative Base + 通用 mixin。"""
+
 from __future__ import annotations
 
 from datetime import datetime

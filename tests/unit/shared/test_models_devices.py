@@ -1,4 +1,5 @@
 """Spec §4.2 devices / device_points / device_static_data / sim_cards / device_templates"""
+
 from ruisheng_shared.models.devices import (
     Device,
     DevicePoint,
@@ -15,12 +16,32 @@ def test_devices_tablename() -> None:
 def test_devices_columns() -> None:
     cols = {c.name for c in Device.__table__.columns}
     assert cols >= {
-        "id", "dev_number", "dev_ser_number", "iccid", "dev_name", "dev_type",
-        "modbus_addr", "baud_rate", "group_company", "company", "department",
-        "administrators", "dev_ip", "code_file", "code_updated_at",
-        "update_interval_decisec", "last_call_at", "last_back_at",
-        "loss_count", "is_online", "last_state", "update_flag", "usr_group",
-        "created_at", "updated_at", "deleted_at",
+        "id",
+        "dev_number",
+        "dev_ser_number",
+        "iccid",
+        "dev_name",
+        "dev_type",
+        "modbus_addr",
+        "baud_rate",
+        "group_company",
+        "company",
+        "department",
+        "administrators",
+        "dev_ip",
+        "code_file",
+        "code_updated_at",
+        "update_interval_decisec",
+        "last_call_at",
+        "last_back_at",
+        "loss_count",
+        "is_online",
+        "last_state",
+        "update_flag",
+        "usr_group",
+        "created_at",
+        "updated_at",
+        "deleted_at",
     }
 
 
@@ -52,10 +73,25 @@ def test_points_tablename() -> None:
 def test_points_columns() -> None:
     cols = {c.name for c in DevicePoint.__table__.columns}
     assert cols >= {
-        "id", "dev_number", "point_name", "user_point_name", "point_number",
-        "fun_code", "dev_addr", "r_bit", "value_type", "point_unit",
-        "point_ratio", "point_offset", "user_ratio", "user_point_offset",
-        "min_value", "max_value", "show", "created_at", "updated_at",
+        "id",
+        "dev_number",
+        "point_name",
+        "user_point_name",
+        "point_number",
+        "fun_code",
+        "dev_addr",
+        "r_bit",
+        "value_type",
+        "point_unit",
+        "point_ratio",
+        "point_offset",
+        "user_ratio",
+        "user_point_offset",
+        "min_value",
+        "max_value",
+        "show",
+        "created_at",
+        "updated_at",
     }
 
 
@@ -76,8 +112,14 @@ def test_static_tablename() -> None:
 
 def test_static_columns() -> None:
     cols = {c.name for c in DeviceStaticData.__table__.columns}
-    assert cols >= {"id", "dev_number", "base_msg_name", "base_msg_value",
-                    "created_at", "updated_at"}
+    assert cols >= {
+        "id",
+        "dev_number",
+        "base_msg_name",
+        "base_msg_value",
+        "created_at",
+        "updated_at",
+    }
 
 
 def test_sim_tablename() -> None:
@@ -92,9 +134,19 @@ def test_sim_primary_key() -> None:
 def test_sim_columns() -> None:
     cols = {c.name for c in SimCard.__table__.columns}
     assert cols >= {
-        "iccid", "msisdn", "card_type", "card_status", "service_months",
-        "data_amount", "total_data_amount", "open_date", "active_date",
-        "cost", "month_data", "remark", "usr_remark",
+        "iccid",
+        "msisdn",
+        "card_type",
+        "card_status",
+        "service_months",
+        "data_amount",
+        "total_data_amount",
+        "open_date",
+        "active_date",
+        "cost",
+        "month_data",
+        "remark",
+        "usr_remark",
     }
 
 

@@ -1,4 +1,5 @@
 """Spec §4.2 users / user_wx_bindings / user_phone_numbers / user_emails"""
+
 from ruisheng_shared.models.users import User, UserEmail, UserPhoneNumber, UserWxBinding
 
 
@@ -10,9 +11,20 @@ def test_users_tablename() -> None:
 def test_users_columns() -> None:
     cols = {c.name for c in User.__table__.columns}
     assert cols >= {
-        "id", "user_name", "password_hash", "login_name", "group_company",
-        "company", "department", "authority", "control_authority", "sys_name",
-        "usr_group", "created_at", "updated_at", "deleted_at",
+        "id",
+        "user_name",
+        "password_hash",
+        "login_name",
+        "group_company",
+        "company",
+        "department",
+        "authority",
+        "control_authority",
+        "sys_name",
+        "usr_group",
+        "created_at",
+        "updated_at",
+        "deleted_at",
     }
 
 

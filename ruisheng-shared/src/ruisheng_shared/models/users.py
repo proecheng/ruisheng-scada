@@ -1,9 +1,18 @@
 """用户及关联表（4 张）。对应 spec §4.2 用户与权限。"""
+
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    SmallInteger,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, SoftDeleteMixin, TimestampMixin
@@ -20,7 +29,9 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
             "authority IN ('Administrators','GroupCompany','Company','User')",
             name="authority",  # naming_convention 会前缀 ck_users_
         ),
-        UniqueConstraint("user_name", name="user_name"),  # 铁律 2：不用 unique=True，显式 UQ 才能被 naming_convention 正确命名 → uq_users_user_name
+        UniqueConstraint(
+            "user_name", name="user_name"
+        ),  # 铁律 2：不用 unique=True，显式 UQ 才能被 naming_convention 正确命名 → uq_users_user_name
         Index("idx_users_tenant", "usr_group"),
     )
 

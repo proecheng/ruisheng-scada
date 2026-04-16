@@ -1,8 +1,8 @@
 """Spec §A.4 — FunCode 枚举必须覆盖新系统保留的全部码，且值为 int。"""
+
 from __future__ import annotations
 
 import pytest
-
 from ruisheng_shared.enums import FunCode
 
 
@@ -21,7 +21,7 @@ def test_funcode_private_values() -> None:
     assert FunCode.ICCID_REPORT == 20
     assert FunCode.REGISTER == 21
     assert FunCode.REGISTER_LOW_POWER == 22
-    assert FunCode.HEARTBEAT == 0x19   # 25
+    assert FunCode.HEARTBEAT == 0x19  # 25
     assert FunCode.GENERIC_RESPONSE == 100
 
 
@@ -41,7 +41,7 @@ def test_funcode_removed() -> None:
     ("raw", "expected"),
     [
         (3, FunCode.READ_HOLDING),
-        (13, FunCode.READ_HOLDING),   # 别名合并
+        (13, FunCode.READ_HOLDING),  # 别名合并
         (6, FunCode.WRITE_SINGLE_REGISTER),
         (26, FunCode.WRITE_SINGLE_REGISTER),  # 别名合并
     ],
@@ -53,4 +53,4 @@ def test_funcode_normalize_aliases(raw: int, expected: FunCode) -> None:
 
 def test_funcode_normalize_unknown_raises() -> None:
     with pytest.raises(ValueError, match="unknown FunCode"):
-        FunCode.normalize(7)   # 已砍 → 拒绝
+        FunCode.normalize(7)  # 已砍 → 拒绝

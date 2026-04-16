@@ -1,4 +1,5 @@
 """租户表（微信公众号级）。"""
+
 from __future__ import annotations
 
 from datetime import datetime

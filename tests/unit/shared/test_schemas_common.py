@@ -1,4 +1,5 @@
 """ApiResponse 通用壳。"""
+
 from __future__ import annotations
 
 from ruisheng_shared.schemas.common import ApiResponse

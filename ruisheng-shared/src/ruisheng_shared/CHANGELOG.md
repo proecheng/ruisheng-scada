@@ -8,6 +8,10 @@
 - `fix:` — 错误修正
 - `chore:` — 重构、重命名、注释（无语义变化）
 
+## 2026-04-16
+
+- chore: ruff-format 扫 shared models/schemas (fixup for D3 commit 2474275 提交前未跑 `task fmt`)；纯 cosmetic（docstring 后空行、长 import 展开、长 set 字面量换行）+ 1 处 unused import 清理（models/users.py 未用的 `Integer`）；无语义变化，SHARED_SCHEMA_VERSION 不变。
+
 ## 2026-04-14
 
 - feature: SQLAlchemy Base + TimestampMixin + SoftDeleteMixin

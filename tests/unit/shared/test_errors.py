@@ -1,8 +1,8 @@
 """Spec §5.1 — ErrCode 枚举 + BizError 异常基类。"""
+
 from __future__ import annotations
 
 import pytest
-
 from ruisheng_shared.errors import BizError, ErrCode
 
 

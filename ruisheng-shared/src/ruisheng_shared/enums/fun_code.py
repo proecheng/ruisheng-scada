@@ -1,4 +1,5 @@
 """ModBus FunCode 枚举。对应 spec §A.4。"""
+
 from __future__ import annotations
 
 from enum import IntEnum
