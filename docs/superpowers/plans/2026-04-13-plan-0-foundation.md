@@ -3458,18 +3458,21 @@ depends_on = None
 
 
 # 必须与 ORM `Base.metadata.tables` 含 `updated_at` 列的表完全一致
-# point_data_realtime 故意排除（覆盖写语义，无 updated_at）
-# 审计表排除：soft_logs / user_login_records / maintain_actions /
-#           user_control_actions / pay_orders_seen / alarm_outbox
+# 仅含 TimestampMixin 的实体表（13 张）；以下故意排除：
+#   - point_data_realtime: 覆盖写语义，无 updated_at
+#   - 审计/日志：soft_logs / user_login_records / maintain_actions /
+#                user_control_actions / pay_orders_seen / alarm_outbox
+#   - 关联/不变表（仅 created_at 或域时间戳，无 updated_at）：
+#                user_wx_bindings (bound_at) / user_phone_numbers /
+#                user_emails / alarm_records (triggered_at + reset_at)
 UPDATED_AT_TABLES: list[str] = [
     "wx_groups",
-    "users", "user_wx_bindings", "user_phone_numbers", "user_emails",
+    "users",
     "devices", "device_points", "device_static_data",
     "sim_cards", "device_templates", "device_waring_cfgs",
     "timing_plans", "maintain_plans",
     "scene_pages", "scene_views",
     "pay_orders",
-    "alarm_records",
 ]
 
 
@@ -3514,7 +3517,7 @@ def downgrade() -> None:
 uv run alembic upgrade head
 docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng \
   -c "SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'trg_%_updated' AND NOT tgisinternal;"
-# 期望：>= 17（UPDATED_AT_TABLES 当前 17 条）
+# 期望：13（UPDATED_AT_TABLES 当前 13 条，与 ORM TimestampMixin 表数一致）
 
 # 手工验证一条：
 docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng <<'SQL'
@@ -3534,13 +3537,13 @@ uv run alembic upgrade head
 
 ```bash
 git add alembic/versions/20260417_0004_*.py
-git commit -m "feat(db): D5 BEFORE UPDATE triggers maintaining updated_at on 17 tables"
+git commit -m "feat(db): D5 BEFORE UPDATE triggers maintaining updated_at on 13 tables"
 ```
 
 **关键风险**：
 - **`UPDATED_AT_TABLES` 清单与 ORM 严格对齐**（runtime 断言兜底，未来加新 TimestampMixin 表漏更新立刻 fail）
 - **ORM 侧不得同时用 `onupdate=func.now()`**（双写）
-- 列表当前 17 张（含 alarm_records、user_wx_bindings、user_phone_numbers、user_emails），若 ORM 后续增减 TimestampMixin 需同步更新并 bump
+- 列表当前 13 张（仅 TimestampMixin 实体表）。`user_wx_bindings` / `user_phone_numbers` / `user_emails` / `alarm_records` 故意排除：前 3 张是关联表（仅 bound_at 等域时间戳），alarm_records 是不可变日志（triggered_at + reset_at）。若 ORM 后续增减 TimestampMixin 需同步更新
 
 ---
 
