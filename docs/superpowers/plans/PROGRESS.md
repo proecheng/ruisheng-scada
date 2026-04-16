@@ -5,15 +5,15 @@
 
 ---
 
-## 当前状态：Plan 0 Stage C 进行中（9/22）
+## 当前状态：Plan 0 Stage C 进行中（10/22）
 
-**最后更新**：2026-04-14（Stage C C9 完成后）
+**最后更新**：2026-04-16（Stage C C10 完成后）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`7517879 fix(shared): C9 post-review fixup — _HTTP_MAP PAY_* + SHARED_SCHEMA_VERSION 20260415 + test coverage`
+**最近 commit**（worktree）：`ba81585 feat(shared): logs models (SoftLog, UserLoginRecord) — spec §4.2 v1.3.6`
 **最新 tag**：`plan-0-stage-b-complete`（Stage C 未打 tag）
-**master 最新 commit**：`eebf554 docs(spec): v1.3.5 — pay_orders DDL补强 + pay_orders_seen迁入§4.2 + PAY_* ErrCode`
-**SHARED_SCHEMA_VERSION**：`20260415`（v1.3.5 breaking bump：pay_orders ORM + PAY_* ErrCode 6 项）
-**测试状态**：237 passed + 4 skipped = 241 collected（Stage B 52 + C1–C8 137 + C9 40 + 4 Stage D/E 占位 skip）
+**master 最新 commit**：`01f063f docs(spec): v1.3.6 — soft_logs增强 + user_login_records新增DDL`
+**SHARED_SCHEMA_VERSION**：`20260415`（v1.3.5 breaking bump；C10 不触发 bump — logs ORM 不含 Pydantic/Enum）
+**测试状态**：273 passed + 6 skipped = 279 collected（Stage B 52 + C1–C9 185 + C10 36 + 6 Stage D/E 占位 skip）
 
 ---
 
@@ -46,6 +46,7 @@
 | C7 | TimingPlan + MaintainPlan + MaintainAction | `12bf516` + fixup `171b474` | 36 tests；2 轮审查 → spec v1.3.3（5 BLOCKER + 8 MAJOR inline 修）；fixup 补 SHARED_SCHEMA_VERSION bump + CHANGELOG 前缀 |
 | C8 | ScenePage + SceneView | `4d8950e` + fixup `2e41292` | 38 tests + 2 Stage D 占位 skip；派发前 2 轮 review → spec v1.3.4（0 BLOCKER + 3 MAJOR inline 修，含 scene_* 租户一致性触发器 + 展示快照语义）；post-impl 2 轮 review → fixup（CHANGELOG + 3 语义警示 + skip-test 占位）；SHARED_SCHEMA_VERSION 保持 20260414（非破坏性扩展） |
 | C9 | PayOrder + PayOrderSeen + ErrCode PAY_* | `232d413` + fixup `7517879` | 40 tests + 2 Stage D/E 占位 skip（+ErrCode 6 个）；派发前预检查发现 pay_orders DDL 未升级到 v1.3.3+ 通用规范 → 2 轮 review → spec v1.3.5（支付模块 DDL 补强 + gw_pool 回调路径 + 6 PAY_* ErrCode + §3.8.16 脱敏 + §5.10 两个 Job）；post-impl 2 轮 review → fixup（_HTTP_MAP 补 6 PAY_* + SHARED_SCHEMA_VERSION 20260414→20260415 breaking bump + CHANGELOG + http_status 测试 + skip-test 占位） |
+| C10 | SoftLog + UserLoginRecord | `ba81585` | 36 tests + 2 Stage D 占位 skip；spec v1.3.6（soft_logs +source 字段 + level CHECK + 索引；user_login_records 全新 DDL）；spec review 抓出 5 MAJOR（全部时间列索引缺 DESC）；code review 抓出 1 IMPORTANT（ip_addr Mapped[Any]→Mapped[str] 与 devices.py 一致）+ 2 MINOR（对齐空格 + 模块 docstring 一致性）；全部 inline 修复后提交 |
 
 **Stage C 至今发现 7 个 plan bug（已全部反向 fix 到 master）：**
 
