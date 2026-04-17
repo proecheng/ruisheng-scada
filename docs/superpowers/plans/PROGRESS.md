@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage D 进行中（D0+D1+D2+D3+D4+D5+D6+D7+D8+D9 完成 10/10 except tag）**
+## 当前状态：Plan 0 **Stage D ✅ 全部完成（10/10 + tag）**
 
-**最后更新**：2026-04-17（D9 15 集成测试 + 3 engine fixture + seed_tenants 完成 + 双 review APPROVED；**连抓 Plan bug #7 + #8 + #9 三个 plan 错**——updated_at 计数 17→13 / devices NOT NULL 列漏填 + wx_groups 错列 / SQL alias `def` Python 关键字）
+**最后更新**：2026-04-17（D10 收尾完成：tag `plan-0-stage-d-complete` pushed + spec v1.3.7 follow-up 清单 + Stage D 回滚 Runbook 入库）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`02516f7 test(db): D9 integration tests (roles/functions/triggers/RLS/hypertables, 15 cases)`（前置 `4205faf` D8）
-**最新 tag**：`plan-0-stage-c-complete`（Stage D 未打 tag，D10 才打）
-**master 最新 commit**：`e85947e fix(plan): D9 Plan bug #9 — SQL alias def is Python keyword, rename to constraint_def`（本次 PROGRESS 即将再追一条）
-**SHARED_SCHEMA_VERSION**：`20260415`（未变；D9 只加 tests/fixtures 不触 shared 模型）
+**最近 commit**（worktree）：`02516f7 test(db): D9 integration tests (roles/functions/triggers/RLS/hypertables, 15 cases)`（D10 无代码改动，tag 指向此 HEAD）
+**最新 tag**：`plan-0-stage-d-complete`（4 个 Stage tag 集齐：a/b/c/d）
+**master 最新 commit**：`<本次 D10 PROGRESS 更新>`（前置 `76cc7e8` D9 complete）
+**SHARED_SCHEMA_VERSION**：`20260415`（Stage D 全程不变；只改 DB schema 不触 shared 模型）
 **测试状态**：**336 passed + 8 skipped**（15 新 integration 全绿；8 skip 仍是 C11 ORM 占位，无回归）
 
-**下一步**：**D10 — Stage D 收尾 tag + spec v1.3.7 follow-up 清单**。详见 plan §Task D10。
+**下一步**：**Stage E — testcontainers + embedded PG + seeds**（7 task：E1 conftest 扩展 / E2 embedded PG stub / E3-E7 seeds + fixtures + CI 跑 Linux 模式）。详见 plan §Stage E。
 
 ---
 
@@ -33,6 +33,7 @@
 | D7 | UPDATE-heavy 表 fillfactor + autovacuum 调优（3 张表） | `4976089` | ✅ `alembic/versions/20260417_0006_hot_table_tuning.py`（134 行，alembic head `378761167d8c`）；**3 张表 reloptions**（spec 逐字符匹配）：point_data_realtime fillfactor=70 + 4 autovacuum (vacuum_scale 0.05 / analyze_scale 0.02 / vacuum_cost_limit 1000 / vacuum_insert_scale 0.1)（spec §4.2 L1184-1190）；devices fillfactor=80 + vacuum_scale 0.05（spec §4.2 L1126-1129）；device_waring_cfgs fillfactor=80（spec §5.10 L1930，仅 fillfactor 单项无 autovacuum）；upgrade 顶部 ORM info drift 断言（`PointDataRealtime.__table__.info["postgresql_with"]` vs `_EXPECTED_REALTIME_WITH` 常量）；downgrade 对称 RESET 逆序（device_waring_cfgs→devices→point_data_realtime）；**验证 5 步全 PASS**：8 行 reloptions upgrade 后（1+2+5）/ 3 行 NULL downgrade 后 / 再 upgrade 8 行幂等 / 321 passed + 8 skipped 无回归；**Stage C C11 tech debt 兑现**：point_data_realtime 的 `postgresql_with` 从 metadata-only 到真 DDL；**过程**：controller pre-dispatch **三方对齐校验** spec ↔ plan ↔ ORM info 全一致，**首个无 Plan bug 的 Stage D task**（D3-D6 连续 4 个都有）→ implementer 按 plan 实施（commit `4976089`）→ spec compliance review APPROVED（15/15 checkpoints，含 F1-3 侧重 scope 合规防守：单文件、无 ORM/spec/plan side-fix）→ code quality review APPROVED_WITH_MINORS（0 Critical/Important；2 optional Minor：缺 `from __future__ import annotations`（D3-D6 全都有，D7 唯一缺）+ downgrade operational 警示可补明"不丢数据但膨胀加剧"）；两 Minor 暂不修（与 D5 留 3 minor / D6 留 2 minor 一致策略，归入未来 polishing pass） |
 | D8 | TimescaleDB hypertable×5 + retention×5 + compression×3 + 复合 PK prep | `4205faf` | ✅ `alembic/versions/20260417_0007_timescale_hypertables.py`（192 行，rev `959079e6cae9`）；**5 张 hypertable**：point_data_history / waveform_history / soft_logs / user_login_records / alarm_records（user_control_actions 因 UNIQUE(cmd_id) 幂等键与 TS 分区列要求冲突，摘除 — Plan bug #5 Q3-B）；**retention**：5 张全启（1y × 3 / 2y × 1 / 3y × 1）；**compression**：3 张启（point_data_history segby=dev_number+point_id / waveform_history segby=dev_number / soft_logs 无 segby），**2 张未启**（alarm_records + user_login_records，D6 FORCE RLS 与 TS 2.16.1 compression 冲突 — Plan bug #6 Option A，等 TS #6827 上游修复）；**schema prep 前置**（Plan bug #5）：Step A drop FK `fk_alarm_outbox_alarm_id_alarm_records`（TS 禁 FK→hypertable） + Step B 3 张表复合 PK `(id, <time_col>)`（alarm_records / soft_logs / user_login_records，含 `pg_constraint.conkey` 单列守卫幂等） + Step C create_hypertable + retention + compression；ORM 同步改（AlarmRecord + SoftLog + UserLoginRecord 复合 PK、AlarmOutbox.alarm_id 去 FK；4 个 lockstep 测试 flip + CHANGELOG `chore:` 说明 id BIGSERIAL 自身唯一所以 SHARED_SCHEMA_VERSION 不升）；downgrade 前向专用——只卸 retention + compression policy（TS 不原生支持 hypertable→regular）；**过程**：controller pre-dispatch live-DB 活探测抓 **Plan bug #5**（FK→hypertable 禁止 + 4 张表 id-only PK 违反 TS 分区列要求）→ master plan v1.3 fix `5901243`（user Q1-A + Q2-A + Q3-B 拍板）→ implementer 按 plan v1.3 起跑 → 迁移 upgrade 中 `ALTER TABLE user_login_records SET compress` 抛 FeatureNotSupportedError → implementer BLOCKED 上报并研究上游 issue #6827 → controller 派 option A/B/C → user 确认 Option A → master plan v1.4 fix `5caab8d`（alarm_records + user_login_records 摘除 compression）→ implementer 延续 dispatch（agent `a38e07b7901f8d601` 续跑）完成；**spec review APPROVED**（独立 agent 读代码 + 查 live DB 逐行核对，含 2 deviation 合理性论证：Step B 幂等守卫 + 4 lockstep test 更新 + CHANGELOG）；**code review APPROVED_WITH_MINORS**（0 Critical/Important；5 optional Minor：M1 f-string 安全性 explicit 注释 / M2 `from __future__ import annotations`（与 D7 同缺）/ M3 TS create_hypertable tx 事务性注释 / M4 downgrade 对称 `if compress:` 守卫 / M5 ORM 复合 PK drift 断言与 D5/D6/D7 风格对齐）；5 Minor 暂不修（与 D5/D6/D7 一致策略，归入未来 polishing pass）；**累计 Plan bug**：D3-D6 共 4 个 pre-dispatch 抓 + **D8 独占 2 个**（#5 pre-dispatch 活探测，#6 BLOCKED 实测触发） |
 | D9 | 集成测试 15 case（roles/functions/triggers/RLS/hypertables 全覆盖）+ 3 engine fixture + seed_tenants | `02516f7` | ✅ `tests/integration/test_alembic_upgrade.py`（278 行，15 tests）+ `tests/integration/conftest.py`（31 行，seed_tenants fixture）+ `tests/integration/__init__.py`（空）+ `tests/conftest.py` (+44 行，3 engine fixtures)；**15 测试用例**：test_upgrade_down_and_up_again / test_roles_exist / test_functions_are_invoker / test_updated_at_triggers_count (== 13) / test_scene_triggers_exist / test_rls_forced_on_12_tables / test_policies_exist / test_hypertables_exist (5 表) / test_d8_pk_composite_and_fk_dropped / test_rls_actually_blocks_cross_tenant_read / test_rls_blocks_cross_tenant_insert / test_non_bypassrls_user_sees_zero_under_bogus_tenant (D9 内 renamed from test_owner_does_not_bypass_rls — 见下 concern) / test_gw_bypasses_rls / test_scene_trigger_raises_23514 / test_api_insert_uses_sequence；**3 engine fixture**：dev_engine (ruisheng_dev) / api_engine (RUISHENG_API_PASSWORD) / gw_engine (RUISHENG_GW_PASSWORD)，**function scope**（pytest-asyncio 0.23 auto mode event_loop 函数作用域限制，不可 session）；**seed_tenants**：gw_engine BYPASSRLS 插 ug_A/ug_B wx_groups + user_of_ugB 用户 (authority='User', control_authority=0)，ON CONFLICT DO NOTHING 幂等；**过程**：(1) controller pre-dispatch 抓 **Plan bug #7**（test_updated_at_triggers_count `n >= 17` 遗留 v1.0，D5 Plan bug #3 后应 `== 13`；同时 plan Step 1 缺 dev_engine 定义）→ master plan v1.5 fix `d027920` → (2) implementer 起跑 pre-dispatch 查 live DB 抓 **Plan bug #8 (3 子 bug)**（#8-A test_api_insert_uses_sequence 目标表错：wx_groups 无 `id` / 无 `group_name`；#8-B tests 10/11 devices INSERT 漏 6 NOT NULL 无默认列；#8-C seed_tenants 先决数据明确化）+ password 默认 typo (`dev_password` → `ruisheng_dev`) → BLOCKED 报告 (agent `a38e07b7`) → master plan v1.6 fix `782887c` + `e3524db`（补 users ORM 实字段） → (3) implementer v2 起跑 pytest collect 抓 **Plan bug #9**（SQL alias `AS def` + `r.def` Python SyntaxError — 我在 D8 Plan bug #5 fix 时自己引入）→ master plan v1.7 fix `e85947e`（alias → `constraint_def`）→ (4) implementer v3 续跑 (SendMessage `a2877d90` → 完成 `aa53cbd1`)：pytest 336 passed + 8 skipped，11.38s；**spec review APPROVED**（独立 agent 重跑 pytest 336+8 + 验证 5 deviations 全合理：function-scope fixture、窄 DELETE 清理 × 2、test rename 语义等价、ruff auto-fix）；**code review APPROVED_WITH_MINORS**（0 Critical/Important；8 optional Minor：M1 `pytest.raises(Exception)` 太宽 / M2 locale-dependent 子串匹配 / M3 test_upgrade_down_and_up_again 缺 post-check / M4 alembic.command API 替代 subprocess / M5 test_gw_bypasses_rls 断言弱化（`is not None` vs `>= 1`）/ M6 tests/integration/conftest.py 缺 `from __future__` / M7 pool cleanup 审计 OK / M8 test 长度 OK）；8 Minor 暂不修；**Concern（独特 D9）**：`test_owner_does_not_bypass_rls` 改名 `test_non_bypassrls_user_sees_zero_under_bogus_tenant`——ruisheng_dev 是 POSTGRES_USER（Docker 约定 SUPERUSER=t）bypass 所有 RLS 含 FORCE，是 PG 文档行为；M1 intent 保留，改用 api_engine 验同构不变量（非 BYPASSRLS 角色 bogus tenant → 0 行）。此非 plan bug，属 D9 authorship 修订；若将来要求 owner 真受 FORCE RLS，需 D3/D4 fix 改 POSTGRES_USER 方案（G6 cleanup 备忘）；**累计 Plan bug**：D3-D6 共 4 + D8 共 2 + **D9 共 3**（#7 pre-dispatch / #8 implementer v1 pre-dispatch / #9 implementer v2 pytest collect）= 总 9 个，全部 controller 反向 fix master |
+| D10 | Stage D 收尾 tag + spec v1.3.7 follow-up 清单 + 回滚 Runbook | tag `plan-0-stage-d-complete`（worktree HEAD `02516f7`）+ master PROGRESS commit | ✅ **纯文档 + tag**，无代码改动、无 plan bug、无 implementer（D10 controller 直接操作）；tag 带 annotated 消息含 Stage D 全部 DB 对象清点（26 表 / 2 角色 / 3 函数 / 16 触发器 / 12 FORCE RLS / 5 hypertable / 15 集成测试 / 336 passed）+ 9 Plan bug 回溯提示；PROGRESS 补 2 个新段（**spec v1.3.7 follow-up 6 项**：§3.7 FORCE RLS / §4.1.1 search_path / §4.1 GRANT SEQUENCES / §5.10 user_control_actions 摘除 / §4.2+§5.10 compression TS #6827 / 20 optional Minor 批量清理；**Stage D 回滚 Runbook**：alembic 严格线性 + D8 hypertable 单向 + D6 FORCE RLS vs D8 compression 冲突 + D8 复合 PK 前向）；**Stage D 完结 — 9 个 Plan bug 全部反向 fix master** |
 
 ---
 
@@ -41,13 +42,13 @@
 - **GitHub**：https://github.com/proecheng/ruisheng-scada （Private，账号 proecheng）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **master 最新 commit**：`e85947e fix(plan): D9 Plan bug #9 — SQL alias def is Python keyword, rename to constraint_def`（本次 PROGRESS 即将再追一条）
-- **worktree 实施分支最新 commit**：`02516f7 test(db): D9 integration tests (roles/functions/triggers/RLS/hypertables, 15 cases)`（前置 `4205faf` D8）
-- **alembic current**：`959079e6cae9 (head)` — D8 migration（D9 无新迁移）
+- **master 最新 commit**：`76cc7e8 docs(progress): D9 complete` → **本次 D10 Stage D 收尾 commit（即将推送）**
+- **worktree 实施分支最新 commit**：`02516f7 test(db): D9 integration tests (roles/functions/triggers/RLS/hypertables, 15 cases)`（D10 无代码改动）
+- **alembic current**：`959079e6cae9 (head)` — D8 migration（D9/D10 无新迁移）
 - **两个 worktree**：
   - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
   - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation（实际代码）
-- **已 push 的 tag**：`plan-0-stage-a-complete`、`plan-0-stage-b-complete`、`plan-0-stage-c-complete`
+- **已 push 的 tag**：`plan-0-stage-a-complete`、`plan-0-stage-b-complete`、`plan-0-stage-c-complete`、**`plan-0-stage-d-complete`**（D10 本次新增，指向 D9 HEAD `02516f7`）
 - **Docker stack**：运行中 (`docker compose -f docker-compose.dev.yml ps` 在 worktree)
   - `ruisheng-postgres-dev` (timescale/timescaledb:2.16.1-pg15) healthy，0.0.0.0:5432
   - `ruisheng-redis-dev` (redis:7-alpine) healthy，0.0.0.0:6379
@@ -234,6 +235,41 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
 
 ---
 
+## Spec v1.3.7 follow-up（Stage D 完成后另开 branch/PR）
+
+Stage D 实施过程中累积的 spec 升级项（非阻塞，Stage E/F/G 或 Plan 1 前分批落）：
+
+1. **§3.7 RLS 规约补 `FORCE ROW LEVEL SECURITY`**（Plan v1.1 M1；D6 实施已落代码，spec 仅在 policy comment 里提）
+2. **§4.1.1 (1)(4)(5) 三个函数 `CREATE FUNCTION` 尾部补 `SET search_path = pg_catalog, public`**（Plan v1.1 M3；D4 实施已落）
+3. **§4.1 GRANT 通用规约补 SEQUENCES**（Plan v1.1 M4；D3 实施已落 `GRANT USAGE,SELECT ON ALL SEQUENCES` + `ALTER DEFAULT PRIVILEGES`）
+4. **§5.10 L1958-1960 摘除 `user_control_actions` hypertable 段**（Plan bug #5 Q3-B：保 UNIQUE(cmd_id) 幂等语义，TS hypertable 分区列要求冲突）
+5. **§4.2 `user_login_records` + §5.10 `alarm_records` compression 块改为 v1.3.7 TODO note**（Plan bug #6 Option A；等 TimescaleDB upstream issue #6827 修复 FORCE RLS 兼容 compression 后回填）
+6. **20 个 optional Minor 批量清理**（D5 留 3 + D6 留 2 + D7 留 2 + D8 留 5 + D9 留 8；含 `from __future__ import annotations` 缺漏、downgrade operational warning、USING/WITH CHECK 字面重复、`pytest.raises(Exception)` 过宽、alembic.command API 替代 subprocess 等）—— 归入未来 polishing pass
+
+**执行方式**：建议另开 `docs/spec-v1.3.7` branch，批量改 spec `.md` + bump 文件头部 version 1.3.6 → 1.3.7，一次 PR merge master。与 Minor 清理 commit 分开，保证 spec 变更可追溯。
+
+---
+
+## Stage D 回滚 Runbook
+
+**alembic 严格线性：禁跳版 downgrade**。若要回滚 D3 删角色，必须先：
+
+```
+D10 → D9 → D8 → D7 → D6 → D5 → D4 → D3 → D2 逐 step（alembic downgrade -1 × N）
+```
+
+否则 pg_dump 一致性被破坏（例如 D5 触发器依赖 D4 函数，D4 单独回滚会造成幽灵引用）。
+
+**生产部署**：migration 执行角色必须 SUPERUSER 或是 `ruisheng_gw` / `ruisheng_api` 的成员（否则 D3 `DROP OWNED` 抛 42501 insufficient_privilege）。
+
+**特殊限制（单向约束）**：
+
+- **D8 hypertable 单向**：TimescaleDB 2.16.1 不原生支持 hypertable → regular table，D8 downgrade 只卸 retention + compression policy，**hypertable 本身保留**。完整回滚需 `CREATE TABLE ... AS SELECT` 另存 + `SELECT drop_chunks(...)` + 重建 regular table；或清库从 base 重来。
+- **D6 FORCE RLS vs D8 compression 冲突**（TS issue #6827）：`alarm_records` + `user_login_records` 当前未启 compression。若生产需清理历史数据压缩，需临时 `ALTER TABLE ... NO FORCE ROW LEVEL SECURITY`，操作期间 admin-only。
+- **D8 复合 PK 前向**：`alarm_records` / `soft_logs` / `user_login_records` 的 `(id, <time_col>)` 复合 PK 由 D8 migration 替换 id-only PK。downgrade 不撤销（TS 压缩 hypertable 不可 DROP CONSTRAINT）；若要回退需清库。
+
+---
+
 ## 恢复步骤（下次续跑）
 
 1. 打开 `D:\江苏润盛`，重新连接 Claude Code session
@@ -244,9 +280,9 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
 
 ---
 
-## 🔖 会话交接点（2026-04-17，D9 完成后 — D10 准备）
+## 🔖 会话交接点（2026-04-17，Stage D 全部完成 — Stage E 准备）
 
-**当前位置**：Stage D，D0/D1/D2/D3/D4/D5/D6/D7/D8/D9 完成 **10/10**（除 D10 tag），下一步 **D10（Stage D 收尾 tag `plan-0-stage-d-complete` + spec v1.3.7 follow-up 清单）**
+**当前位置**：Stage D **10/10 + tag ✅ 全部完成**，下一步 **Stage E（testcontainers + embedded PG + seeds，7 task）**
 
 **环境状态**（续跑直接用，无需重建）：
 - Docker stack 运行中（postgres + redis，均 healthy）
@@ -259,32 +295,32 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
   ```
   值以 `.env.example` 为准；dev 直接用占位；生产走 secret manager
 
-**本次会话 D8 成果**：
-1. ✅ Controller pre-dispatch live-DB 活探测 `create_hypertable('alarm_records', ...)` 抓 **Plan bug #5**（FK→hypertable 禁止；4 张表 id-only PK 违反 TS 分区列要求）→ controller 向 user 列 Q1/Q2/Q3 三叉 → user 选 Q1-A + Q2-A + Q3-B → plan v1.3 反向 fix master `5901243`
-2. ✅ Implementer 起跑实施 v1.3，迁移 upgrade 中 `SET (timescaledb.compress)` 抛 FeatureNotSupportedError → BLOCKED 报告 **Plan bug #6**（TS 2.16.1 compression vs RLS 冲突，上游 issue #6827） → controller 派 Option A/B/C → user 选 Option A → plan v1.4 反向 fix master `5caab8d`
-3. ✅ Implementer 延续 dispatch（SendMessage 续跑）应用 delta 完成（commit `4205faf`）；Step B 自抓到 `downgrade -1 && upgrade head` 对压缩 hypertable 不可 DROP CONSTRAINT，添加 `pg_constraint.conkey` 单列守卫幂等；5 步验证全 PASS
-4. ✅ D8 spec compliance review APPROVED（独立 agent 读代码 + 查 live DB 逐行核对；5 hypertable 名单 / 3 复合 PK / FK 已拆 / 8 jobs / spec §4.2 L1200+L1427 + §5.10 L1953 全匹配）
-5. ✅ D8 code quality review APPROVED_WITH_MINORS — 0 Critical/Important，5 optional Minor（M1 f-string 安全性注释 / M2 `from __future__ import annotations` 与 D7 同缺 / M3 TS tx 事务性注释 / M4 downgrade 对称 if-compress 守卫 / M5 ORM 复合 PK drift 断言与 D5/D6/D7 风格对齐）；5 Minor 暂不修
-6. ✅ ORM 同步改 3 张表复合 PK + AlarmOutbox.alarm_id 去 FK + 4 个 lockstep 测试 flip + CHANGELOG chore: 说明 SHARED_SCHEMA_VERSION 不升版
+**Stage D 收官成果（D0 → D10 全程累计）**：
+- **DB schema**：26 表 + 2 角色（ruisheng_gw BYPASSRLS / ruisheng_api 非）+ GRANT（含 SEQUENCES）+ 3 PL/pgSQL 函数（全 SECURITY INVOKER + search_path 硬绑）+ 16 触发器（13 trg_<table>_updated + 3 scene）+ 12 FORCE RLS + 12 tenant_isolation policy + 3 张表 fillfactor/autovacuum + 5 TimescaleDB hypertable + 5 retention + 3 compression + 3 复合 PK
+- **7 migration**（head `959079e6cae9`）+ **15 integration tests**（336 passed + 8 skipped + 11.38s）
+- **9 个 Plan bug** 全部 controller 反向 fix master：#1 D3 REVOKE PUBLIC / #2 D4 varchar 窄+插值剥 / #3 D5 updated_at 计数 17→13 / #4 D6 RLS 列 19→12 / #5 D8 FK→hypertable+PK 分区 / #6 D8 compression vs FORCE RLS / #7 D9 updated_at 断言 / #8 D9 devices NOT NULL+wx_groups 错表 / #9 D9 SQL alias `def` Python 关键字
+- **D10 纯文档 + tag**：tag `plan-0-stage-d-complete`（指向 worktree HEAD `02516f7`）pushed；PROGRESS 补 spec v1.3.7 follow-up 6 项 + Stage D 回滚 Runbook
+- **Process 收获**：controller pre-dispatch sanity check（ORM scan × 3 / live-DB probe × 1 / plan diff × 1）直接抓 5 个 Plan bug，省掉 5 轮 implementer；implementer BLOCKED 报告（D3 / D4 / D8#6 / D9#8 / D9#9）均按"不静默改"纪律执行；subagent-driven 每 task 双 review（spec + quality）全 APPROVED
 
-**下一步：D9 — 集成测试（13 case）**
+**下一步：Stage E — testcontainers + embedded PG + seeds（7 task）**
 
-**Spec/Plan 依据**：plan §Task D9（L3923+）；spec §3.7 / §4.1 / §4.1.1 / §4.2 / §5.10 全覆盖检查
-**产出**：`tests/integration/test_alembic_upgrade.py` + `tests/conftest.py` 追加 `api_engine` / `gw_engine` fixture
+**Spec/Plan 依据**：plan §Stage E；spec §3.6（种子数据策略）+ §7（CI/CD）
 
-**D9 关键测试点（detail 见 plan）**：
-- `test_upgrade_down_and_up_again`：alembic base → head 对称性
-- `test_roles_exist`：ruisheng_gw (BYPASSRLS=t) + ruisheng_api (BYPASSRLS=f)
-- `test_functions_are_invoker`：3 个 PL/pgSQL 函数 SECURITY INVOKER + search_path 硬绑定
-- `test_updated_at_triggers_count`：13 张 trg_<table>_updated
-- `test_scene_triggers_exist`：scene_pages enforce × 1 + scene_views enforce × 1 + fill_snapshot × 1
-- `test_rls_forced_on_12_tables`：12 张 FORCE RLS（v1.2 Plan bug #4 修订后）
-- `test_policies_exist`：12 张 tenant_isolation USING+WITH CHECK
-- `test_hypertables_exist`：5 张 hypertable（v1.4 Plan bug #5 Q3-B 后剔 user_control_actions）
-- `test_d8_pk_composite_and_fk_dropped`（v1.3 Plan bug #5 新增）：3 张复合 PK + alarm_outbox FK 已拆
-- `test_rls_actually_blocks_cross_tenant_read`：ruisheng_api + SET LOCAL app.tenant_id=A → 只看见 A 行
+**Stage E 任务链（plan §Task E1-E7）**：
+| # | Title | 产出 |
+|---|---|---|
+| E1 | conftest.py 扩展 postgres/redis session fixture（embedded/container 双轨） | `tests/conftest.py` 重写 |
+| E2 | Embedded PG 包装（Windows 无 Docker fallback） | `tools/embedded_pg.py`（初版 stub） |
+| E3 | seeds/base.sql — 2 tenants + 3 users + 5 devices + 20 points | `alembic/seeds/base.sql` |
+| E4 | seeds 应用助手 `apply_seed.py` | 命令行 + conftest fixture |
+| E5 | pytest-xdist 并行 + 事务隔离 fixture | `tests/conftest.py` 增强 |
+| E6 | CI Linux 跑 testcontainers + artifact 上传 | `.github/workflows/ci.yml` |
+| E7 | Stage E 收尾 tag `plan-0-stage-e-complete` | tag + PROGRESS |
 
-**D9 后的 task 链（D10）**：D10 收尾 tag `plan-0-stage-d-complete` + spec v1.3.7 follow-up 清单（摘除 user_control_actions hypertable 段 + 标注 alarm_records/user_login_records compression 等 TS #6827 上游修复后回填）
+**Stage E 前置确认**：
+- Docker stack 保持运行（D0 起已 up，D10 不触）
+- `tests/integration/*` D9 已落地（15 case + 3 engine fixture + seed_tenants），E1 conftest 扩展建议合并 D9 遗产
+- Plan §Task E1 建议的 PostgresContainer 用 `timescale/timescaledb:2.16.1-pg15`（含 TS 扩展，避免与 D0 不同构）
 
 **执行纪律**：
 - subagent-driven：每 task 1 implementer + 2 review（spec → quality）
@@ -364,10 +400,10 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
 
 ---
 
-## 当前技术栈状态（2026-04-17 D8 完成后）
+## 当前技术栈状态（2026-04-17 Stage D ✅ 完结）
 
-- 26 张 ORM 模型全部实现，mypy 0 issues（28 files），pytest 321 passed + 8 skipped
-- `SHARED_SCHEMA_VERSION=20260415`，spec `v1.3.6`（Plan v1.4 对应 spec v1.3.7 follow-up 待 D10：(a) 摘除 user_control_actions hypertable / (b) alarm_records + user_login_records compression 标注等 TS issue #6827 上游修复）
+- 26 张 ORM 模型全部实现，mypy 0 issues（28 files），pytest **336 passed + 8 skipped**（321 unit + 15 D9 integration）
+- `SHARED_SCHEMA_VERSION=20260415`，spec `v1.3.6`（spec v1.3.7 follow-up 6 项见上文，非阻塞，Stage E/F/G 并行期间另开 branch）
 - Alembic 1.13 已加为显式 dev-dep，`alembic/env.py` async 版本就绪
 - **`alembic/versions/` 已有 7 个迁移**：
   - D2：`20260416_e05529ef4abb_initial_schema_26_tables.py`（26 张 CREATE TABLE）
