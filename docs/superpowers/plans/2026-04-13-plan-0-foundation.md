@@ -4359,11 +4359,18 @@ async def seed_tenants(gw_engine):
                 VALUES ('ug_A', 'Company A'), ('ug_B', 'Company B')
                 ON CONFLICT (usr_group) DO NOTHING
             """))
-            # users 表必填列：user_name / usr_group / authority / tel_no / email（按当前 ORM）
-            # 最小合规行（regex ^[a-zA-Z][a-zA-Z0-9_]{3,29}$ for user_name）：
+            # users 表 NOT NULL 无默认列（live DB 校对）：
+            #   user_name / password_hash / authority / control_authority / usr_group
+            # - authority: VARCHAR(20) CHECK IN ('Administrators','GroupCompany','Company','User')
+            #   (见 ruisheng_shared.enums.Authority 枚举；spec §3.6 RBAC 4 级)
+            # - control_authority: SmallInteger（int），D9 只关心非空，填 0
+            # - user_name: regex ^[a-zA-Z][a-zA-Z0-9_]{3,29}$ OR ^1[3-9][0-9]{9}$
+            # - password_hash: 占位 'test-not-a-real-hash'，D9 不涉登录逻辑
             await conn.execute(text("""
-                INSERT INTO users (user_name, usr_group, authority, tel_no, email)
-                VALUES ('user_of_ugB', 'ug_B', 3, '13800000002', 'b@example.com')
+                INSERT INTO users
+                    (user_name, password_hash, authority, control_authority, usr_group)
+                VALUES
+                    ('user_of_ugB', 'test-not-a-real-hash', 'User', 0, 'ug_B')
                 ON CONFLICT (user_name) DO NOTHING
             """))
     yield
