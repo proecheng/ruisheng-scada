@@ -4027,10 +4027,10 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
-# 按 docker-compose.dev.yml 默认值；CI 可从 env 覆盖
+# 按 docker-compose.dev.yml POSTGRES_USER/POSTGRES_PASSWORD（都是 "ruisheng_dev"）；CI 可从 env 覆盖
 _DEV_DSN = os.environ.get(
     "DEV_DATABASE_URL",
-    "postgresql+asyncpg://ruisheng_dev:dev_password@127.0.0.1:5432/ruisheng",
+    "postgresql+asyncpg://ruisheng_dev:ruisheng_dev@127.0.0.1:5432/ruisheng",
 )
 
 
@@ -4217,37 +4217,57 @@ async def test_d8_pk_composite_and_fk_dropped(dev_engine):
 
 
 @pytest.mark.integration
-async def test_rls_actually_blocks_cross_tenant_read(api_engine):
-    """ruisheng_api + SET LOCAL app.tenant_id='A' → 只看见 A 的行"""
+async def test_rls_actually_blocks_cross_tenant_read(api_engine, seed_tenants):
+    """ruisheng_api + SET LOCAL app.tenant_id='A' → 只看见 A 的行
+
+    v1.6 修订（Plan bug #8-B）：原 INSERT 只列 3 列会违反 devices 6 个 NOT NULL 无默认
+    列（dev_ser_number/modbus_addr/update_interval_decisec/loss_count/is_online/update_flag）。
+    补齐必填列；seed_tenants fixture 负责 ug_A + ug_B 的 wx_groups 行（FK 前置）。
+    """
     async with api_engine.connect() as conn:
         async with conn.begin():
             await conn.execute(text("SET LOCAL app.tenant_id = 'ug_A'"))
-            # 插 A 行
             await conn.execute(text("""
-                INSERT INTO devices (usr_group, dev_number, dev_name)
-                VALUES ('ug_A', 901, 'A-dev')
+                INSERT INTO devices
+                    (usr_group, dev_number, dev_ser_number, dev_name,
+                     modbus_addr, update_interval_decisec, loss_count,
+                     is_online, update_flag)
+                VALUES
+                    ('ug_A', '901', 'SER-901', 'A-dev',
+                     1, 100, 0, false, 0)
             """))
         async with conn.begin():
             await conn.execute(text("SET LOCAL app.tenant_id = 'ug_A'"))
-            rows = await conn.execute(text("SELECT count(*) FROM devices WHERE dev_number=901"))
+            rows = await conn.execute(text(
+                "SELECT count(*) FROM devices WHERE dev_number='901'"
+            ))
             assert rows.scalar() == 1
-            # 换租户视角：看不见
         async with conn.begin():
             await conn.execute(text("SET LOCAL app.tenant_id = 'ug_B'"))
-            rows = await conn.execute(text("SELECT count(*) FROM devices WHERE dev_number=901"))
+            rows = await conn.execute(text(
+                "SELECT count(*) FROM devices WHERE dev_number='901'"
+            ))
             assert rows.scalar() == 0
 
 
 @pytest.mark.integration
-async def test_rls_blocks_cross_tenant_insert(api_engine):
-    """ruisheng_api + SET tenant=A → 插 usr_group=B 被 WITH CHECK 拒绝"""
+async def test_rls_blocks_cross_tenant_insert(api_engine, seed_tenants):
+    """ruisheng_api + SET tenant=A → 插 usr_group=B 被 WITH CHECK 拒绝
+
+    v1.6 修订（Plan bug #8-B）：补齐 devices NOT NULL 列。
+    """
     async with api_engine.connect() as conn:
         async with conn.begin():
             await conn.execute(text("SET LOCAL app.tenant_id = 'ug_A'"))
             with pytest.raises(Exception) as ei:
                 await conn.execute(text("""
-                    INSERT INTO devices (usr_group, dev_number, dev_name)
-                    VALUES ('ug_B', 902, 'B-dev')
+                    INSERT INTO devices
+                        (usr_group, dev_number, dev_ser_number, dev_name,
+                         modbus_addr, update_interval_decisec, loss_count,
+                         is_online, update_flag)
+                    VALUES
+                        ('ug_B', '902', 'SER-902', 'B-dev',
+                         1, 100, 0, false, 0)
                 """))
             assert "row-level security" in str(ei.value).lower()
 
@@ -4274,33 +4294,82 @@ async def test_gw_bypasses_rls(gw_engine):
 
 
 @pytest.mark.integration
-async def test_scene_trigger_raises_23514(api_engine):
-    """跨租户 INSERT scene_pages 被 enforce 触发器抛 23514"""
+async def test_scene_trigger_raises_23514(api_engine, seed_tenants):
+    """跨租户 INSERT scene_pages 被 enforce 触发器抛 23514。
+
+    seed_tenants 必须包含：ug_A + ug_B 两个 wx_groups 行 + user_of_ugB 用户（usr_group=ug_B）。
+    触发器路径：tenant_id='ug_A' + owner_user_name='user_of_ugB'（usr_group='ug_B'）
+    → enforce_scene_tenant_consistency 检测不一致 → RAISE EXCEPTION ERRCODE='23514'。
+    """
     async with api_engine.connect() as conn:
         async with conn.begin():
             await conn.execute(text("SET LOCAL app.tenant_id = 'ug_A'"))
-            # owner_user_name 指向 ug_B 的用户（构造先决数据略；实际测试 fixture 铺）
             with pytest.raises(Exception) as ei:
                 await conn.execute(text("""
                     INSERT INTO scene_pages (usr_group, owner_user_name, page_name)
                     VALUES ('ug_A', 'user_of_ugB', 'p1')
                 """))
-            # 23514 = check_violation（与 RLS 的 42501 不同）
             assert "23514" in str(ei.value) or "scene_tenant_violation" in str(ei.value)
 
 
 @pytest.mark.integration
-async def test_api_insert_uses_sequence(api_engine):
-    """ruisheng_api INSERT 必须有 sequence USAGE（BIGSERIAL）"""
+async def test_api_insert_uses_sequence(api_engine, seed_tenants):
+    """ruisheng_api INSERT 必须有 sequence USAGE（BIGSERIAL）。
+
+    v1.6 修订（Plan bug #8-A）：原目标表 wx_groups 无 id 列（PK 是 usr_group VARCHAR）
+    且无 group_name 列（真实列 company_name）——完全错表。改用 devices（BIGSERIAL id）。
+    """
     async with api_engine.connect() as conn:
         async with conn.begin():
             await conn.execute(text("SET LOCAL app.tenant_id = 'ug_A'"))
             new_id = await conn.scalar(text("""
-                INSERT INTO wx_groups (usr_group, group_name) VALUES ('ug_A', 'g1')
+                INSERT INTO devices
+                    (usr_group, dev_number, dev_ser_number, dev_name,
+                     modbus_addr, update_interval_decisec, loss_count,
+                     is_online, update_flag)
+                VALUES
+                    ('ug_A', '997', 'SER-997', 'seq-probe',
+                     1, 100, 0, false, 0)
                 RETURNING id
             """))
             assert new_id is not None  # sequence USAGE OK
 ```
+
+- [ ] **Step 2.5：seed_tenants fixture（v1.6 新增 — Plan bug #8 配套）**
+
+写入 `tests/integration/conftest.py`（或 `tests/conftest.py`）作 session-scoped fixture。用 `gw_engine`（BYPASSRLS）绕过 RLS，填充 D9 多个 RLS / trigger test 需要的最小租户基线：
+
+```python
+import pytest_asyncio
+from sqlalchemy import text
+
+
+@pytest_asyncio.fixture(scope="session")
+async def seed_tenants(gw_engine):
+    """D9 最小 tenant 种子：ug_A + ug_B 两个 wx_groups + user_of_ugB 用户。
+
+    使用 gw_engine（BYPASSRLS）幂等插入（ON CONFLICT DO NOTHING）；不做 teardown，
+    dev 容器通过 `docker compose down -v` 整体重置。Stage E 的 seeds 机制落地后
+    可升级为更完整的 fixture。
+    """
+    async with gw_engine.connect() as conn:
+        async with conn.begin():
+            await conn.execute(text("""
+                INSERT INTO wx_groups (usr_group, company_name)
+                VALUES ('ug_A', 'Company A'), ('ug_B', 'Company B')
+                ON CONFLICT (usr_group) DO NOTHING
+            """))
+            # users 表必填列：user_name / usr_group / authority / tel_no / email（按当前 ORM）
+            # 最小合规行（regex ^[a-zA-Z][a-zA-Z0-9_]{3,29}$ for user_name）：
+            await conn.execute(text("""
+                INSERT INTO users (user_name, usr_group, authority, tel_no, email)
+                VALUES ('user_of_ugB', 'ug_B', 3, '13800000002', 'b@example.com')
+                ON CONFLICT (user_name) DO NOTHING
+            """))
+    yield
+```
+
+> **说明**：implementer 必须在插 users 前**核对当前 ORM 字段列表**（`ruisheng-shared/src/ruisheng_shared/models/users.py`）决定最小合规的列/值组合（regex、phone 格式、enum 值等）。若字段偏移导致 fixture 失败，**必须 BLOCKED 上报**——不要静默改列表。
 
 - [ ] **Step 3：运行**
 
@@ -4319,7 +4388,8 @@ git commit -m "test(db): D9 integration tests (roles/functions/triggers/RLS/hype
 **关键风险**：
 - **RLS 测试必须走 ruisheng_api 连接**（非 dev owner，除非显式测 FORCE 效果）
 - 密码 fixture 从 `os.environ` 读，CI 注入
-- `test_scene_trigger_raises_23514` 需要先造 ug_A、ug_B 两个 wx_group + `user_of_ugB` 用户 —— Stage E seeds 前可用 `conftest.py` 本地 setup/teardown 一次性建；若实现复杂可在 D9 里 skip 该 case 留给 Stage E
+- `seed_tenants` fixture 提供 ug_A/ug_B 两个 wx_groups + `user_of_ugB` 用户 —— 供多个 RLS/trigger test 复用（详见 Step 2.5）
+- **测试行 commit 后残留**：plan v1.0 的 `conn.begin()` 默认自动 commit，tests 10/11/15 插入的 devices 行会永久存在于 dev DB；dev-only 容器 `docker compose down -v` 整体重置；CI pipeline 里每次启容器都是干净态，可接受。Stage E seeds 机制可引入 test-scoped 回滚或唯一化 dev_number。
 
 ---
 
