@@ -87,7 +87,7 @@ def postgres_url() -> Iterator[str]:
       - E1 fixtures 服务未来 Stage E+ 在 CI Linux / 无 dev stack 场景
     """
     if _use_embedded():
-        from tools.embedded_pg import EmbeddedPostgres  # lazy import
+        from tools.embedded_pg import EmbeddedPostgres  # noqa: PLC0415 (lazy: USE_EMBEDDED_PG only)
 
         pg = EmbeddedPostgres()
         pg.start_sync()  # E2 stub raises NotImplementedError；真实现后同步启动
@@ -98,7 +98,7 @@ def postgres_url() -> Iterator[str]:
         return
 
     try:
-        from testcontainers.postgres import PostgresContainer
+        from testcontainers.postgres import PostgresContainer  # noqa: PLC0415 — optional-dep guard
     except ImportError:
         pytest.skip("testcontainers not available; set USE_EMBEDDED_PG=1")
     with PostgresContainer("timescale/timescaledb:2.16.1-pg15") as container:
@@ -116,7 +116,7 @@ def postgres_url() -> Iterator[str]:
 def redis_url() -> Iterator[str]:
     """E1 session 级 Redis URL（testcontainers）。同 `postgres_url` 理由用同步 fixture。"""
     try:
-        from testcontainers.redis import RedisContainer
+        from testcontainers.redis import RedisContainer  # noqa: PLC0415 — optional-dep guard
     except ImportError:
         pytest.skip("testcontainers not available")
     with RedisContainer("redis:7-alpine") as r:
