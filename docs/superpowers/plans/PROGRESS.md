@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage D ✅ 全部完成（10/10 + tag）**
+## 当前状态：Plan 0 **Stage E 进行中（E1 完成 1/7）**
 
-**最后更新**：2026-04-17（D10 收尾完成：tag `plan-0-stage-d-complete` pushed + spec v1.3.7 follow-up 清单 + Stage D 回滚 Runbook 入库）
+**最后更新**：2026-04-17（E1 conftest 扩展完成：testcontainers 双轨 fixture 落地 + D9 fixture byte-identical 保留；**Plan bug #10** pre-dispatch 抓 Replace → Merge + session→function scope；fixup 清 PLC0415）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`02516f7 test(db): D9 integration tests (roles/functions/triggers/RLS/hypertables, 15 cases)`（D10 无代码改动，tag 指向此 HEAD）
-**最新 tag**：`plan-0-stage-d-complete`（4 个 Stage tag 集齐：a/b/c/d）
-**master 最新 commit**：`<本次 D10 PROGRESS 更新>`（前置 `76cc7e8` D9 complete）
-**SHARED_SCHEMA_VERSION**：`20260415`（Stage D 全程不变；只改 DB schema 不触 shared 模型）
-**测试状态**：**336 passed + 8 skipped**（15 新 integration 全绿；8 skip 仍是 C11 ORM 占位，无回归）
+**最近 commit**（worktree）：`396b2e0 test(conftest): E1 fixup — PLC0415 noqa` + `d2b3482 test(conftest): E1 session-scope postgres_url/redis_url + function async_engine/session`
+**最新 tag**：`plan-0-stage-d-complete`（Stage E 收尾 E7 才打 `plan-0-stage-e-complete`）
+**master 最新 commit**：`8a0cd8e fix(plan): E1 Plan bug #10` → **本次 E1 PROGRESS 更新（即将推送）**
+**SHARED_SCHEMA_VERSION**：`20260415`（E1 纯 test infra 不触 shared 模型）
+**测试状态**：**336 passed + 8 skipped**（E1 新 fixture 未被任何测试 invoke，纯 Stage E+ 可用接口，无回归）
 
-**下一步**：**Stage E — testcontainers + embedded PG + seeds**（7 task：E1 conftest 扩展 / E2 embedded PG stub / E3-E7 seeds + fixtures + CI 跑 Linux 模式）。详见 plan §Stage E。
+**下一步**：**E2 — Embedded PG stub**（`tools/embedded_pg.py`，async + sync `start/stop` 双 API raise NotImplementedError，E1 已调用其 `start_sync/stop_sync` 接口）
 
 ---
 
@@ -37,14 +37,22 @@
 
 ---
 
+### Stage E 进度表
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| E1 | conftest.py 扩展 — testcontainers/embedded PG 双轨 fixture | `d2b3482` + fixup `396b2e0` | ✅ `tests/conftest.py`（+86/-3）；**Plan bug #10 pre-dispatch 抓**（plan v1.0 "Replace" 会删 D9 3 个 fixture + session-scope async 返祖 D9 L26-30 pitfall）→ master plan v1.1 fix `8a0cd8e`（Replace → Merge；async → function scope；`postgres_url`/`redis_url` → sync session；alembic upgrade 移入 `postgres_url`）；D9 fixtures（`is_windows`/`_DEV_DSN`/`dev_engine`/`api_engine`/`gw_engine`）byte-identical 保留（diff 确认）；新增 4 fixture：`postgres_url`（sync session，testcontainers `PostgresContainer("timescale/timescaledb:2.16.1-pg15")` + subprocess alembic upgrade head）+ `redis_url`（sync session，`RedisContainer("redis:7-alpine")`）+ `async_engine`（function，pool_pre_ping）+ `session`（function，async_sessionmaker + rollback teardown）；**双 review**：spec APPROVED（9/9 checkpoint PASS，byte-identical 确认，无 deviation）+ code quality APPROVED_WITH_MINORS after fixup（1 Important I1 PLC0415 → fixup `396b2e0` 加 3 条 noqa；3 Minor 都 OK：M1 `async_sessionmaker` rollback 冗余但匹配 plan 故保留 / M2 pool_pre_ping 可去但 noise-level / M3 pytest.skip 消息不全 actionable 但仅 stub 阶段不阻塞）；pytest **336 passed + 8 skipped 不变**（新 fixture 无测试 invoke，纯接口预留） |
+
+---
+
 ## 仓库关键坐标
 
 - **GitHub**：https://github.com/proecheng/ruisheng-scada （Private，账号 proecheng）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **master 最新 commit**：`76cc7e8 docs(progress): D9 complete` → **本次 D10 Stage D 收尾 commit（即将推送）**
-- **worktree 实施分支最新 commit**：`02516f7 test(db): D9 integration tests (roles/functions/triggers/RLS/hypertables, 15 cases)`（D10 无代码改动）
-- **alembic current**：`959079e6cae9 (head)` — D8 migration（D9/D10 无新迁移）
+- **master 最新 commit**：`8a0cd8e fix(plan): E1 Plan bug #10` → **本次 E1 PROGRESS 更新 commit（即将推送）**
+- **worktree 实施分支最新 commit**：`396b2e0 test(conftest): E1 fixup PLC0415 noqa` + `d2b3482 test(conftest): E1 session-scope postgres_url/redis_url + function async_engine/session`
+- **alembic current**：`959079e6cae9 (head)` — D8 migration（D9/D10/E1 无新迁移；E1 只改 `tests/conftest.py`）
 - **两个 worktree**：
   - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
   - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation（实际代码）
