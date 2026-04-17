@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage E 进行中（E1 完成 1/7）**
+## 当前状态：Plan 0 **Stage E 进行中（E1+E2 完成 2/7）**
 
-**最后更新**：2026-04-17（E1 conftest 扩展完成：testcontainers 双轨 fixture 落地 + D9 fixture byte-identical 保留；**Plan bug #10** pre-dispatch 抓 Replace → Merge + session→function scope；fixup 清 PLC0415）
+**最后更新**：2026-04-17（E2 `tools/embedded_pg.py` stub 落地：async+sync 双 API 都 raise NotImplementedError；review APPROVED 0/0/0；无 plan bug）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`396b2e0 test(conftest): E1 fixup — PLC0415 noqa` + `d2b3482 test(conftest): E1 session-scope postgres_url/redis_url + function async_engine/session`
+**最近 commit**（worktree）：`b295f8e chore(tools): E2 EmbeddedPostgres stub`（前置 E1 `396b2e0` / `d2b3482`）
 **最新 tag**：`plan-0-stage-d-complete`（Stage E 收尾 E7 才打 `plan-0-stage-e-complete`）
-**master 最新 commit**：`8a0cd8e fix(plan): E1 Plan bug #10` → **本次 E1 PROGRESS 更新（即将推送）**
-**SHARED_SCHEMA_VERSION**：`20260415`（E1 纯 test infra 不触 shared 模型）
-**测试状态**：**336 passed + 8 skipped**（E1 新 fixture 未被任何测试 invoke，纯 Stage E+ 可用接口，无回归）
+**master 最新 commit**：`2812a47 docs(progress): E1` → **本次 E2 PROGRESS 更新（即将推送）**
+**SHARED_SCHEMA_VERSION**：`20260415`（E2 纯 tools stub 不触 shared 模型）
+**测试状态**：**336 passed + 8 skipped**（E2 stub 无 test invoke 其 embedded 分支，无回归）
 
-**下一步**：**E2 — Embedded PG stub**（`tools/embedded_pg.py`，async + sync `start/stop` 双 API raise NotImplementedError，E1 已调用其 `start_sync/stop_sync` 接口）
+**下一步**：**E3-E6 — seeds SQL + run_seeds.py**（4 SQL 文件 + tools/run_seeds.py；1 demo tenant + 2 users + 1 device + 2 points）
 
 ---
 
@@ -42,6 +42,7 @@
 | # | Task | Commit | Notes |
 |---|---|---|---|
 | E1 | conftest.py 扩展 — testcontainers/embedded PG 双轨 fixture | `d2b3482` + fixup `396b2e0` | ✅ `tests/conftest.py`（+86/-3）；**Plan bug #10 pre-dispatch 抓**（plan v1.0 "Replace" 会删 D9 3 个 fixture + session-scope async 返祖 D9 L26-30 pitfall）→ master plan v1.1 fix `8a0cd8e`（Replace → Merge；async → function scope；`postgres_url`/`redis_url` → sync session；alembic upgrade 移入 `postgres_url`）；D9 fixtures（`is_windows`/`_DEV_DSN`/`dev_engine`/`api_engine`/`gw_engine`）byte-identical 保留（diff 确认）；新增 4 fixture：`postgres_url`（sync session，testcontainers `PostgresContainer("timescale/timescaledb:2.16.1-pg15")` + subprocess alembic upgrade head）+ `redis_url`（sync session，`RedisContainer("redis:7-alpine")`）+ `async_engine`（function，pool_pre_ping）+ `session`（function，async_sessionmaker + rollback teardown）；**双 review**：spec APPROVED（9/9 checkpoint PASS，byte-identical 确认，无 deviation）+ code quality APPROVED_WITH_MINORS after fixup（1 Important I1 PLC0415 → fixup `396b2e0` 加 3 条 noqa；3 Minor 都 OK：M1 `async_sessionmaker` rollback 冗余但匹配 plan 故保留 / M2 pool_pre_ping 可去但 noise-level / M3 pytest.skip 消息不全 actionable 但仅 stub 阶段不阻塞）；pytest **336 passed + 8 skipped 不变**（新 fixture 无测试 invoke，纯接口预留） |
+| E2 | tools/embedded_pg.py stub — async + sync start/stop 双 API | `b295f8e` | ✅ 单文件新建 45 行；verbatim plan v1.1 E2 Step 1 代码（byte-for-byte 匹配 plan §L4583-4629）；imports 只用 `__future__ annotations / asyncio / random / tempfile / pathlib.Path`；`_NOT_IMPLEMENTED_MSG` 模块常量（Windows no-Docker 解释 + Q-E06 待决）；class `EmbeddedPostgres(version="15")` 设 5 属性（version / port 15000-30000 random / data_dir mkdtemp prefix ruisheng-pg- / url asyncpg / _proc None）+ 4 方法（sync `start_sync` raise / sync `stop_sync` guarded terminate / async `start` raise / async `stop` terminate + await wait）；**无 `tools/__init__.py`**（A5 namespace 约定保持）；**验证**：ruff clean / mypy clean / `EmbeddedPostgres()` 实例化正常返回 url+port+data_dir / `start_sync()` 抛 NotImplementedError 含预期消息 / `stop_sync()` fresh 实例 noop / pytest 336+8 无回归；**review APPROVED 0/0/0**（combined spec + quality，line-by-line 对照 plan，0 deviation，0 minor）；**首个 Stage E 无 plan bug 的 task**（E1 有 #10） |
 
 ---
 
@@ -50,9 +51,9 @@
 - **GitHub**：https://github.com/proecheng/ruisheng-scada （Private，账号 proecheng）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **master 最新 commit**：`8a0cd8e fix(plan): E1 Plan bug #10` → **本次 E1 PROGRESS 更新 commit（即将推送）**
-- **worktree 实施分支最新 commit**：`396b2e0 test(conftest): E1 fixup PLC0415 noqa` + `d2b3482 test(conftest): E1 session-scope postgres_url/redis_url + function async_engine/session`
-- **alembic current**：`959079e6cae9 (head)` — D8 migration（D9/D10/E1 无新迁移；E1 只改 `tests/conftest.py`）
+- **master 最新 commit**：`2812a47 docs(progress): E1` → **本次 E2 PROGRESS 更新 commit（即将推送）**
+- **worktree 实施分支最新 commit**：`b295f8e chore(tools): E2 EmbeddedPostgres stub`（前置 `396b2e0` E1 fixup / `d2b3482` E1 main）
+- **alembic current**：`959079e6cae9 (head)` — D8 migration（D9/D10/E1/E2 均无新迁移；E2 只新建 `tools/embedded_pg.py`）
 - **两个 worktree**：
   - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
   - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation（实际代码）
