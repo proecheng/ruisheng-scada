@@ -4192,18 +4192,22 @@ async def test_hypertables_exist(dev_engine):
 
 @pytest.mark.integration
 async def test_d8_pk_composite_and_fk_dropped(dev_engine):
-    """D8 schema prep（Plan bug #5）：3 张表 PK 复合 + alarm_outbox FK 已拆"""
+    """D8 schema prep（Plan bug #5）：3 张表 PK 复合 + alarm_outbox FK 已拆
+
+    v1.7 修订（Plan bug #9）：原 SQL alias `AS def` + Python `r.def` 触发 SyntaxError
+    （`def` 是 Python 关键字）。改为 `AS constraint_def` + `r.constraint_def`。
+    """
     async with dev_engine.connect() as conn:
         # 3 张复合 PK
         rows = await conn.execute(text("""
-            SELECT conname, pg_get_constraintdef(oid) AS def
+            SELECT conname, pg_get_constraintdef(oid) AS constraint_def
               FROM pg_constraint
               WHERE contype='p'
                 AND conrelid::regclass::text
                     IN ('alarm_records','soft_logs','user_login_records')
               ORDER BY conname;
         """))
-        pk_defs = {r.conname: r.def for r in rows}
+        pk_defs = {r.conname: r.constraint_def for r in rows}
         assert "triggered_at" in pk_defs["pk_alarm_records"]
         assert "recorded_at"  in pk_defs["pk_soft_logs"]
         assert "logged_at"    in pk_defs["pk_user_login_records"]
