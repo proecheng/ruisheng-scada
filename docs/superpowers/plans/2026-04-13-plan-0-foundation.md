@@ -4021,15 +4021,33 @@ git commit -m "feat(db): D8 TimescaleDB hypertables + retention + compression (5
 - [ ] **Step 1：conftest 加多角色 fixture**
 
 ```python
-# tests/conftest.py 追加
+# tests/conftest.py 追加（3 个 engine fixture，对应 3 种 DB 身份）
 import os
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
+# 按 docker-compose.dev.yml 默认值；CI 可从 env 覆盖
+_DEV_DSN = os.environ.get(
+    "DEV_DATABASE_URL",
+    "postgresql+asyncpg://ruisheng_dev:dev_password@127.0.0.1:5432/ruisheng",
+)
+
+
+@pytest_asyncio.fixture(scope="session")
+async def dev_engine():
+    """以 ruisheng_dev（owner）身份连接。
+    owner 无 BYPASSRLS 属性 + D6 FORCE RLS 后也受 tenant_isolation 策略约束
+    (test_owner_does_not_bypass_rls 依赖此行为)。大多数 DDL/introspection 测试用此 fixture。
+    """
+    engine = create_async_engine(_DEV_DSN)
+    yield engine
+    await engine.dispose()
+
+
 @pytest_asyncio.fixture(scope="session")
 async def api_engine():
-    """以 ruisheng_api 身份连接（受 RLS 约束）"""
+    """以 ruisheng_api 身份连接（非 BYPASSRLS，受 RLS 约束）。"""
     pw = os.environ["RUISHENG_API_PASSWORD"]
     engine = create_async_engine(
         f"postgresql+asyncpg://ruisheng_api:{pw}@127.0.0.1:5432/ruisheng"
@@ -4040,7 +4058,7 @@ async def api_engine():
 
 @pytest_asyncio.fixture(scope="session")
 async def gw_engine():
-    """以 ruisheng_gw 身份连接（BYPASSRLS）"""
+    """以 ruisheng_gw 身份连接（BYPASSRLS，跨租户读写）。"""
     pw = os.environ["RUISHENG_GW_PASSWORD"]
     engine = create_async_engine(
         f"postgresql+asyncpg://ruisheng_gw:{pw}@127.0.0.1:5432/ruisheng"
@@ -4101,13 +4119,13 @@ async def test_functions_are_invoker(dev_engine):
 
 @pytest.mark.integration
 async def test_updated_at_triggers_count(dev_engine):
-    """17 张表各有 trg_<table>_updated"""
+    """13 张表各有 trg_<table>_updated（v1.5 修订 — 原 17 是 Plan bug #3 遗留；D5 Plan bug #3 修后 UPDATED_AT_TABLES 收敛到 13，本断言同步对齐）"""
     async with dev_engine.connect() as conn:
         n = await conn.scalar(text("""
             SELECT count(*) FROM pg_trigger
               WHERE tgname LIKE 'trg_%_updated' AND NOT tgisinternal;
         """))
-    assert n >= 17
+    assert n == 13
 
 
 @pytest.mark.integration
@@ -4295,7 +4313,7 @@ uv run pytest tests/integration/ -v -m integration
 
 ```bash
 git add tests/integration/ tests/conftest.py
-git commit -m "test(db): D9 integration tests (roles/functions/triggers/RLS/hypertables, 13 cases)"
+git commit -m "test(db): D9 integration tests (roles/functions/triggers/RLS/hypertables, 15 cases)"
 ```
 
 **关键风险**：
