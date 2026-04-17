@@ -4446,58 +4446,78 @@ git push origin plan-0-stage-d-complete
 
 ## Task E1：conftest.py — postgres/redis 双轨 fixture
 
+> **v1.1 修订（2026-04-17，Plan bug #10 反向 fix）**：原 v1.0 `Replace tests/conftest.py` 会删除 D9 已落地的 `dev_engine` / `api_engine` / `gw_engine` 三个 function-scope fixture（15 integration test + seed_tenants 依赖）。v1.1 改为 **Merge**：D9 fixture 原样保留，只在文件尾部追加新 fixture。另将 async fixtures 全部改为 **function scope**（D9 conftest.py L26-30 已证 `scope="session"` 异步 fixture 在 pytest-asyncio 0.23 auto 模式会触发 "Event loop is closed"）；`postgres_url` / `redis_url` 改为 **同步** session fixture（testcontainers 本身是同步 context manager，async 没必要），alembic upgrade 移入 `postgres_url` fixture（每 session 一次，不重复），`async_engine` + `session` 保持 async 但 function scope。
+
 **Files:**
-- Modify: `D:\江苏润盛\tests\conftest.py`
+- Modify: `D:\江苏润盛\tests\conftest.py`（**Merge, NOT Replace**）
 
-- [ ] **Step 1：扩展 conftest**
+- [ ] **Step 1：保留 D9 fixtures + 追加 E1 新 fixture**
 
-Replace `D:\江苏润盛\tests\conftest.py`:
+**不要动** D9 已有的内容：
+- `is_windows` (function scope)
+- `_DEV_DSN` 常量 + function-scope engine 注释块
+- `dev_engine` / `api_engine` / `gw_engine` 三个 async function-scope fixture
+
+**在文件末尾追加** 以下代码（保留 D9 所有 import + 在其之上按需添加新 import）：
+
 ```python
-"""根 conftest：postgres / redis 会话级 fixture（双轨）。"""
-from __future__ import annotations
+# ---------------------------------------------------------------------
+# E1 testcontainers / embedded PG 双轨 session 级 fixture（Plan bug #10 fix：与 D9 fixture 并存）
+# ---------------------------------------------------------------------
 
-import os
-import sys
-from collections.abc import AsyncIterator
-
-import pytest
-import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+# 新增 import（如已存在请去重，放在文件顶部 import 区）：
+#   from collections.abc import AsyncIterator, Iterator
+#   import subprocess
+#   from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 
 def _use_embedded() -> bool:
+    """Windows 无 Docker 环境走 tools/embedded_pg.py stub；默认走 testcontainers（需 Docker）。"""
     return os.environ.get("USE_EMBEDDED_PG") == "1"
 
 
 @pytest.fixture(scope="session")
-def is_windows() -> bool:
-    return sys.platform == "win32"
+def postgres_url() -> Iterator[str]:
+    """E1 session 级 PostgreSQL URL（testcontainers 新起容器 + alembic upgrade）。
 
-
-@pytest_asyncio.fixture(scope="session")
-async def postgres_url() -> AsyncIterator[str]:
+    * **同步** fixture：testcontainers `with PostgresContainer(...)` 本来就是同步 context
+      manager，用 `@pytest_asyncio.fixture(scope="session")` 会在 pytest-asyncio 0.23
+      auto 模式触发 "Event loop is closed"（D9 conftest.py L26-30 已证）。
+    * alembic upgrade 放在这里：每 session 跑一次；`async_engine` fixture function scope
+      只做引擎创建/释放，不再重复 upgrade。
+    * 与 D9 `dev_engine`（指向 live Docker `127.0.0.1:5432`）**并存但独立**：
+      - D9 fixtures 服务 `tests/integration/*` 现有 15 case（依赖 `docker compose up` 的 dev 容器）
+      - E1 fixtures 服务未来 Stage E+ 在 CI Linux / 无 dev stack 场景
+    """
     if _use_embedded():
         from tools.embedded_pg import EmbeddedPostgres  # lazy import
 
         pg = EmbeddedPostgres()
-        await pg.start()
+        pg.start_sync()  # E2 stub raises NotImplementedError；真实现后同步启动
         try:
             yield pg.url
         finally:
-            await pg.stop()
-    else:
-        try:
-            from testcontainers.postgres import PostgresContainer
-        except ImportError:
-            pytest.skip("testcontainers not available; set USE_EMBEDDED_PG=1")
-        with PostgresContainer("timescale/timescaledb:2.16.1-pg15") as container:
-            # 驱动要走 asyncpg
-            url = container.get_connection_url().replace("psycopg2", "asyncpg")
-            yield url
+            pg.stop_sync()
+        return
+
+    try:
+        from testcontainers.postgres import PostgresContainer
+    except ImportError:
+        pytest.skip("testcontainers not available; set USE_EMBEDDED_PG=1")
+    with PostgresContainer("timescale/timescaledb:2.16.1-pg15") as container:
+        # testcontainers 默认返回 psycopg2 DSN；改 asyncpg driver
+        url = container.get_connection_url().replace("psycopg2", "asyncpg")
+        # 新库空表，必须 alembic upgrade head 建全 26 表 + 2 角色 + ... + hypertable
+        subprocess.check_call(
+            ["uv", "run", "alembic", "upgrade", "head"],
+            env={**os.environ, "DATABASE_URL": url},
+        )
+        yield url
 
 
-@pytest_asyncio.fixture(scope="session")
-async def redis_url() -> AsyncIterator[str]:
+@pytest.fixture(scope="session")
+def redis_url() -> Iterator[str]:
+    """E1 session 级 Redis URL（testcontainers）。同 `postgres_url` 理由用同步 fixture。"""
     try:
         from testcontainers.redis import RedisContainer
     except ImportError:
@@ -4506,35 +4526,51 @@ async def redis_url() -> AsyncIterator[str]:
         yield f"redis://{r.get_container_host_ip()}:{r.get_exposed_port(6379)}/0"
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture  # function scope — 见 D9 conftest.py L26-30 关于 session-scope async 的注释
 async def async_engine(postgres_url: str) -> AsyncIterator[AsyncEngine]:
+    """从 testcontainer-spawn 的 DB 建 async engine。function scope 避开 event loop pitfall。"""
     engine = create_async_engine(postgres_url, pool_pre_ping=True)
-    # 首次启动 → alembic upgrade head
-    import subprocess
-    env = {**os.environ, "DATABASE_URL": postgres_url}
-    subprocess.check_call(["uv", "run", "alembic", "upgrade", "head"], env=env)
     yield engine
     await engine.dispose()
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture  # function scope
 async def session(async_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    """E1 通用 async session（rollback at teardown）。"""
     maker = async_sessionmaker(async_engine, expire_on_commit=False)
     async with maker() as s:
         yield s
         await s.rollback()
 ```
 
-- [ ] **Step 2：Commit**
+> **关于 E2 `EmbeddedPostgres`**：E2 stub 当前只有 async `start()` / `stop()`，E1 调用 `start_sync()` / `stop_sync()` 同步别名。E2 stub 需同步增加两个同步方法（同样 `raise NotImplementedError`），见 E2 v1.1 修订。
+
+- [ ] **Step 2：验证**（Docker 运行中）
+
+```bash
+cd D:\江苏润盛\.claude\worktrees\plan-0-foundation
+export RUISHENG_GW_PASSWORD='dev-gw-change-me'
+export RUISHENG_API_PASSWORD='dev-api-change-me'
+uv run pytest  # 336 passed + 8 skipped + 可能 N 跳过（testcontainers 非所有测试引用）
+```
+
+**关键断言**：
+- 测试数不降（仍 336 passed 至少）
+- 新 fixture 未被任何现有测试引用（纯"未来 CI 可用"的接口）→ 本 task 不引入断言 test，E3+ 才用
+- `pytest --collect-only | grep -E '(postgres_url|redis_url|async_engine|session)'` 应能 collect（只是未被 invoke）
+
+- [ ] **Step 3：Commit**
 
 ```bash
 git add tests/conftest.py
-git commit -m "test: postgres/redis session fixtures with embedded/container dual mode"
+git commit -m "test(conftest): E1 session-scope postgres_url/redis_url + function async_engine/session (merge w/ D9 fixtures)"
 ```
 
 ---
 
 ## Task E2：Embedded PG 包装
+
+> **v1.1 修订（2026-04-17，E1 Plan bug #10 fix 联动）**：E1 `postgres_url` fixture 改为 sync，故需 sync 启停方法。本 stub 同时暴露 `start()`/`stop()`（async）和 `start_sync()`/`stop_sync()`（sync），都 `raise NotImplementedError`，保持接口一致、未来双模式实现都方便。
 
 **Files:**
 - Create: `D:\江苏润盛\tools\embedded_pg.py`
@@ -4549,14 +4585,21 @@ Create `D:\江苏润盛\tools\embedded_pg.py`:
 
 使用 postgresql-binaries 包（pypi: postgresql-15.x-win）或手工下载 portable。
 这里先用 pg_tmp 风格最简实现：用 pip 包 pg_embed 或降级到 pytest-postgresql。
+当前为 stub；E1 `postgres_url` fixture 同步模式需 `start_sync()` / `stop_sync()` 入口。
 """
 from __future__ import annotations
 
 import asyncio
-import os
 import random
 import tempfile
 from pathlib import Path
+
+
+_NOT_IMPLEMENTED_MSG = (
+    "EmbeddedPostgres 目前为 stub。"
+    "真正实现在 Plan 0 后续迭代（pg_tmp / pg_embed / portable binaries）。"
+    "当前 Windows 用户请启用 Docker Desktop 或清除 USE_EMBEDDED_PG（default=container 模式）。"
+)
 
 
 class EmbeddedPostgres:
@@ -4567,13 +4610,17 @@ class EmbeddedPostgres:
         self.url = f"postgresql+asyncpg://postgres:postgres@127.0.0.1:{self.port}/ruisheng"
         self._proc: asyncio.subprocess.Process | None = None
 
+    # Sync API（E1 postgres_url fixture 用）
+    def start_sync(self) -> None:
+        raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
+
+    def stop_sync(self) -> None:
+        if self._proc:
+            self._proc.terminate()
+
+    # Async API（未来 async 场景）
     async def start(self) -> None:
-        # 占位实现：提示开发者使用容器
-        raise NotImplementedError(
-            "EmbeddedPostgres 目前为 stub。"
-            "真正实现在 Plan 0 后续迭代（pg_tmp / pg_embed）。"
-            "当前 Windows 用户请启用 Docker Desktop 或设置 USE_EMBEDDED_PG=0"
-        )
+        raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
 
     async def stop(self) -> None:
         if self._proc:
