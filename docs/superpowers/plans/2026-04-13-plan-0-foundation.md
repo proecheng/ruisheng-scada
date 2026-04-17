@@ -3879,8 +3879,10 @@ HYPERTABLES = [
     ("point_data_history",   "recorded_at",  "1 month", "1 year",  "7 days",  "dev_number, point_id"),
     ("waveform_history",     "recorded_at",  "1 month", "1 year",  "7 days",  "dev_number"),
     ("soft_logs",            "recorded_at",  "1 month", "1 year",  "7 days",  None),
-    ("user_login_records",   "logged_at",    "1 month", "3 years", "7 days",  "usr_group"),
-    ("alarm_records",        "triggered_at", "1 month", "2 years", "30 days", None),
+    # Plan bug #6（v1.4 修订）：以下 2 张表与 D6 FORCE RLS 冲突，TS 2.16.1 拒 SET compress；
+    # 只保留 retention，compression 等 TS #6827 解决后在 v1.3.7 TODO 里补回。
+    ("user_login_records",   "logged_at",    "1 month", "3 years", None,      None),
+    ("alarm_records",        "triggered_at", "1 month", "2 years", None,      None),
     # user_control_actions 不转 hypertable（保 UNIQUE(cmd_id) 幂等键；spec v1.3.7 摘除）
 ]
 
@@ -3972,7 +3974,10 @@ SELECT proc_name, hypertable_name
   FROM timescaledb_information.jobs
   WHERE application_name LIKE 'Retention%' OR application_name LIKE 'Compression%'
   ORDER BY hypertable_name, proc_name;
--- 期望：retention × 5 + compression × 5 = 10 行（所有 5 表都启 compression）
+-- 期望：retention × 5 + compression × 3 = 8 行
+-- compression 仅在 point_data_history / waveform_history / soft_logs 启
+-- alarm_records / user_login_records 受 D6 FORCE RLS 约束，TS 2.16.1 拒 compression（Plan bug #6）
+-- 等上游 TS issue #6827 解决后在 v1.3.7 follow-up 补回
 SQL
 
 uv run alembic downgrade -1 && uv run alembic upgrade head  # 策略 remove+add 幂等即可
@@ -3994,11 +3999,12 @@ git add ruisheng-shared/src/ruisheng_shared/models/alarms.py \
 git commit -m "feat(db): D8 TimescaleDB hypertables + retention + compression (5 tables, composite PK prep)"
 ```
 
-**关键风险 / 设计决策（v1.3 修订）**：
+**关键风险 / 设计决策（v1.4 修订）**：
 - **Plan bug #5**（D8）：TS FK→hypertable 禁止 + PK 必含分区列 — pre-dispatch 活探测抓出。fix：drop outbox FK + 3 张表复合 PK + user_control_actions 摘除 hypertable 资格
+- **Plan bug #6**（D8，v1.4）：TS 2.16.1 `compression cannot be used on table with row security` — 实现时 implementer 在 `ALTER TABLE user_login_records SET (timescaledb.compress, ...)` 步抓到 FeatureNotSupportedError。受影响 2 张：`alarm_records` + `user_login_records`（D6 FORCE RLS）。user 拍板 Option A：摘掉这 2 张的 compression，只保留 retention。TS 上游 issue #6827 解决后 v1.3.7 补回（低写入率审计表，MVP 规模存储压力可忽略）
 - **幂等性**（M2 已在 v1.1 修复）：`if_not_exists => TRUE` + remove+add 策略；ALTER TABLE PK 改动带 `IF EXISTS` 也幂等
 - **单向迁移**：hypertable 转换与 PK 改动 downgrade 不回退（TS 限制），release note 与 spec v1.3.7 必须标注
-- **soft_logs 压缩**：v1.1 修复 `if segby: else:` 分支 bug；v1.3 仍保留"有 compress_after 的都走 SET + policy"
+- **soft_logs 压缩**：v1.1 修复 `if segby: else:` 分支 bug；v1.4 仍保留"有 compress_after 的都走 SET + policy"（soft_logs 无 RLS 所以不受 Plan bug #6 影响）
 - **downgrade 不删表**（v1.1 已修）
 
 ---
