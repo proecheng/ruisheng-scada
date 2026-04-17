@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage D 进行中（D0+D1+D2+D3+D4+D5+D6+D7 完成 8/10）**
+## 当前状态：Plan 0 **Stage D 进行中（D0+D1+D2+D3+D4+D5+D6+D7+D8 完成 9/10）**
 
-**最后更新**：2026-04-17（D7 3 张 UPDATE-heavy 表 fillfactor + autovacuum 调优完成 + 双 review APPROVED；pre-dispatch 三方对齐校验（spec ↔ plan ↔ ORM info）—— 首个无 Plan bug 的 Stage D task）
+**最后更新**：2026-04-17（D8 TimescaleDB hypertable×5 + retention×5 + compression×3 完成 + 双 review APPROVED；**连抓 Plan bug #5 + #6 两个 TimescaleDB 硬约束**——FK→hypertable 禁止、PK 必含分区列、compression vs RLS 冲突）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`4976089 feat(db): D7 fillfactor + autovacuum tuning (3 UPDATE-heavy tables)`（前置 `1278cdf` D6）
+**最近 commit**（worktree）：`4205faf feat(db): D8 TimescaleDB hypertables + retention + compression (5 tables, composite PK prep, RLS-compat)`（前置 `4976089` D7）
 **最新 tag**：`plan-0-stage-c-complete`（Stage D 未打 tag）
-**master 最新 commit**：`42e978a docs(progress): D6 complete — 3 scene triggers + 12 FORCE RLS + 12 policy (7/10)`（本次 PROGRESS 即将再追一条）
-**SHARED_SCHEMA_VERSION**：`20260415`
-**测试状态**：321 passed + 8 skipped（D7 后仍 baseline，无回归）
+**master 最新 commit**：`5caab8d fix(plan): D8 Plan bug #6 — compression vs FORCE RLS conflict (Option A)`（本次 PROGRESS 即将再追一条）
+**SHARED_SCHEMA_VERSION**：`20260415`（D8 ORM 复合 PK 不升版——id 仍 BIGSERIAL 唯一、读写语义未变，CHANGELOG 已加 chore: 说明）
+**测试状态**：321 passed + 8 skipped（D8 后仍 baseline，无回归）
 
-**下一步**：**D8 — TimescaleDB hypertable ×6 + retention + compression**（含 user_login_records）。详见 plan §Task D8。
+**下一步**：**D9 — 集成测试 13 case**（roles / functions / triggers / RLS / hypertables 全覆盖）。详见 plan §Task D9。
 
 ---
 
@@ -31,6 +31,7 @@
 | D5 | 13 张表 `trg_<table>_updated` 触发器 + ORM drift 断言 | `9d5b0f8` | ✅ `alembic/versions/20260416_89a9dfebe138_trg__table__updated_triggers_13_tables.py`（98 行）；13 表 BEFORE UPDATE 触发器 EXECUTE FUNCTION `set_updated_at()`（D4 函数复用，未自建）；upgrade 顶部 `from ruisheng_shared.models import Base` lazy import + drift assertion 两侧（missing/extra）；DROP IF EXISTS + CREATE 配对幂等；downgrade 仅 drop 13 触发器，**不删 set_updated_at()**（D4 拥有所有权）；验证：13 行 pg_trigger（`tgtype=19` = BEFORE+ROW+UPDATE）、proname=set_updated_at × 13、手工 INSERT updated_at='2000-01-01' → UPDATE → updated_at 被覆盖到 now()；**过程**：controller pre-dispatch ORM scan 抓 **Plan bug #3**（plan UPDATED_AT_TABLES 列 17 张但 ORM 只 13 张含 updated_at；4 张关联/不变表 alarm_records / user_emails / user_phone_numbers / user_wx_bindings 错列）→ controller 反向 fix plan §Task D5 (master `1490ef5`) → implementer 用修订后清单实施 → spec compliance review APPROVED（含 spec spot-check：scene_pages L1483-1485 / pay_orders L1359-1360 spec 直写本触发器）→ code quality review APPROVED（无 Critical/Important，3 minor "gold-plating"）→ 副产分析：D6 trigger 顺序 e<f<t 字母序 = 正确语义（租户校验失败先 abort）；**Plan bug #3 on Stage D**；implementer 副发现两条 plan doc bug（V4 wrong column `group_name`→`company_name` + pg_sleep+now() 单事务 broken）已合入本 PROGRESS commit |
 | D6 | scene_* 3 触发器 + 12 张表 FORCE RLS + tenant_isolation policy | `1278cdf` | ✅ `alembic/versions/20260417_0005_scene_triggers_and_rls.py`（175 行）；**3 scene 触发器**（复用 D4 函数）：`trg_scene_pages_enforce_tenant` (scene_pages, BEFORE INSERT OR UPDATE OF owner_user_name, usr_group) / `trg_scene_views_enforce_tenant` (scene_views, BEFORE INSERT OR UPDATE OF owner_user_name, usr_group, scene_page_id, dev_number) / `trg_scene_views_fill_snapshot` (scene_views, BEFORE INSERT only)；**字母序约定** enforce<fill<updated 写入 docstring + 警示禁重命名打乱；**12 张表 ENABLE + FORCE ROW LEVEL SECURITY**（FORCE 是 M1 修复，spec §3.7 v1.3.7 待补但本 task 已落）；**12 policy** `tenant_isolation` USING+WITH CHECK `usr_group = current_setting('app.tenant_id', true) OR current_setting('app.role', true) = 'Administrators'`；upgrade 顶部 ORM drift 断言（`symmetric_difference` 两侧）；downgrade 仅 drop triggers/policies/RLS，**不删 D4 函数**（D4 拥有所有权，同 D5 对 set_updated_at 的处理）；**验证 9 步全 PASS**：12 行 relforcerowsecurity=t / 12 行 tenant_isolation polcmd='*' / 3 scene 触发器字母序 / 跨租户 INSERT 触发 42501 RLS 拒绝 / downgrade 净化 0 残留 + D4 3 函数不误删 / 再 upgrade 幂等 / 321 passed + 8 skipped 无回归；**过程**：controller pre-dispatch ORM scan 抓 **Plan bug #4**（plan RLS_TABLES 列 19 张但 ORM 只 12 张含 usr_group；7 张 satellite 表 user_emails/user_phone_numbers/device_points/device_waring_cfgs/sim_cards/alarm_outbox/soft_logs 通过 FK 继承租户，本身无 usr_group 列，若保留则 CREATE POLICY 阶段 `column "usr_group" does not exist`；spec §3.7 L676 权威判据"带 usr_group 字段的业务表"）→ controller 反向 fix plan §Task D6 (master `13de44a`)，含 Task 标题 18→12 / RLS_TABLES 19→12 / D9 集成测试 2 处 18→12 / D10 final tag 消息修订 / 页脚排除表清单补完 satellite 组和 no-tenant-context 组 → implementer 按修订清单实施 → spec compliance review APPROVED（22/22 checkpoints，含 spec spot-check L1487-1495 scene_pages + L1529-1541 scene_views 字段 byte-identical）→ code quality review APPROVED_WITH_MINORS（0 Critical/Important；2 optional Minor：downgrade operational warning 可加 + USING/WITH CHECK 字面重复但语义必须同步）；**Plan bug #4 on Stage D**（连续第 4 个 controller pre-dispatch 抓到） |
 | D7 | UPDATE-heavy 表 fillfactor + autovacuum 调优（3 张表） | `4976089` | ✅ `alembic/versions/20260417_0006_hot_table_tuning.py`（134 行，alembic head `378761167d8c`）；**3 张表 reloptions**（spec 逐字符匹配）：point_data_realtime fillfactor=70 + 4 autovacuum (vacuum_scale 0.05 / analyze_scale 0.02 / vacuum_cost_limit 1000 / vacuum_insert_scale 0.1)（spec §4.2 L1184-1190）；devices fillfactor=80 + vacuum_scale 0.05（spec §4.2 L1126-1129）；device_waring_cfgs fillfactor=80（spec §5.10 L1930，仅 fillfactor 单项无 autovacuum）；upgrade 顶部 ORM info drift 断言（`PointDataRealtime.__table__.info["postgresql_with"]` vs `_EXPECTED_REALTIME_WITH` 常量）；downgrade 对称 RESET 逆序（device_waring_cfgs→devices→point_data_realtime）；**验证 5 步全 PASS**：8 行 reloptions upgrade 后（1+2+5）/ 3 行 NULL downgrade 后 / 再 upgrade 8 行幂等 / 321 passed + 8 skipped 无回归；**Stage C C11 tech debt 兑现**：point_data_realtime 的 `postgresql_with` 从 metadata-only 到真 DDL；**过程**：controller pre-dispatch **三方对齐校验** spec ↔ plan ↔ ORM info 全一致，**首个无 Plan bug 的 Stage D task**（D3-D6 连续 4 个都有）→ implementer 按 plan 实施（commit `4976089`）→ spec compliance review APPROVED（15/15 checkpoints，含 F1-3 侧重 scope 合规防守：单文件、无 ORM/spec/plan side-fix）→ code quality review APPROVED_WITH_MINORS（0 Critical/Important；2 optional Minor：缺 `from __future__ import annotations`（D3-D6 全都有，D7 唯一缺）+ downgrade operational 警示可补明"不丢数据但膨胀加剧"）；两 Minor 暂不修（与 D5 留 3 minor / D6 留 2 minor 一致策略，归入未来 polishing pass） |
+| D8 | TimescaleDB hypertable×5 + retention×5 + compression×3 + 复合 PK prep | `4205faf` | ✅ `alembic/versions/20260417_0007_timescale_hypertables.py`（192 行，rev `959079e6cae9`）；**5 张 hypertable**：point_data_history / waveform_history / soft_logs / user_login_records / alarm_records（user_control_actions 因 UNIQUE(cmd_id) 幂等键与 TS 分区列要求冲突，摘除 — Plan bug #5 Q3-B）；**retention**：5 张全启（1y × 3 / 2y × 1 / 3y × 1）；**compression**：3 张启（point_data_history segby=dev_number+point_id / waveform_history segby=dev_number / soft_logs 无 segby），**2 张未启**（alarm_records + user_login_records，D6 FORCE RLS 与 TS 2.16.1 compression 冲突 — Plan bug #6 Option A，等 TS #6827 上游修复）；**schema prep 前置**（Plan bug #5）：Step A drop FK `fk_alarm_outbox_alarm_id_alarm_records`（TS 禁 FK→hypertable） + Step B 3 张表复合 PK `(id, <time_col>)`（alarm_records / soft_logs / user_login_records，含 `pg_constraint.conkey` 单列守卫幂等） + Step C create_hypertable + retention + compression；ORM 同步改（AlarmRecord + SoftLog + UserLoginRecord 复合 PK、AlarmOutbox.alarm_id 去 FK；4 个 lockstep 测试 flip + CHANGELOG `chore:` 说明 id BIGSERIAL 自身唯一所以 SHARED_SCHEMA_VERSION 不升）；downgrade 前向专用——只卸 retention + compression policy（TS 不原生支持 hypertable→regular）；**过程**：controller pre-dispatch live-DB 活探测抓 **Plan bug #5**（FK→hypertable 禁止 + 4 张表 id-only PK 违反 TS 分区列要求）→ master plan v1.3 fix `5901243`（user Q1-A + Q2-A + Q3-B 拍板）→ implementer 按 plan v1.3 起跑 → 迁移 upgrade 中 `ALTER TABLE user_login_records SET compress` 抛 FeatureNotSupportedError → implementer BLOCKED 上报并研究上游 issue #6827 → controller 派 option A/B/C → user 确认 Option A → master plan v1.4 fix `5caab8d`（alarm_records + user_login_records 摘除 compression）→ implementer 延续 dispatch（agent `a38e07b7901f8d601` 续跑）完成；**spec review APPROVED**（独立 agent 读代码 + 查 live DB 逐行核对，含 2 deviation 合理性论证：Step B 幂等守卫 + 4 lockstep test 更新 + CHANGELOG）；**code review APPROVED_WITH_MINORS**（0 Critical/Important；5 optional Minor：M1 f-string 安全性 explicit 注释 / M2 `from __future__ import annotations`（与 D7 同缺）/ M3 TS create_hypertable tx 事务性注释 / M4 downgrade 对称 `if compress:` 守卫 / M5 ORM 复合 PK drift 断言与 D5/D6/D7 风格对齐）；5 Minor 暂不修（与 D5/D6/D7 一致策略，归入未来 polishing pass）；**累计 Plan bug**：D3-D6 共 4 个 pre-dispatch 抓 + **D8 独占 2 个**（#5 pre-dispatch 活探测，#6 BLOCKED 实测触发） |
 
 ---
 
@@ -39,9 +40,9 @@
 - **GitHub**：https://github.com/proecheng/ruisheng-scada （Private，账号 proecheng）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **master 最新 commit**：`42e978a docs(progress): D6 complete — 3 scene triggers + 12 FORCE RLS + 12 policy (7/10)`（本次 PROGRESS 即将再追一条）
-- **worktree 实施分支最新 commit**：`4976089 feat(db): D7 fillfactor + autovacuum tuning (3 UPDATE-heavy tables)`（前置 `1278cdf` D6）
-- **alembic current**：`378761167d8c (head)` — D7 migration
+- **master 最新 commit**：`5caab8d fix(plan): D8 Plan bug #6 — compression vs FORCE RLS conflict (Option A)`（本次 PROGRESS 即将再追一条）
+- **worktree 实施分支最新 commit**：`4205faf feat(db): D8 TimescaleDB hypertables + retention + compression (5 tables, composite PK prep, RLS-compat)`（前置 `4976089` D7）
+- **alembic current**：`959079e6cae9 (head)` — D8 migration
 - **两个 worktree**：
   - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
   - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation（实际代码）
@@ -49,7 +50,7 @@
 - **Docker stack**：运行中 (`docker compose -f docker-compose.dev.yml ps` 在 worktree)
   - `ruisheng-postgres-dev` (timescale/timescaledb:2.16.1-pg15) healthy，0.0.0.0:5432
   - `ruisheng-redis-dev` (redis:7-alpine) healthy，0.0.0.0:6379
-  - 内含 D7 应用的 26 张表 + 2 DB 角色 + GRANT + 3 PL/pgSQL 函数 + 13 trg_<table>_updated 触发器 + 3 scene 触发器 + 12 张表 FORCE RLS + 12 tenant_isolation policy + **3 张表 fillfactor + autovacuum tuning**（point_data_realtime 5 项 / devices 2 项 / device_waring_cfgs 1 项）
+  - 内含 D8 应用的 26 张表 + 2 DB 角色 + GRANT + 3 PL/pgSQL 函数 + 13 trg_<table>_updated 触发器 + 3 scene 触发器 + 12 张表 FORCE RLS + 12 tenant_isolation policy + 3 张表 fillfactor + autovacuum tuning + **5 张 TimescaleDB hypertable（含 3 张复合 PK）+ 5 retention policy + 3 compression policy**
 
 ---
 
@@ -242,14 +243,14 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
 
 ---
 
-## 🔖 会话交接点（2026-04-17，D7 完成后 — D8 准备）
+## 🔖 会话交接点（2026-04-17，D8 完成后 — D9 准备）
 
-**当前位置**：Stage D，D0/D1/D2/D3/D4/D5/D6/D7 完成 **8/10**，下一步 **D8（TimescaleDB hypertable ×6 + retention + compression）**
+**当前位置**：Stage D，D0/D1/D2/D3/D4/D5/D6/D7/D8 完成 **9/10**，下一步 **D9（集成测试 13 case，roles/functions/triggers/RLS/hypertables 全覆盖）**
 
 **环境状态**（续跑直接用，无需重建）：
 - Docker stack 运行中（postgres + redis，均 healthy）
-- alembic 当前：`378761167d8c (head)` = D7 hot_table_tuning
-- PG 库里已有：26 张表 + alembic_version + 2 角色 + GRANT + 3 PL/pgSQL 函数 + 13 trg_<table>_updated 触发器 + 3 scene 触发器 + 12 张表 FORCE RLS + 12 tenant_isolation policy + **3 张表 fillfactor + autovacuum tuning**（point_data_realtime / devices / device_waring_cfgs）
+- alembic 当前：`959079e6cae9 (head)` = D8 timescale hypertables
+- PG 库里已有：26 张表 + alembic_version + 2 角色 + GRANT + 3 PL/pgSQL 函数 + 13 trg_<table>_updated 触发器 + 3 scene 触发器 + 12 张表 FORCE RLS + 12 tenant_isolation policy + 3 张表 fillfactor + autovacuum tuning + **5 张 TimescaleDB hypertable（含 3 张复合 PK）+ 5 retention policy + 3 compression policy**
 - 环境变量（续跑时重新 export，shell 会话不保留）：
   ```bash
   export RUISHENG_GW_PASSWORD='dev-gw-change-me'
@@ -257,47 +258,40 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
   ```
   值以 `.env.example` 为准；dev 直接用占位；生产走 secret manager
 
-**本次会话 D7 成果**：
-1. ✅ Controller pre-dispatch **三方对齐校验**（spec ↔ plan ↔ ORM info）全一致 → **首个无 Plan bug 的 Stage D task**（D3-D6 连续 4 个都有）
-2. ✅ D7 implementer 按 plan 实施（commit `4976089`），134 行单文件，零 side-fix；Step 3 五步验证全 PASS（8 行 reloptions upgrade / 3 行 NULL downgrade / 再 upgrade 幂等 / pytest 321+8 无回归）
-3. ✅ D7 spec compliance review APPROVED — 15/15 checkpoints，含 F1-3 scope 合规（单文件、无 ORM side-fix）；三方对齐精确校验（spec L1126-1129 / L1184-1190 / L1930 ↔ migration 常量 ↔ ORM `PointDataRealtime.__table__.info["postgresql_with"]`）
-4. ✅ D7 code quality review APPROVED_WITH_MINORS — 0 Critical/Important，2 optional Minor（缺 `from __future__ import annotations`（D3-D6 全都有）+ downgrade operational 警示可补明"不丢数据但膨胀加剧"）；两 Minor 暂不修
-5. ✅ C11 tech debt 兑现：point_data_realtime 的 `postgresql_with` 从 metadata-only 到真 DDL
+**本次会话 D8 成果**：
+1. ✅ Controller pre-dispatch live-DB 活探测 `create_hypertable('alarm_records', ...)` 抓 **Plan bug #5**（FK→hypertable 禁止；4 张表 id-only PK 违反 TS 分区列要求）→ controller 向 user 列 Q1/Q2/Q3 三叉 → user 选 Q1-A + Q2-A + Q3-B → plan v1.3 反向 fix master `5901243`
+2. ✅ Implementer 起跑实施 v1.3，迁移 upgrade 中 `SET (timescaledb.compress)` 抛 FeatureNotSupportedError → BLOCKED 报告 **Plan bug #6**（TS 2.16.1 compression vs RLS 冲突，上游 issue #6827） → controller 派 Option A/B/C → user 选 Option A → plan v1.4 反向 fix master `5caab8d`
+3. ✅ Implementer 延续 dispatch（SendMessage 续跑）应用 delta 完成（commit `4205faf`）；Step B 自抓到 `downgrade -1 && upgrade head` 对压缩 hypertable 不可 DROP CONSTRAINT，添加 `pg_constraint.conkey` 单列守卫幂等；5 步验证全 PASS
+4. ✅ D8 spec compliance review APPROVED（独立 agent 读代码 + 查 live DB 逐行核对；5 hypertable 名单 / 3 复合 PK / FK 已拆 / 8 jobs / spec §4.2 L1200+L1427 + §5.10 L1953 全匹配）
+5. ✅ D8 code quality review APPROVED_WITH_MINORS — 0 Critical/Important，5 optional Minor（M1 f-string 安全性注释 / M2 `from __future__ import annotations` 与 D7 同缺 / M3 TS tx 事务性注释 / M4 downgrade 对称 if-compress 守卫 / M5 ORM 复合 PK drift 断言与 D5/D6/D7 风格对齐）；5 Minor 暂不修
+6. ✅ ORM 同步改 3 张表复合 PK + AlarmOutbox.alarm_id 去 FK + 4 个 lockstep 测试 flip + CHANGELOG chore: 说明 SHARED_SCHEMA_VERSION 不升版
 
-**下一步：D8 — TimescaleDB hypertable ×6 + retention + compression**
+**下一步：D9 — 集成测试（13 case）**
 
-**Spec 依据**：spec §5.10 L1931-1959（hypertable 5→6 表扩展，含 user_login_records / alarm_records / user_control_actions / soft_logs / point_data_history / waveform_history）+ compression policy + retention policy
-**Plan**：plan v1.1 §Task D8（L3803+）
+**Spec/Plan 依据**：plan §Task D9（L3923+）；spec §3.7 / §4.1 / §4.1.1 / §4.2 / §5.10 全覆盖检查
+**产出**：`tests/integration/test_alembic_upgrade.py` + `tests/conftest.py` 追加 `api_engine` / `gw_engine` fixture
 
-**D8 关键要点**（细节见 plan）：
-- **6 张表 create_hypertable**（chunk_time_interval 因表不同）：
-  - `point_data_history`（recorded_at，chunk_time_interval 更细，高频时序）
-  - `waveform_history`（recorded_at）
-  - `alarm_records`（triggered_at，chunk 1 month，retention 2 year，compression 30 days）
-  - `user_control_actions`（acted_at，chunk 1 month，retention 3 year）
-  - `soft_logs`（created_at）
-  - `user_login_records`（v1.3.6 新增入 hypertable）
-- **幂等性关键**：M2 reviewer 修复要求 `create_hypertable(..., if_not_exists => TRUE)` + `remove_retention_policy()` / `remove_compression_policy()` → `add_*_policy()` 包装（防 alembic 重试）
-- **downgrade 策略**：移除 policy + `decompress_chunks()`（若有）+ 如何从 hypertable 还原普通表是开放问题（TimescaleDB 不原生支持）——plan 里应有说明
-- **FK 限制**：TimescaleDB hypertable 不支持从 hypertable 指向普通表的 FK（但反向可以）；spec DDL 已规避（alarm_records / user_control_actions 等字段本就无 FK）
+**D9 关键测试点（detail 见 plan）**：
+- `test_upgrade_down_and_up_again`：alembic base → head 对称性
+- `test_roles_exist`：ruisheng_gw (BYPASSRLS=t) + ruisheng_api (BYPASSRLS=f)
+- `test_functions_are_invoker`：3 个 PL/pgSQL 函数 SECURITY INVOKER + search_path 硬绑定
+- `test_updated_at_triggers_count`：13 张 trg_<table>_updated
+- `test_scene_triggers_exist`：scene_pages enforce × 1 + scene_views enforce × 1 + fill_snapshot × 1
+- `test_rls_forced_on_12_tables`：12 张 FORCE RLS（v1.2 Plan bug #4 修订后）
+- `test_policies_exist`：12 张 tenant_isolation USING+WITH CHECK
+- `test_hypertables_exist`：5 张 hypertable（v1.4 Plan bug #5 Q3-B 后剔 user_control_actions）
+- `test_d8_pk_composite_and_fk_dropped`（v1.3 Plan bug #5 新增）：3 张复合 PK + alarm_outbox FK 已拆
+- `test_rls_actually_blocks_cross_tenant_read`：ruisheng_api + SET LOCAL app.tenant_id=A → 只看见 A 行
 
-**D8 执行路径**：
-1. `cd D:/江苏润盛/.claude/worktrees/plan-0-foundation && export ...`
-2. `uv run alembic revision -m "timescaledb hypertables + retention + compression"`
-3. 按 plan §Task D8 Step 2 代码片段贴入
-4. 验证：`SELECT * FROM timescaledb_information.hypertables` 期望 6 行；compression / retention policy 正确
-5. 回归 pytest 321+8
-6. commit + push
-
-**D8 后的 task 链（D9-D10）**：D9 集成测试 13 case（完整 pytest integration 覆盖 D2-D8）；D10 收尾 tag `plan-0-stage-d-complete` + spec v1.3.7 follow-up 清单。
+**D9 后的 task 链（D10）**：D10 收尾 tag `plan-0-stage-d-complete` + spec v1.3.7 follow-up 清单（摘除 user_control_actions hypertable 段 + 标注 alarm_records/user_login_records compression 等 TS #6827 上游修复后回填）
 
 **执行纪律**：
 - subagent-driven：每 task 1 implementer + 2 review（spec → quality）
-- **发现 plan/spec bug 必须 BLOCKED**，绝不静默改。Plan bug 累计：#1 D3 / #2 D4 / #3 D5 全部 controller 反向 fix plan + master commit
-- **代码质量审查必须真比对 spec**（不只是 plan）。D4/D5 review 都有过 spec spot-check 实践
-- **Controller pre-dispatch sanity check 是好习惯**（D5 ORM scan 抓 Plan bug #3 节省一轮 implementer 跑）
+- **发现 plan/spec bug 必须 BLOCKED**，绝不静默改。Plan bug 累计：#1 D3 / #2 D4 / #3 D5 / #4 D6 / **#5 + #6 D8**（D8 独占 2 个：#5 pre-dispatch 活探测抓，#6 BLOCKED 实测触发）全部 controller 反向 fix plan + master commit
+- **代码质量审查必须真比对 spec**（不只是 plan）。D4/D5/D8 review 都有过 spec spot-check 实践
+- **Controller pre-dispatch sanity check 是好习惯**（D5 ORM scan 抓 #3 / D6 ORM scan 抓 #4 / D8 live-DB 探测抓 #5 — 都节省一轮 implementer 跑）
 - commit 前必须 `uv run task fmt`
-- commit 不混 side-fix
+- commit 不混 side-fix（D8 ORM lockstep 测试与 CHANGELOG 属 required dependency，非 side-fix）
 - 每 task 完成后立即更新 PROGRESS + push master
 
 **Plan v1.1 重编原因**：D2 完成后做 plan gap review，发现 v1.0 对 spec v1.3.3/1.3.4/1.3.6 覆盖严重不足：
@@ -369,28 +363,29 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
 
 ---
 
-## 当前技术栈状态（2026-04-17 D7 完成后）
+## 当前技术栈状态（2026-04-17 D8 完成后）
 
 - 26 张 ORM 模型全部实现，mypy 0 issues（28 files），pytest 321 passed + 8 skipped
-- `SHARED_SCHEMA_VERSION=20260415`，spec `v1.3.6`（Plan v1.2 重编对应 spec v1.3.7 follow-up，见 D10）
+- `SHARED_SCHEMA_VERSION=20260415`，spec `v1.3.6`（Plan v1.4 对应 spec v1.3.7 follow-up 待 D10：(a) 摘除 user_control_actions hypertable / (b) alarm_records + user_login_records compression 标注等 TS issue #6827 上游修复）
 - Alembic 1.13 已加为显式 dev-dep，`alembic/env.py` async 版本就绪
-- **`alembic/versions/` 已有 6 个迁移**：
+- **`alembic/versions/` 已有 7 个迁移**：
   - D2：`20260416_e05529ef4abb_initial_schema_26_tables.py`（26 张 CREATE TABLE）
   - D3：`20260416_e74ffa548c2f_db_roles_ruisheng_gw_ruisheng_api_grants.py`（2 角色 + GRANT）
   - D4：`20260416_09676586bfbd_plpgsql_set_updated_at_scene_tenant_.py`（3 PL/pgSQL 函数 + search_path 硬绑；fixup `85f2d2b`）
   - D5：`20260416_89a9dfebe138_trg__table__updated_triggers_13_tables.py`（13 BEFORE UPDATE 触发器 + ORM drift 断言）
   - D6：`20260417_0005_scene_triggers_and_rls.py`（3 scene 触发器 + 12 张表 FORCE RLS + 12 tenant_isolation policy + ORM drift 断言）
-  - **D7**：`20260417_0006_hot_table_tuning.py`（3 张表 fillfactor + autovacuum；head `378761167d8c`；C11 tech debt 兑现）
-- Docker stack 运行中（postgres + redis healthy）；PG 里有完整 26 张表 + alembic_version + 2 角色 + 3 函数 + 13 updated 触发器 + 3 scene 触发器 + 12 policy + 3 张表 reloptions tuning
+  - D7：`20260417_0006_hot_table_tuning.py`（3 张表 fillfactor + autovacuum；C11 tech debt 兑现）
+  - **D8**：`20260417_0007_timescale_hypertables.py`（drop alarm_outbox FK + 3 张表复合 PK + 5 张 hypertable + 5 retention policy + 3 compression policy；head `959079e6cae9`；Plan bug #5 + #6 双修）
+- Docker stack 运行中（postgres + redis healthy）；PG 里有完整 26 张表 + alembic_version + 2 角色 + 3 函数 + 13 updated 触发器 + 3 scene 触发器 + 12 policy + 3 张表 reloptions tuning + 5 hypertable + 5 retention + 3 compression policy
 - Git 全部 push 完毕；tag `plan-0-stage-c-complete` 已存在（Stage D 未打 tag，D10 才打）
-- worktree HEAD: `4976089`，master HEAD: `42e978a`（即将 +PROGRESS commit）
+- worktree HEAD: `4205faf`，master HEAD: `5caab8d`（即将 +PROGRESS commit）
 
 ### Stage D 快速导航
 
-- Plan 位置：`docs/superpowers/plans/2026-04-13-plan-0-foundation.md` §Stage D（v1.2 含 Plan bug #4 反向 fix）
-- Task 顺序（v1.2）：~~D0 环境校验~~ ✅ → ~~D1 baseline~~ ✅ → ~~D2 初始 schema~~ ✅ → ~~D3 DB 角色 + GRANT~~ ✅ → ~~D4 PL/pgSQL 函数~~ ✅ → ~~D5 updated_at 触发器~~ ✅ → ~~D6 scene 触发器+12 FORCE RLS~~ ✅ → ~~D7 fillfactor + autovacuum~~ ✅ → **D8 TimescaleDB hypertable×6** ← 下一步 → D9 集成测试 → D10 tag + spec follow-up
+- Plan 位置：`docs/superpowers/plans/2026-04-13-plan-0-foundation.md` §Stage D（v1.4 含 Plan bug #4 + #5 + #6 反向 fix）
+- Task 顺序（v1.4）：~~D0 环境校验~~ ✅ → ~~D1 baseline~~ ✅ → ~~D2 初始 schema~~ ✅ → ~~D3 DB 角色 + GRANT~~ ✅ → ~~D4 PL/pgSQL 函数~~ ✅ → ~~D5 updated_at 触发器~~ ✅ → ~~D6 scene 触发器+12 FORCE RLS~~ ✅ → ~~D7 fillfactor + autovacuum~~ ✅ → ~~D8 TimescaleDB hypertable×5 + 复合 PK prep~~ ✅ → **D9 集成测试 13 case** ← 下一步 → D10 tag + spec follow-up
 - 与 Stage C 的区别：**需要真实 PG + Redis 容器**（不再是纯 Python 单测）
-- 关键产出：7 个 `alembic/versions/*.py` 迁移脚本 + `tests/integration/test_alembic_upgrade.py`（13 case）+ tag `plan-0-stage-d-complete`
+- 关键产出：7 个 `alembic/versions/*.py` 迁移脚本 ✅ + `tests/integration/test_alembic_upgrade.py`（13 case）← D9 → tag `plan-0-stage-d-complete` ← D10
 
 ---
 
