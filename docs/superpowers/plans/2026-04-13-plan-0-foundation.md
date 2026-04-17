@@ -3551,7 +3551,7 @@ git commit -m "feat(db): D5 BEFORE UPDATE triggers maintaining updated_at on 13 
 
 ---
 
-## Task D6：scene_* 租户触发器 + 18 张表 RLS（ENABLE + FORCE + tenant_isolation policy）
+## Task D6：scene_* 租户触发器 + 12 张表 RLS（ENABLE + FORCE + tenant_isolation policy）
 
 **Spec 依据**：§3.7 L670-722 / §4.1.1 (4)(5) / §4.2 L1487-1495, L1529-1541
 
@@ -3563,7 +3563,7 @@ git commit -m "feat(db): D5 BEFORE UPDATE triggers maintaining updated_at on 13 
 - [ ] **Step 1：生成**
 
 ```bash
-uv run alembic revision -m "scene tenant triggers + RLS tenant_isolation (18 tables)"
+uv run alembic revision -m "scene tenant triggers + RLS tenant_isolation (12 tables)"
 ```
 
 - [ ] **Step 2：upgrade()**
@@ -3578,20 +3578,23 @@ revision = "xxx"
 down_revision = "<D5-rev>"
 
 
-# 带 usr_group 的表（除 wx_groups 自身）；ORM `usr_group` 列存在即入
-# 审计表（maintain_actions / user_login_records / soft_logs / user_control_actions）
-# 若带 usr_group 也要 RLS
+# 带 usr_group 的表（除 wx_groups 自身 — 自身即租户字典）；ORM `usr_group` 列存在即入。
+# satellite 表（user_emails / user_phone_numbers / device_points / device_waring_cfgs /
+#   sim_cards / alarm_outbox / soft_logs）**不**入此列表：
+#   它们通过 FK→父表 继承租户，无自身 usr_group 列；policy 的 `usr_group = ...`
+#   会在 CREATE POLICY 阶段炸 `column does not exist`。spec §3.7 L676 权威判据：
+#   "对所有业务表（**带 usr_group 字段的**）启用 RLS"。
 RLS_TABLES: list[str] = [
     # 业务表
-    "users", "user_wx_bindings", "user_phone_numbers", "user_emails",
-    "devices", "device_points", "device_waring_cfgs",
-    "sim_cards", "alarm_records", "alarm_outbox",
+    "users", "user_wx_bindings",
+    "devices",
+    "alarm_records",
     "timing_plans", "maintain_plans",
     "scene_pages", "scene_views",
     "pay_orders",
-    # 审计表
+    # 审计表（含 usr_group 的）
     "user_control_actions", "maintain_actions",
-    "soft_logs", "user_login_records",
+    "user_login_records",
 ]
 
 
@@ -3635,7 +3638,7 @@ def upgrade() -> None:
           FOR EACH ROW EXECUTE FUNCTION fill_scene_views_snapshot();
     """)
 
-    # --- 块 B：18 张表 ENABLE + FORCE + policy ---
+    # --- 块 B：12 张表 ENABLE + FORCE + policy ---
     for t in RLS_TABLES:
         op.execute(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY;")
         # FORCE：对 owner 也生效（不留超级用户后门；spec §3.7 要补 v1.3.7）
@@ -3679,12 +3682,12 @@ SELECT relname, relrowsecurity, relforcerowsecurity
     AND relrowsecurity
   ORDER BY relname;
 SQL
-# 期望：18 行，relrowsecurity + relforcerowsecurity 全为 t
+# 期望：12 行，relrowsecurity + relforcerowsecurity 全为 t
 
 # 核 policy
 docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng \
   -c "SELECT polname, polrelid::regclass FROM pg_policy WHERE polname='tenant_isolation';"
-# 期望：18 行
+# 期望：12 行
 
 # 核 scene 触发器字母序生效
 docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng -c "\d+ scene_views"
@@ -3711,7 +3714,7 @@ uv run alembic upgrade head
 
 ```bash
 git add alembic/versions/20260417_0005_*.py
-git commit -m "feat(db): D6 scene tenant triggers + FORCE RLS tenant_isolation on 18 tables"
+git commit -m "feat(db): D6 scene tenant triggers + FORCE RLS tenant_isolation on 12 tables"
 ```
 
 **关键风险**：
@@ -3719,7 +3722,10 @@ git commit -m "feat(db): D6 scene tenant triggers + FORCE RLS tenant_isolation o
 - scene 触发器的 **`BEFORE INSERT OR UPDATE OF <cols>`** 精确列清单（spec L1488/L1530）不能简化；否则每次改 `page_name` 也触发校验
 - **WITH CHECK 显式**写出（PG 默认值等于 USING，但显式可读且防将来语义漂移）
 - RLS 变量名 **`app.tenant_id` / `app.role`**（spec §3.7 L686 + §4.1.1 L989；**不是** `app.current_usr_group`）
-- 无 `usr_group` 的表**不启** RLS：wx_groups / device_templates / pay_orders_seen / point_data_realtime / point_data_history / waveform_history
+- 无 `usr_group` 的表**不启** RLS（通过 FK 继承租户 / 无租户上下文）：
+  - satellite 带 FK 继承：user_emails (→users) / user_phone_numbers (→users) / device_points (→devices) / device_waring_cfgs (→devices) / sim_cards (→devices) / alarm_outbox (→alarm_records)
+  - 无 tenant 上下文或本身即租户字典：wx_groups / device_templates / pay_orders_seen / soft_logs / point_data_realtime / point_data_history / waveform_history
+- **12 张表权威清单**（v1.2 修订 — 原 19 条含 7 张 satellite 表是 Plan bug #4）：`users / user_wx_bindings / devices / alarm_records / timing_plans / maintain_plans / scene_pages / scene_views / pay_orders / user_control_actions / maintain_actions / user_login_records`。drift 断言仅以 **ORM `usr_group` 列存在性**为判据（spec §3.7 L676）。
 
 ---
 
@@ -4038,8 +4044,8 @@ async def test_scene_triggers_exist(dev_engine):
 
 
 @pytest.mark.integration
-async def test_rls_forced_on_18_tables(dev_engine):
-    """18 张 RLS 表必须同时 ENABLE + FORCE"""
+async def test_rls_forced_on_12_tables(dev_engine):
+    """12 张 RLS 表必须同时 ENABLE + FORCE（v1.2 修订 — 原 18 含 7 张 satellite 表是 Plan bug #4）"""
     async with dev_engine.connect() as conn:
         rows = await conn.execute(text("""
             SELECT relname FROM pg_class
@@ -4048,19 +4054,19 @@ async def test_rls_forced_on_18_tables(dev_engine):
               ORDER BY relname;
         """))
         rls_tables = {r.relname for r in rows}
-    assert len(rls_tables) == 18
+    assert len(rls_tables) == 12
 
 
 @pytest.mark.integration
 async def test_policies_exist(dev_engine):
-    """18 张表各 1 条 tenant_isolation policy（USING + WITH CHECK）"""
+    """12 张表各 1 条 tenant_isolation policy（USING + WITH CHECK）"""
     async with dev_engine.connect() as conn:
         rows = await conn.execute(text("""
             SELECT polrelid::regclass::text AS tbl, polname
               FROM pg_policy WHERE polname='tenant_isolation';
         """))
         tables = {r.tbl for r in rows}
-    assert len(tables) == 18
+    assert len(tables) == 12
 
 
 @pytest.mark.integration
@@ -4212,7 +4218,7 @@ alembic 严格线性：**禁跳版 downgrade**。若要回滚 D3 删角色，必
 
 ```bash
 cd D:\江苏润盛\.claude\worktrees\plan-0-foundation
-git tag -a plan-0-stage-d-complete -m "Stage D: 26 tables + 2 roles + 3 functions + 20 triggers + 18 RLS policies (FORCE) + 6 hypertables + integration tests"
+git tag -a plan-0-stage-d-complete -m "Stage D: 26 tables + 2 roles + 3 functions + 16 triggers (13 updated_at + 3 scene) + 12 RLS policies (FORCE) + 6 hypertables + integration tests"
 git push origin plan-0-stage-d-complete
 ```
 
