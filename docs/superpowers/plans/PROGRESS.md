@@ -5,19 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage D 进行中（D0+D1+D2+D3+D4+D5 完成 6/10）**
+## 当前状态：Plan 0 **Stage D 进行中（D0+D1+D2+D3+D4+D5+D6 完成 7/10）**
 
-**最后更新**：2026-04-16（D5 13 张表 trg_<table>_updated 触发器 + ORM drift 断言完成 + 双 review APPROVED；pre-dispatch ORM scan 抓 Plan bug #3 反向 fix）
+**最后更新**：2026-04-17（D6 3 scene 触发器 + 12 张表 FORCE RLS + tenant_isolation policy 完成 + 双 review APPROVED；pre-dispatch ORM scan 抓 Plan bug #4 反向 fix —— 连续 4 个 Stage D task 都 controller 预抓 plan bug）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`9d5b0f8 feat(db): D5 BEFORE UPDATE triggers maintaining updated_at on 13 tables`（前置 `85f2d2b` D4 fixup）
+**最近 commit**（worktree）：`1278cdf feat(db): D6 scene tenant triggers + FORCE RLS tenant_isolation on 12 tables`（前置 `9d5b0f8` D5）
 **最新 tag**：`plan-0-stage-c-complete`（Stage D 未打 tag）
-**master 最新 commit**：`1490ef5 fix(plan): D5 Plan bug #3 — UPDATED_AT_TABLES 17→13`（本次 PROGRESS 即将再追一条）
+**master 最新 commit**：`13de44a fix(plan): D6 Plan bug #4 — RLS_TABLES 19→12 per spec §3.7 L676`（本次 PROGRESS 即将再追一条）
 **SHARED_SCHEMA_VERSION**：`20260415`
-**测试状态**：321 passed + 8 skipped（D5 后仍 baseline，无回归）
+**测试状态**：321 passed + 8 skipped（D6 后仍 baseline，无回归）
 
-**下一步**：**D6 — scene_* 3 触发器 + 18 张表 FORCE RLS + tenant_isolation policy**。详见 plan v1.1 §Task D6。
-
-> D6 trigger 顺序提示（D5 review 副产 — 已确认 PG 按 trigger 名 alphabetically 触发同 timing/event/level）：scene_views 上 BEFORE UPDATE 顺序将是 `enforce_scene_tenant_consistency` (e) → `fill_scene_views_snapshot` (f) → `trg_scene_views_updated` (t)。语义正确——租户校验失败立刻 abort，不浪费 set_updated_at。**D6 实施务必在新触发器 docstring 标明此顺序约定**，禁未来重命名打乱字母序。
+**下一步**：**D7 — UPDATE-heavy 表 fillfactor + autovacuum 调优**。详见 plan v1.1/v1.2 §Task D7。
 
 ---
 
@@ -31,6 +29,7 @@
 | D3 | DB 角色 (ruisheng_gw/ruisheng_api) + GRANT 基线 | `2474275` + fixup `d806a45` | ✅ `alembic/versions/20260416_e74ffa548c2f_db_roles_ruisheng_gw_ruisheng_api_grants.py`；2 角色（gw BYPASSRLS / api 非）+ schema 级 GRANT ON ALL TABLES + SEQUENCES + ALTER DEFAULT PRIVILEGES + 3 张表细粒度 REVOKE+GRANT（pay_orders_seen api=r 只读；soft_logs gw=a 仅写；user_login_records gw 无权）；密码走 `_require_env()` raise + `DO $$ IF NOT EXISTS ALTER ROLE ELSE CREATE END $$` 幂等支持轮换；downgrade `DROP OWNED → DROP ROLE IF EXISTS`；验证全 PASS（含 M4 sequence USAGE）；**过程**：第 1 次派 implementer 发现 **plan bug**（`REVOKE ... FROM PUBLIC` 不影响具名角色 → 达不到缩权）→ BLOCKED 上报 → controller 反向 fix plan (`88b3576`) → 第 2 次 implementer 按修订实施 → fixup `d806a45` 修 ruff-format drift（+ 顺手清 13 个 Stage C 文件的 tech debt #2 drift：cosmetic + 1 处 ruff 删 Integer unused import）；**Plan bug #1 on Stage D** |
 | D4 | PL/pgSQL 函数 ×3（set_updated_at + enforce_scene_tenant_consistency + fill_scene_views_snapshot） | `e11313c` + fixup `85f2d2b` | ✅ `alembic/versions/20260416_09676586bfbd_plpgsql_set_updated_at_scene_tenant_.py`；3 函数全 SECURITY INVOKER + `SET search_path = pg_catalog, public`（M3 硬绑）+ 6 处 RAISE EXCEPTION 都带 `% NEW.<field>` 插值 + ERRCODE='23514' + `WHERE ... AND deleted_at IS NULL` 全保留；upgrade/downgrade/upgrade 幂等；验证：`pg_proc.prosecdef=f`×3、`proconfig={search_path=pg_catalog, public}`×3；**过程**：implementer 按 plan v1.1 实施（commit `e11313c`）→ spec compliance review APPROVED → **code quality review 抓 Plan bug #2A+B**（A: DECLARE varchar(40) 比源列 String(50) 窄会 22001 截断；B: RAISE 消息被剥离 spec 设计的 % 插值 NEW.* 值，运维丢上下文）→ user 确认两条都修 → controller 反向 fix plan §Task D4 (master `5967780`) → implementer fixup migration (`85f2d2b`，仅函数 2，+20/-19) → re-review APPROVED；**Plan bug #2 on Stage D**（A+B 双修） |
 | D5 | 13 张表 `trg_<table>_updated` 触发器 + ORM drift 断言 | `9d5b0f8` | ✅ `alembic/versions/20260416_89a9dfebe138_trg__table__updated_triggers_13_tables.py`（98 行）；13 表 BEFORE UPDATE 触发器 EXECUTE FUNCTION `set_updated_at()`（D4 函数复用，未自建）；upgrade 顶部 `from ruisheng_shared.models import Base` lazy import + drift assertion 两侧（missing/extra）；DROP IF EXISTS + CREATE 配对幂等；downgrade 仅 drop 13 触发器，**不删 set_updated_at()**（D4 拥有所有权）；验证：13 行 pg_trigger（`tgtype=19` = BEFORE+ROW+UPDATE）、proname=set_updated_at × 13、手工 INSERT updated_at='2000-01-01' → UPDATE → updated_at 被覆盖到 now()；**过程**：controller pre-dispatch ORM scan 抓 **Plan bug #3**（plan UPDATED_AT_TABLES 列 17 张但 ORM 只 13 张含 updated_at；4 张关联/不变表 alarm_records / user_emails / user_phone_numbers / user_wx_bindings 错列）→ controller 反向 fix plan §Task D5 (master `1490ef5`) → implementer 用修订后清单实施 → spec compliance review APPROVED（含 spec spot-check：scene_pages L1483-1485 / pay_orders L1359-1360 spec 直写本触发器）→ code quality review APPROVED（无 Critical/Important，3 minor "gold-plating"）→ 副产分析：D6 trigger 顺序 e<f<t 字母序 = 正确语义（租户校验失败先 abort）；**Plan bug #3 on Stage D**；implementer 副发现两条 plan doc bug（V4 wrong column `group_name`→`company_name` + pg_sleep+now() 单事务 broken）已合入本 PROGRESS commit |
+| D6 | scene_* 3 触发器 + 12 张表 FORCE RLS + tenant_isolation policy | `1278cdf` | ✅ `alembic/versions/20260417_0005_scene_triggers_and_rls.py`（175 行）；**3 scene 触发器**（复用 D4 函数）：`trg_scene_pages_enforce_tenant` (scene_pages, BEFORE INSERT OR UPDATE OF owner_user_name, usr_group) / `trg_scene_views_enforce_tenant` (scene_views, BEFORE INSERT OR UPDATE OF owner_user_name, usr_group, scene_page_id, dev_number) / `trg_scene_views_fill_snapshot` (scene_views, BEFORE INSERT only)；**字母序约定** enforce<fill<updated 写入 docstring + 警示禁重命名打乱；**12 张表 ENABLE + FORCE ROW LEVEL SECURITY**（FORCE 是 M1 修复，spec §3.7 v1.3.7 待补但本 task 已落）；**12 policy** `tenant_isolation` USING+WITH CHECK `usr_group = current_setting('app.tenant_id', true) OR current_setting('app.role', true) = 'Administrators'`；upgrade 顶部 ORM drift 断言（`symmetric_difference` 两侧）；downgrade 仅 drop triggers/policies/RLS，**不删 D4 函数**（D4 拥有所有权，同 D5 对 set_updated_at 的处理）；**验证 9 步全 PASS**：12 行 relforcerowsecurity=t / 12 行 tenant_isolation polcmd='*' / 3 scene 触发器字母序 / 跨租户 INSERT 触发 42501 RLS 拒绝 / downgrade 净化 0 残留 + D4 3 函数不误删 / 再 upgrade 幂等 / 321 passed + 8 skipped 无回归；**过程**：controller pre-dispatch ORM scan 抓 **Plan bug #4**（plan RLS_TABLES 列 19 张但 ORM 只 12 张含 usr_group；7 张 satellite 表 user_emails/user_phone_numbers/device_points/device_waring_cfgs/sim_cards/alarm_outbox/soft_logs 通过 FK 继承租户，本身无 usr_group 列，若保留则 CREATE POLICY 阶段 `column "usr_group" does not exist`；spec §3.7 L676 权威判据"带 usr_group 字段的业务表"）→ controller 反向 fix plan §Task D6 (master `13de44a`)，含 Task 标题 18→12 / RLS_TABLES 19→12 / D9 集成测试 2 处 18→12 / D10 final tag 消息修订 / 页脚排除表清单补完 satellite 组和 no-tenant-context 组 → implementer 按修订清单实施 → spec compliance review APPROVED（22/22 checkpoints，含 spec spot-check L1487-1495 scene_pages + L1529-1541 scene_views 字段 byte-identical）→ code quality review APPROVED_WITH_MINORS（0 Critical/Important；2 optional Minor：downgrade operational warning 可加 + USING/WITH CHECK 字面重复但语义必须同步）；**Plan bug #4 on Stage D**（连续第 4 个 controller pre-dispatch 抓到） |
 
 ---
 
@@ -39,9 +38,9 @@
 - **GitHub**：https://github.com/proecheng/ruisheng-scada （Private，账号 proecheng）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **master 最新 commit**：`1490ef5 fix(plan): D5 Plan bug #3 — UPDATED_AT_TABLES 17→13`（本次 PROGRESS 即将再追一条）
-- **worktree 实施分支最新 commit**：`9d5b0f8 feat(db): D5 BEFORE UPDATE triggers maintaining updated_at on 13 tables`（前置 `85f2d2b` D4 fixup）
-- **alembic current**：`89a9dfebe138 (head)` — D5 migration
+- **master 最新 commit**：`13de44a fix(plan): D6 Plan bug #4 — RLS_TABLES 19→12 per spec §3.7 L676`（本次 PROGRESS 即将再追一条）
+- **worktree 实施分支最新 commit**：`1278cdf feat(db): D6 scene tenant triggers + FORCE RLS tenant_isolation on 12 tables`（前置 `9d5b0f8` D5）
+- **alembic current**：`da5852f072d5 (head)` — D6 migration
 - **两个 worktree**：
   - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
   - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation（实际代码）
@@ -49,7 +48,7 @@
 - **Docker stack**：运行中 (`docker compose -f docker-compose.dev.yml ps` 在 worktree)
   - `ruisheng-postgres-dev` (timescale/timescaledb:2.16.1-pg15) healthy，0.0.0.0:5432
   - `ruisheng-redis-dev` (redis:7-alpine) healthy，0.0.0.0:6379
-  - 运行时长 ~3h+，内含 D5 应用的 26 张表 + 2 DB 角色 + GRANT + 3 PL/pgSQL 函数 + **13 trg_<table>_updated 触发器**
+  - 内含 D6 应用的 26 张表 + 2 DB 角色 + GRANT + 3 PL/pgSQL 函数 + 13 trg_<table>_updated 触发器 + **3 scene 触发器 + 12 张表 FORCE RLS + 12 tenant_isolation policy**
 
 ---
 
@@ -242,14 +241,14 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
 
 ---
 
-## 🔖 会话交接点（2026-04-16，D5 完成后 — D6 准备）
+## 🔖 会话交接点（2026-04-17，D6 完成后 — D7 准备）
 
-**当前位置**：Stage D，D0/D1/D2/D3/D4/D5 完成 **6/10**，下一步 **D6（scene_* 3 触发器 + 18 张表 FORCE RLS + tenant_isolation policy）**
+**当前位置**：Stage D，D0/D1/D2/D3/D4/D5/D6 完成 **7/10**，下一步 **D7（UPDATE-heavy 表 fillfactor + autovacuum 调优）**
 
 **环境状态**（续跑直接用，无需重建）：
-- Docker stack 运行中（postgres + redis，~4h+ uptime，均 healthy）
-- alembic 当前：`89a9dfebe138 (head)` = D5 trg_*_updated triggers
-- PG 库里已有：26 张表 + alembic_version + 2 角色（ruisheng_gw BYPASSRLS / ruisheng_api）+ schema/table/sequence GRANT + 3 PL/pgSQL 函数 + **13 trg_<table>_updated 触发器**（仅 TimestampMixin 实体表）
+- Docker stack 运行中（postgres + redis，均 healthy）
+- alembic 当前：`da5852f072d5 (head)` = D6 scene triggers + FORCE RLS
+- PG 库里已有：26 张表 + alembic_version + 2 角色（ruisheng_gw BYPASSRLS / ruisheng_api）+ schema/table/sequence GRANT + 3 PL/pgSQL 函数 + 13 trg_<table>_updated 触发器 + **3 scene 触发器**（`trg_scene_pages_enforce_tenant` / `trg_scene_views_enforce_tenant` / `trg_scene_views_fill_snapshot`）+ **12 张表 FORCE RLS + tenant_isolation policy**（users/user_wx_bindings/devices/alarm_records/timing_plans/maintain_plans/maintain_actions/scene_pages/scene_views/pay_orders/user_control_actions/user_login_records）
 - 环境变量（续跑时重新 export，shell 会话不保留）：
   ```bash
   export RUISHENG_GW_PASSWORD='dev-gw-change-me'
@@ -257,37 +256,33 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
   ```
   值以 `.env.example` 为准；dev 直接用占位；生产走 secret manager
 
-**本次会话 D5 成果**：
-1. ✅ Controller pre-dispatch ORM scan **抓 Plan bug #3**：UPDATED_AT_TABLES 列了 17 张表但 ORM 只 13 张含 updated_at（4 张关联/不变表错列）→ controller 反向 fix plan §Task D5（master `1490ef5`）
-2. ✅ D5 implementer 按修订清单实施（commit `9d5b0f8`）
-3. ✅ D5 spec compliance review APPROVED — spec spot-check 含 scene_pages L1483-1485 / pay_orders L1359-1360 spec 直写本触发器
-4. ✅ D5 code quality review APPROVED — 无 Critical/Important 问题；**副产分析**：D6 trigger 顺序 alphabetically 正确（e<f<t）= 租户校验先 abort，set_updated_at 后跑
-5. ✅ Plan doc fix（V4 verification example）：`group_name`→`company_name` + 用"预置 updated_at='2000-01-01' → UPDATE → 看是否被覆盖"替代 broken 的 pg_sleep+now() 单事务方案
+**本次会话 D6 成果**：
+1. ✅ Controller pre-dispatch ORM scan **抓 Plan bug #4**：RLS_TABLES 列 19 张但 ORM 只 12 张含 usr_group（7 张 satellite 表 user_emails/user_phone_numbers/device_points/device_waring_cfgs/sim_cards/alarm_outbox/soft_logs 通过 FK 继承租户，无自身 usr_group 列；spec §3.7 L676 权威判据"带 usr_group 字段的"）→ controller 反向 fix plan §Task D6（master `13de44a`，含 plan D6 标题 + RLS_TABLES 清单 + Step 3 验证期望 + D9 集成测试 + D10 final tag 消息 + 页脚排除表清单全面修正）
+2. ✅ D6 implementer 按修订清单实施（commit `1278cdf`），175 行单文件，零 side-fix；Step 3 九步验证全 PASS（12 FORCE RLS + 12 policy + 3 scene 触发器字母序 + 跨租户 INSERT 触发 42501 + downgrade 不误删 D4 函数 + 再 upgrade 幂等 + pytest 321+8 无回归）
+3. ✅ D6 spec compliance review APPROVED — 22/22 checkpoints，含 spec spot-check：§4.2 L1487-1489 scene_pages trigger byte-identical / L1529-1541 scene_views 2 triggers byte-identical / §3.7 L679-680 policy template byte-identical / §3.7 L676 drift 判据正确
+4. ✅ D6 code quality review APPROVED_WITH_MINORS — 0 Critical/Important，2 optional Minor（downgrade operational warning 可加 + USING/WITH CHECK 字面必须同步修改）；docstring 质量 > D5（字母序约定 + satellite 排除判据 + D4 函数所有权 三段非显然决策全解释）
+5. ✅ Plan bug #4 是连续第 4 个 Stage D controller pre-dispatch 抓到（#1 D3 / #2 D4 / #3 D5 / #4 D6，全部反向 fix plan + master commit）
 
-**下一步：D6 — scene_* 3 触发器 + 18 张表 FORCE RLS + tenant_isolation policy**
+**下一步：D7 — UPDATE-heavy 表 fillfactor + autovacuum 调优**
 
-**Spec 依据**：spec §3.7 L670-722 + §4.1.1 (4)(5) + §4.2 L1487-1495 / L1529-1541
-**Plan**：plan v1.1 §Task D6（约 plan L3547-3717）
-**RLS 变量名权威**：`app.tenant_id` + `app.role`（'Administrators' 跨租户）。**严禁**用 `app.current_usr_group`。
+**Spec 依据**：spec §4.2 L1184-1190 (point_data_realtime) / L1126-1129（deprecated 老位置）/ §5.10 L1930（device_waring_cfgs 也需 fillfactor 补强）
+**Plan**：plan v1.1/v1.2 §Task D7（L3726+）
 
-**D6 关键要点**：
-- **3 个 scene 触发器**（BEFORE INSERT/UPDATE on scene_pages + scene_views，复用 D4 的 enforce_scene_tenant_consistency；scene_views 上额外挂 fill_scene_views_snapshot BEFORE INSERT）
-- **trigger 命名 + 顺序**：D5 review 已确认 PG 按字母序触发同 timing，所以 `enforce_scene_tenant_consistency` (e) → `fill_scene_views_snapshot` (f) → `trg_scene_<t>_updated` (t)。**D6 docstring 务必标明此约定**，禁未来重命名打乱字母序
-- **18 张表 RLS**：M1 reviewer 要求 `FORCE ROW LEVEL SECURITY`（owner 也受限）+ tenant_isolation policy（`USING (usr_group = current_setting('app.tenant_id') OR current_setting('app.role') = 'Administrators')`）。spec §3.7 + §4.1 已落
-- **gw 是 BYPASSRLS**（D3 已建）所以 RLS 只对 api 角色生效；这是 spec §3.7 L685 设计
+**D7 关键要点**（细节见 plan）：
+- **UPDATE-heavy 表**加 `fillfactor=70` + autovacuum scale_factor/cost_limit 调优
+- spec 点名的至少 2 张表：**point_data_realtime**（实时覆盖写；§4.2 L1184-1190 已有 WITH 子句）+ **device_waring_cfgs**（§5.10 L1930 要补强）
+- **SQLAlchemy `postgresql_with` 不能直接作表级 kwarg**（C11 经验，已用 `table.info` 存储 fillfactor 元数据）→ D7 migration 里用 `ALTER TABLE ... SET (fillfactor=70, autovacuum_*=...)`  落实
+- **Stage C C11 留的 tech debt**（point_data_realtime `table.info={"postgresql_with":{...}}` metadata-only）在 D7 兑现为真 DDL
 
-**D6 执行路径**：
-1. `cd D:/江苏润盛/.claude/worktrees/plan-0-foundation`
-2. `export RUISHENG_GW_PASSWORD=... RUISHENG_API_PASSWORD=...`
-3. `uv run alembic revision -m "scene tenant triggers + force RLS + tenant_isolation policy on 18 tables"`
-4. 按 plan §Task D6 Step 2 的代码片段贴入（3 段 op.execute 挂触发器 + 18 张表 ENABLE/FORCE RLS + 18 个 CREATE POLICY）
-5. `uv run alembic upgrade head` → 验证：3 scene 触发器 + 18 张表 RLS forcerowsec=t + 18 policy
-6. 行为验证：set_app.tenant_id='t1' 后 SELECT 跨租户行返 0 row；'Administrators' role 看到全部
-7. downgrade -1 → policy/triggers 全消；再 upgrade 幂等
-8. 回归 pytest 321+8
-9. commit + push（`feat(db): D6 scene tenant triggers + force RLS + tenant_isolation on 18 tables`）
+**D7 执行路径**（细节见 plan §Task D7）：
+1. `cd D:/江苏润盛/.claude/worktrees/plan-0-foundation && export RUISHENG_GW_PASSWORD=... RUISHENG_API_PASSWORD=...`
+2. `uv run alembic revision -m "fillfactor + autovacuum tuning on update-heavy tables"`
+3. 按 plan §Task D7 Step 2 代码片段贴入（op.execute ALTER TABLE ... SET 对 point_data_realtime + device_waring_cfgs）
+4. 验证：`SELECT reloptions FROM pg_class WHERE relname IN ('point_data_realtime','device_waring_cfgs')`
+5. 回归 pytest 321+8
+6. commit + push
 
-**D6 后的 task 链（D7-D10）**：plan §Stage D；D7 fillfactor；D8 TimescaleDB hypertable；D9 集成测试 13 case；D10 收尾 tag。
+**D7 后的 task 链（D8-D10）**：plan §Stage D；D8 TimescaleDB hypertable×6（含 user_login_records / alarm_records / user_control_actions / soft_logs / point_data_history / waveform_history）；D9 集成测试 13 case；D10 收尾 tag `plan-0-stage-d-complete`。
 
 **执行纪律**：
 - subagent-driven：每 task 1 implementer + 2 review（spec → quality）
@@ -367,24 +362,25 @@ Stage B-G 复核完成，已做 3 处 Plan 修订 — **全部已 commit 到 mas
 
 ---
 
-## 当前技术栈状态（2026-04-16 D5 完成后）
+## 当前技术栈状态（2026-04-17 D6 完成后）
 
 - 26 张 ORM 模型全部实现，mypy 0 issues（28 files），pytest 321 passed + 8 skipped
-- `SHARED_SCHEMA_VERSION=20260415`，spec `v1.3.6`（Plan v1.1 重编对应 spec v1.3.7 follow-up，见 D10）
+- `SHARED_SCHEMA_VERSION=20260415`，spec `v1.3.6`（Plan v1.2 重编对应 spec v1.3.7 follow-up，见 D10）
 - Alembic 1.13 已加为显式 dev-dep，`alembic/env.py` async 版本就绪
-- **`alembic/versions/` 已有 4 个迁移**：
+- **`alembic/versions/` 已有 5 个迁移**：
   - D2：`20260416_e05529ef4abb_initial_schema_26_tables.py`（26 张 CREATE TABLE）
   - D3：`20260416_e74ffa548c2f_db_roles_ruisheng_gw_ruisheng_api_grants.py`（2 角色 + GRANT）
   - D4：`20260416_09676586bfbd_plpgsql_set_updated_at_scene_tenant_.py`（3 PL/pgSQL 函数 + search_path 硬绑；fixup `85f2d2b`）
-  - **D5**：`20260416_89a9dfebe138_trg__table__updated_triggers_13_tables.py`（13 BEFORE UPDATE 触发器 + ORM drift 断言）
-- Docker stack 运行中（postgres + redis healthy）；PG 里有完整 26 张表 + alembic_version + 2 角色 + 3 函数 + 13 触发器
+  - D5：`20260416_89a9dfebe138_trg__table__updated_triggers_13_tables.py`（13 BEFORE UPDATE 触发器 + ORM drift 断言）
+  - **D6**：`20260417_0005_scene_triggers_and_rls.py`（3 scene 触发器 + 12 张表 FORCE RLS + 12 tenant_isolation policy + ORM drift 断言；head `da5852f072d5`）
+- Docker stack 运行中（postgres + redis healthy）；PG 里有完整 26 张表 + alembic_version + 2 角色 + 3 函数 + 13 updated 触发器 + 3 scene 触发器 + 12 policy
 - Git 全部 push 完毕；tag `plan-0-stage-c-complete` 已存在（Stage D 未打 tag，D10 才打）
-- worktree HEAD: `9d5b0f8`，master HEAD: `1490ef5`（即将 +PROGRESS commit）
+- worktree HEAD: `1278cdf`，master HEAD: `13de44a`（即将 +PROGRESS commit）
 
 ### Stage D 快速导航
 
-- Plan 位置：`docs/superpowers/plans/2026-04-13-plan-0-foundation.md` §Stage D（v1.1 重编）
-- Task 顺序（v1.1）：~~D0 环境校验~~ ✅ → ~~D1 baseline~~ ✅ → ~~D2 初始 schema~~ ✅ → ~~D3 DB 角色 + GRANT~~ ✅ → ~~D4 PL/pgSQL 函数~~ ✅ → ~~D5 updated_at 触发器~~ ✅ → **D6 scene 触发器+FORCE RLS** ← 下一步 → D7 fillfactor → D8 hypertable → D9 集成测试 → D10 tag + spec follow-up
+- Plan 位置：`docs/superpowers/plans/2026-04-13-plan-0-foundation.md` §Stage D（v1.2 含 Plan bug #4 反向 fix）
+- Task 顺序（v1.2）：~~D0 环境校验~~ ✅ → ~~D1 baseline~~ ✅ → ~~D2 初始 schema~~ ✅ → ~~D3 DB 角色 + GRANT~~ ✅ → ~~D4 PL/pgSQL 函数~~ ✅ → ~~D5 updated_at 触发器~~ ✅ → ~~D6 scene 触发器+12 FORCE RLS~~ ✅ → **D7 fillfactor + autovacuum** ← 下一步 → D8 hypertable → D9 集成测试 → D10 tag + spec follow-up
 - 与 Stage C 的区别：**需要真实 PG + Redis 容器**（不再是纯 Python 单测）
 - 关键产出：7 个 `alembic/versions/*.py` 迁移脚本 + `tests/integration/test_alembic_upgrade.py`（13 case）+ tag `plan-0-stage-d-complete`
 
