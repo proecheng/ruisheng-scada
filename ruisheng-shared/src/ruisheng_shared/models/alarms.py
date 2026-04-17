@@ -73,7 +73,12 @@ class DeviceWaringCfg(Base, TimestampMixin):
 
 
 class AlarmRecord(Base):
-    """报警事件表（将升级为 TimescaleDB hypertable，故 dev_number/point_id 无 FK）。"""
+    """报警事件表（D8 TimescaleDB hypertable；dev_number/point_id 无 FK）。
+
+    PK (id, triggered_at) 复合：D8 转 hypertable 的 TimescaleDB 硬要求
+    （TS 2.16.1 规则：PRIMARY KEY / UNIQUE 必须包含分区列）。
+    id 自身 BIGSERIAL 唯一，复合只为满足 TS 约束，不改变语义。
+    """
 
     __tablename__ = "alarm_records"
     __table_args__ = (
@@ -91,13 +96,20 @@ class AlarmRecord(Base):
     alarm_msg: Mapped[str | None] = mapped_column(String(255))
     alarm_value: Mapped[float | None] = mapped_column(Double)
     channels_sent: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    triggered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, primary_key=True
+    )
     reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     usr_group: Mapped[str] = mapped_column(String(50), nullable=False)
 
 
 class AlarmOutbox(Base):
-    """报警发布 outbox（spec §3.8.11）。"""
+    """报警发布 outbox（spec §3.8.11）。
+
+    alarm_id 去 FK 约束（D8 Plan bug #5）：alarm_records 为 TimescaleDB hypertable，
+    TS 2.16.1 拒绝 FK → hypertable。完整性依靠 app 层（publish job 读 alarm_records
+    时按 alarm_id 外连，缺失行跳过即可，不影响 outbox 语义）。
+    """
 
     __tablename__ = "alarm_outbox"
     __table_args__ = (
@@ -110,9 +122,7 @@ class AlarmOutbox(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    alarm_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("alarm_records.id"), nullable=False
-    )
+    alarm_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(

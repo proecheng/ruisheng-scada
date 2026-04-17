@@ -59,8 +59,10 @@ def test_alarm_records_tablename() -> None:
 
 
 def test_alarm_records_primary_key() -> None:
+    # D8: composite PK (id, triggered_at) — TimescaleDB 2.16.1 硬要求 PK 含分区列。
+    # id 自身 BIGSERIAL 唯一，复合只为满足 TS 约束。
     pk = [c.name for c in AlarmRecord.__table__.primary_key.columns]
-    assert pk == ["id"]
+    assert pk == ["id", "triggered_at"]
 
 
 def test_alarm_records_columns() -> None:
@@ -134,11 +136,11 @@ def test_alarm_outbox_columns() -> None:
 
 
 def test_alarm_outbox_alarm_id_fk() -> None:
+    # D8 Plan bug #5: FK → hypertable 被 TS 2.16.1 禁止 → 删 FK。
+    # 完整性由 app 层保证（publish job 外连 alarm_records，缺失行跳过）。
     col = AlarmOutbox.__table__.columns["alarm_id"]
     fks = list(col.foreign_keys)
-    assert len(fks) == 1
-    assert fks[0].column.table.name == "alarm_records"
-    assert fks[0].column.name == "id"
+    assert len(fks) == 0
 
 
 def test_alarm_outbox_payload_jsonb() -> None:

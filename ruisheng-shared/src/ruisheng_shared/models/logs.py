@@ -48,6 +48,10 @@ class SoftLog(Base):
     INSERT-only；retention policy 1 year。
     Stage D alembic: hypertable + retention + compression 在 Stage D alembic 落地。
     REVOKE/GRANT 见 spec §4.2。
+
+    PK (id, recorded_at) 复合：D8 转 hypertable 的 TimescaleDB 硬要求
+    （TS 2.16.1 规则：PRIMARY KEY / UNIQUE 必须包含分区列）。
+    id 自身 BIGSERIAL 唯一，复合只为满足 TS 约束，不改变语义。
     """
 
     __tablename__ = "soft_logs"
@@ -73,6 +77,7 @@ class SoftLog(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+        primary_key=True,
     )
 
 
@@ -84,6 +89,10 @@ class UserLoginRecord(Base):
     usr_group FK → wx_groups(usr_group) ON DELETE RESTRICT（多租户隔离）。
     INSERT-only；Stage D alembic: hypertable + retention 3 years + compression
     segmentby=usr_group 在 Stage D alembic 落地。见 spec §4.2 v1.3.6。
+
+    PK (id, logged_at) 复合：D8 转 hypertable 的 TimescaleDB 硬要求
+    （TS 2.16.1 规则：PRIMARY KEY / UNIQUE 必须包含分区列）。
+    id 自身 BIGSERIAL 唯一，复合只为满足 TS 约束，不改变语义。
     """
 
     __tablename__ = "user_login_records"
@@ -104,6 +113,7 @@ class UserLoginRecord(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+        primary_key=True,
     )
     ip_addr: Mapped[str] = mapped_column(INET, nullable=False)
     city: Mapped[str | None] = mapped_column(String(100), nullable=True)

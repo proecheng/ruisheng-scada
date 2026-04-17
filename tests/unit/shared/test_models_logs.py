@@ -18,10 +18,12 @@ def test_soft_logs_tablename() -> None:
 
 
 def test_soft_logs_primary_key() -> None:
+    # D8: composite PK (id, recorded_at) — TimescaleDB 2.16.1 硬要求 PK 含分区列。
+    # id 自身 BIGSERIAL 唯一，复合只为满足 TS 约束。
     from ruisheng_shared.models.logs import SoftLog
 
     pk = [c.name for c in SoftLog.__table__.primary_key.columns]
-    assert pk == ["id"]
+    assert pk == ["id", "recorded_at"]
 
 
 def test_soft_logs_columns() -> None:
@@ -185,10 +187,12 @@ def test_user_login_records_tablename() -> None:
 
 
 def test_user_login_records_primary_key() -> None:
+    # D8: composite PK (id, logged_at) — TimescaleDB 2.16.1 硬要求 PK 含分区列。
+    # id 自身 BIGSERIAL 唯一，复合只为满足 TS 约束。
     from ruisheng_shared.models.logs import UserLoginRecord
 
     pk = [c.name for c in UserLoginRecord.__table__.primary_key.columns]
-    assert pk == ["id"]
+    assert pk == ["id", "logged_at"]
 
 
 def test_user_login_records_columns() -> None:

@@ -8,6 +8,10 @@
 - `fix:` — 错误修正
 - `chore:` — 重构、重命名、注释（无语义变化）
 
+## 2026-04-17
+
+- chore: D8 TimescaleDB hypertable compatibility — AlarmRecord.triggered_at / SoftLog.recorded_at / UserLoginRecord.logged_at 均加入 PK（composite PK `(id, <time_col>)`）以满足 TS 2.16.1 "PRIMARY KEY 必须含分区列" 硬要求。AlarmOutbox.alarm_id 去 FK（TS 2.16.1 禁止 FK → hypertable，完整性由 app 层外连保证）。SHARED_SCHEMA_VERSION 不变（PK 列数变化不改变 ORM 读写语义、id 仍 BIGSERIAL 唯一）。详见 alembic D8 docstring Plan bug #5 + #6。
+
 ## 2026-04-16
 
 - chore: ruff-format 扫 shared models/schemas (fixup for D3 commit 2474275 提交前未跑 `task fmt`)；纯 cosmetic（docstring 后空行、长 import 展开、长 set 字面量换行）+ 1 处 unused import 清理（models/users.py 未用的 `Integer`）；无语义变化，SHARED_SCHEMA_VERSION 不变。
