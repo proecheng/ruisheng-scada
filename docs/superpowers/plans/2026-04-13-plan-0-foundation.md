@@ -3806,22 +3806,65 @@ git commit -m "feat(db): D7 fillfactor + autovacuum tuning (incl. device_waring_
 
 ---
 
-## Task D8：TimescaleDB hypertable + retention + compression（6 张表含 user_login_records）
+## Task D8：TimescaleDB hypertable + retention + compression（5 张表；schema prep 前置）
 
 **Spec 依据**：§4.2 L1200-1203 / L1215-1217 / L1396-1400 / L1427-1434 / §5.10 L1939-1960
 
+> **v1.3 修订（Plan bug #5）**：controller 在 D8 pre-dispatch 针对 live DB 跑 `create_hypertable` 探测，抓到 **两条 TimescaleDB 2.16.1 硬约束**：
+> 1. **FK → hypertable 禁止**（实测 `ERROR: cannot have FOREIGN KEY constraints to hypertable`）：`alarm_outbox.alarm_id → alarm_records(id)` 阻塞 alarm_records 转 hypertable。
+> 2. **PK/UNIQUE 必须含分区列**：alarm_records / soft_logs / user_login_records / user_control_actions 均以 `id` 单列为 PK，user_control_actions 另有 `UNIQUE (cmd_id)` 幂等键。
+>
+> **user 拍板（2026-04-17）**：
+> - Q1-A：D8 先 **DROP FK** `fk_alarm_outbox_alarm_id_alarm_records`（alarm_outbox 是 transient 事件表，app 层保证引用完整；已有 `idx_alarm_outbox_unpublished` 覆盖主查询路径）
+> - Q2-A：alarm_records / soft_logs / user_login_records **PK 改为 `(id, <time_col>)` 复合**（BIGSERIAL id 自身唯一，加时间列仅为满足 TS 约束；不影响应用层以 id 查）
+> - Q3-B：**user_control_actions 不转 hypertable**，保留 `UNIQUE (cmd_id)` 幂等语义；该表数据量增长可控（人发起），冷数据由 Plan 3 后续归档 Job 手动处理。Spec §5.10 L1958-1960 作为 v1.3.7 TODO 摘除。
+>
+> 净结果：**hypertable 6 → 5 张**；D8 migration 前置 schema prep（drop FK + 复合 PK 三张）+ 再做 hypertable/retention/compression。
+
 **Files:**
 - Create: `D:\江苏润盛\alembic\versions\20260417_0007_timescale_hypertables.py`
+- Modify（worktree 而非 master）:
+  - `ruisheng-shared/src/ruisheng_shared/models/alarms.py` — `AlarmRecord` PK 复合 `(id, triggered_at)`，`AlarmOutbox.alarm_id` 去 FK（保留列 + 注释说明弱引用）
+  - `ruisheng-shared/src/ruisheng_shared/models/logs.py` — `SoftLog` / `UserLoginRecord` PK 复合 `(id, recorded_at/logged_at)`
 
 **前置**：D7
 
-- [ ] **Step 1：生成**
+- [ ] **Step 0：ORM 先改（与迁移同 commit 或前置 commit 均可，但必须本 task 内）**
+
+ORM 修改点（3 处）：
+
+1. `alarms.py::AlarmRecord`
+   ```python
+   # 旧: id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+   #     triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+   # 新: 复合 PK (id, triggered_at) — TimescaleDB 要求分区列入 PK
+   id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+   ...
+   triggered_at: Mapped[datetime] = mapped_column(
+       DateTime(timezone=True), nullable=False, primary_key=True
+   )
+   ```
+   docstring 追加："PK (id, triggered_at) 复合：D8 转 hypertable 的 TimescaleDB 硬要求。id 自身 BIGSERIAL 唯一，复合只为满足 TS 约束。"
+
+2. `alarms.py::AlarmOutbox`
+   ```python
+   # 旧: alarm_id: Mapped[int] = mapped_column(
+   #         BigInteger, ForeignKey("alarm_records.id"), nullable=False
+   #     )
+   # 新: 去 FK（TS 禁止 FK → hypertable）
+   alarm_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+   ```
+   docstring 追加："alarm_id 去 FK 约束（D8 plan bug #5）：alarm_records 为 TimescaleDB hypertable，TS 2.16.1 拒绝 FK → hypertable。完整性依靠 app 层（publish job 读 alarm_records 时按 alarm_id 外连，缺失行跳过即可，不影响 outbox 语义）。"
+
+3. `logs.py::SoftLog` / `UserLoginRecord`：与 AlarmRecord 同样的复合 PK 模式（recorded_at / logged_at 加 `primary_key=True`），docstring 加同款说明。
+
+- [ ] **Step 1：生成迁移**
 
 ```bash
-uv run alembic revision -m "timescale hypertables + retention + compression (6 tables)"
+uv run alembic revision -m "timescale hypertables + retention + compression (5 tables, PK prep)"
 ```
 
-- [ ] **Step 2：upgrade() 用 `if_not_exists => TRUE` 幂等 + remove+add 策略**
+- [ ] **Step 2：upgrade() — schema prep 先于 hypertable 转换**
 
 ```python
 from alembic import op
@@ -3835,23 +3878,41 @@ down_revision = "<D7-rev>"
 HYPERTABLES = [
     ("point_data_history",   "recorded_at",  "1 month", "1 year",  "7 days",  "dev_number, point_id"),
     ("waveform_history",     "recorded_at",  "1 month", "1 year",  "7 days",  "dev_number"),
-    ("soft_logs",            "recorded_at",  "1 month", "1 year",  "7 days",  None),          # v1.3.6 加压缩
-    ("user_login_records",   "logged_at",    "1 month", "3 years", "7 days",  "usr_group"),   # v1.3.6 新增
+    ("soft_logs",            "recorded_at",  "1 month", "1 year",  "7 days",  None),
+    ("user_login_records",   "logged_at",    "1 month", "3 years", "7 days",  "usr_group"),
     ("alarm_records",        "triggered_at", "1 month", "2 years", "30 days", None),
-    ("user_control_actions", "acted_at",     "1 month", "3 years", "30 days", None),
+    # user_control_actions 不转 hypertable（保 UNIQUE(cmd_id) 幂等键；spec v1.3.7 摘除）
+]
+
+
+# 需改复合 PK 的 3 张表 (table, old_pk_name, new_pk_cols)
+PK_COMPOSITES = [
+    ("alarm_records",       "pk_alarm_records",       "id, triggered_at"),
+    ("soft_logs",           "pk_soft_logs",           "id, recorded_at"),
+    ("user_login_records",  "pk_user_login_records",  "id, logged_at"),
 ]
 
 
 def upgrade() -> None:
+    # --- Step A: 拆 FK alarm_outbox → alarm_records（TS 禁 FK → hypertable） ---
+    op.execute(
+        "ALTER TABLE alarm_outbox "
+        "DROP CONSTRAINT IF EXISTS fk_alarm_outbox_alarm_id_alarm_records;"
+    )
+
+    # --- Step B: 3 张 id-only PK → 复合 PK (id, time_col) ---
+    for table, old_pk, new_cols in PK_COMPOSITES:
+        op.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {old_pk};")
+        op.execute(f"ALTER TABLE {table} ADD CONSTRAINT {old_pk} PRIMARY KEY ({new_cols});")
+
+    # --- Step C: hypertable + retention + compression ---
     op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
     for table, tcol, chunk, retain, compress, segby in HYPERTABLES:
-        # hypertable 本身幂等（TS 原生支持）
         op.execute(
             f"SELECT create_hypertable('{table}', '{tcol}', "
             f"chunk_time_interval => INTERVAL '{chunk}', "
             f"if_not_exists => TRUE);"
         )
-        # retention：remove + add 模式（允许策略周期改了也重新落）
         op.execute(f"SELECT remove_retention_policy('{table}', if_exists => TRUE);")
         op.execute(f"SELECT add_retention_policy('{table}', INTERVAL '{retain}');")
 
@@ -3872,16 +3933,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Forward-only partial: 只卸 policy；hypertable/PK/FK 回退需 `docker compose down -v`。
+
+    TimescaleDB 不原生支持 hypertable → regular 回退；即使回退，old simple PK 与
+    `FK → (现已是 hypertable 的) alarm_records` 都因 TS 约束无法干净重建。生产环境升级后
+    单向前进（本 task 风险在 release note 与 D10 spec v1.3.7 里显式说明）。
+    """
     for table, *_ in reversed(HYPERTABLES):
-        op.execute(
-            f"SELECT remove_retention_policy('{table}', if_exists => TRUE);"
-        )
-        op.execute(
-            f"SELECT remove_compression_policy('{table}', if_exists => TRUE);"
-        )
-        # 故意不 DROP TABLE：这些表是 D2 建的，所有权不属于本迁移
-        # hypertable → regular 需手工 drop_chunks + recreate，
-        # dev 环境重置走 `docker compose down -v` 整体重建
+        op.execute(f"SELECT remove_retention_policy('{table}', if_exists => TRUE);")
+        op.execute(f"SELECT remove_compression_policy('{table}', if_exists => TRUE);")
 ```
 
 - [ ] **Step 3：验证**
@@ -3889,34 +3949,57 @@ def downgrade() -> None:
 ```bash
 uv run alembic upgrade head
 docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng <<'SQL'
+-- 期望 5 张 hypertable（user_control_actions 不在列）
 SELECT hypertable_name, num_chunks, compression_enabled
   FROM timescaledb_information.hypertables
   ORDER BY hypertable_name;
--- 期望 6 行；compression_enabled=t 对 5 张（除 alarm_records/user_control_actions 外全 segby 表都启压缩）
--- 注：alarm_records/user_control_actions 虽配 compress_after 但 spec 无 segby → 依然启压缩
 
+-- PK 已改复合（3 张）
+SELECT conname, pg_get_constraintdef(oid)
+  FROM pg_constraint
+  WHERE contype='p'
+    AND conrelid::regclass::text IN ('alarm_records','soft_logs','user_login_records')
+  ORDER BY conname;
+-- 期望：三张都是 PRIMARY KEY (id, <time_col>)
+
+-- FK 已拆（alarm_outbox.alarm_id 无 FK）
+SELECT count(*) FROM pg_constraint
+  WHERE contype='f' AND conname='fk_alarm_outbox_alarm_id_alarm_records';
+-- 期望：0
+
+-- retention + compression jobs
 SELECT proc_name, hypertable_name
   FROM timescaledb_information.jobs
+  WHERE application_name LIKE 'Retention%' OR application_name LIKE 'Compression%'
   ORDER BY hypertable_name, proc_name;
--- 期望：retention job × 6 + compression job × 5 = 11 行
+-- 期望：retention × 5 + compression × 5 = 10 行（所有 5 表都启 compression）
 SQL
 
-uv run alembic downgrade -1
-uv run alembic upgrade head
+uv run alembic downgrade -1 && uv run alembic upgrade head  # 策略 remove+add 幂等即可
 ```
 
-- [ ] **Step 4：Commit**
+- [ ] **Step 4：ORM 回归测试（321 + 8 skip）**
 
 ```bash
-git add alembic/versions/20260417_0007_*.py
-git commit -m "feat(db): D8 TimescaleDB hypertables + retention + compression (6 tables, idempotent)"
+cd D:/江苏润盛/.claude/worktrees/plan-0-foundation
+uv run pytest -q  # 期望 321 passed + 8 skipped（无回归）
 ```
 
-**关键风险**：
-- **幂等性**（M2 修复）：`if_not_exists => TRUE` + remove+add 策略；D8 半失败重跑零回归
-- **`user_login_records`** 是 v1.3.6 新增，原 plan 遗漏必补
-- **`soft_logs` 压缩**：原 plan `if segby: else:` 分支 bug 漏启；本修订统一"有 compress_after 的都走 SET + policy"
-- **downgrade 不删表**（原 plan `DROP TABLE CASCADE` 是 bug — 会误删 D2 建的表）
+- [ ] **Step 5：Commit**
+
+```bash
+git add ruisheng-shared/src/ruisheng_shared/models/alarms.py \
+        ruisheng-shared/src/ruisheng_shared/models/logs.py \
+        alembic/versions/20260417_0007_*.py
+git commit -m "feat(db): D8 TimescaleDB hypertables + retention + compression (5 tables, composite PK prep)"
+```
+
+**关键风险 / 设计决策（v1.3 修订）**：
+- **Plan bug #5**（D8）：TS FK→hypertable 禁止 + PK 必含分区列 — pre-dispatch 活探测抓出。fix：drop outbox FK + 3 张表复合 PK + user_control_actions 摘除 hypertable 资格
+- **幂等性**（M2 已在 v1.1 修复）：`if_not_exists => TRUE` + remove+add 策略；ALTER TABLE PK 改动带 `IF EXISTS` 也幂等
+- **单向迁移**：hypertable 转换与 PK 改动 downgrade 不回退（TS 限制），release note 与 spec v1.3.7 必须标注
+- **soft_logs 压缩**：v1.1 修复 `if segby: else:` 分支 bug；v1.3 仍保留"有 compress_after 的都走 SET + policy"
+- **downgrade 不删表**（v1.1 已修）
 
 ---
 
@@ -4071,7 +4154,7 @@ async def test_policies_exist(dev_engine):
 
 @pytest.mark.integration
 async def test_hypertables_exist(dev_engine):
-    """6 张 hypertable 含 user_login_records"""
+    """5 张 hypertable（v1.3 修订：user_control_actions 保 cmd_id UQ 幂等语义，不入 hypertable）"""
     async with dev_engine.connect() as conn:
         rows = await conn.execute(text("""
             SELECT hypertable_name FROM timescaledb_information.hypertables;
@@ -4079,8 +4162,34 @@ async def test_hypertables_exist(dev_engine):
         names = {r.hypertable_name for r in rows}
     assert names == {
         "point_data_history", "waveform_history", "soft_logs",
-        "user_login_records", "alarm_records", "user_control_actions",
+        "user_login_records", "alarm_records",
     }
+
+
+@pytest.mark.integration
+async def test_d8_pk_composite_and_fk_dropped(dev_engine):
+    """D8 schema prep（Plan bug #5）：3 张表 PK 复合 + alarm_outbox FK 已拆"""
+    async with dev_engine.connect() as conn:
+        # 3 张复合 PK
+        rows = await conn.execute(text("""
+            SELECT conname, pg_get_constraintdef(oid) AS def
+              FROM pg_constraint
+              WHERE contype='p'
+                AND conrelid::regclass::text
+                    IN ('alarm_records','soft_logs','user_login_records')
+              ORDER BY conname;
+        """))
+        pk_defs = {r.conname: r.def for r in rows}
+        assert "triggered_at" in pk_defs["pk_alarm_records"]
+        assert "recorded_at"  in pk_defs["pk_soft_logs"]
+        assert "logged_at"    in pk_defs["pk_user_login_records"]
+        # FK 已拆
+        n = await conn.scalar(text("""
+            SELECT count(*) FROM pg_constraint
+              WHERE contype='f'
+                AND conname='fk_alarm_outbox_alarm_id_alarm_records';
+        """))
+        assert n == 0
 
 
 @pytest.mark.integration
@@ -4218,7 +4327,7 @@ alembic 严格线性：**禁跳版 downgrade**。若要回滚 D3 删角色，必
 
 ```bash
 cd D:\江苏润盛\.claude\worktrees\plan-0-foundation
-git tag -a plan-0-stage-d-complete -m "Stage D: 26 tables + 2 roles + 3 functions + 16 triggers (13 updated_at + 3 scene) + 12 RLS policies (FORCE) + 6 hypertables + integration tests"
+git tag -a plan-0-stage-d-complete -m "Stage D: 26 tables + 2 roles + 3 functions + 16 triggers (13 updated_at + 3 scene) + 12 RLS policies (FORCE) + 5 hypertables (Plan bug #5 PK/FK prep) + integration tests"
 git push origin plan-0-stage-d-complete
 ```
 
