@@ -7,15 +7,43 @@
 
 ## 当前状态：Plan 0 **Stage F 完结（6/6 ✅）→ 进 Stage G（最终收尾）**
 
-**最后更新**：2026-04-18（F6 收尾 tag + 文档：annotated tag `plan-0-stage-f-complete` 指向 `ea2e514`，已 push；Stage F 7 个 plan bug 全部 master 反向 fix + 1 个 candidate close as non-bug；累计 D 9 + E 4 + F 7 = **20**；无 implementer 派发，类 D10/E7）
+**最后更新**：2026-04-18（session 结束 handoff：Stage F 6/6 全部 push + tag；pattern 抓 bug 机制单 session 抓 7 个并全部 master 反向 fix；恢复步骤已切换至 Stage G1）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`ea2e514 chore(corpus): initial 15 normal pcaps`（F6 无新 commit，纯 tag）
-**最新 tag**：**`plan-0-stage-f-complete`**（worktree HEAD `ea2e514`，已 push origin）
-**master 最新 commit**：`43d30a0 docs+fix(plan): F4+F5 complete` → **F6 PROGRESS 收尾 commit（即将推送）**
+**最近 commit**（worktree）：`ea2e514 chore(corpus): initial 15 normal pcaps`（F5；F6 只是 tag 无新 commit）
+**最新 tag**：**`plan-0-stage-f-complete`**（worktree HEAD `ea2e514`，已 push origin；6 个 stage tag 齐全 a/b/c/d/e/f）
+**master 最新 commit**：`9bb25f3 docs(progress): F6 Stage F complete`
 **SHARED_SCHEMA_VERSION**：`20260415`（Stage F 全程不触 shared 模型）
 **测试状态**：**339 passed + 8 skipped**（无回归）
 
-**下一步**：**Stage G（7 task，CI 完备 + 文档 + release + 技术债清理）** — Plan 0 最终 Stage；G6 处理 tech debt #1+#3 deps 迁移；G7 ruisheng-shared release workflow
+**下一步**：**Stage G（7 task，CI 完备 + 文档 + release + 技术债清理）— Plan 0 最终 Stage**。G1 起跑点 = 扩展 CI workflow；roadmap 见本文件 "Stage G 任务快照" 段。
+
+---
+
+## 本次 session 成果（2026-04-18）
+
+**起始**：Stage E 6/7 待 E7 收尾
+**结束**：Stage F 完结 6/6 + Stage G 就绪起跑
+
+| 阶段 | Task | commit | 要点 |
+|---|---|---|---|
+| E7 | Stage E 收尾 tag | tag `plan-0-stage-e-complete` | 纯 tag + 文档，类 D10 |
+| F1 | pcap_gen 骨架 | `ad5e441` | 4 个 plan bug（#14/#15 pre-dispatch / #16 implementer BLOCKED / review 0/0/0） |
+| F2 | modbus_frames.py + CRC16 + 3 测试 | `0c79f0b` | plan bug #17（CJK pytest pythonpath）；CRC 3 向量独立核验全对 |
+| F3 | scenarios.py（scapy） | `7bfa7a0` | 首个 pre-dispatch 无 bug；review 发现 #18 docstring + #19 heartbeat 方向（user close non-bug） |
+| F4 | typer CLI | `4f75ee0` | review 0/0/0；端到端 202 pkts ✓ |
+| F5 | gen_initial_corpus.py | `ea2e514` | user 决策 bug #20 驱动 v1.6；review 发现 #21（v1.7 fix） |
+| F6 | Stage F 收尾 tag | tag `plan-0-stage-f-complete` | 6 个 stage tag 里程碑 |
+
+**技术成果**：
+- 单 session 通过 controller pre-dispatch + implementer BLOCKED + reviewer 三层抓 **7 个 plan bug**（#14-#18 + #20 + #21，#19 close non-bug），全部 master 反向 fix
+- 累计 Plan bug **20 个**（D 9 + E 4 + F 7）全部反向 fix master，从未静默改
+- 30 个 corpus 文件生成（gitignored）+ 15 唯一 dev_ser 验证
+- Plan 0 完成 **6/7 Stage**，剩最后一个 Stage G
+
+**下次会话建议开局**：
+1. 读本文件 PROGRESS.md
+2. 读 memory `project_ruisheng_scada.md`
+3. 派发 G1 implementer（扩展 CI workflow；pre-dispatch 先看 `.github/workflows/ci.yml` + 核对 Docker Hub 源）
 
 ---
 
@@ -307,8 +335,20 @@ D10 → D9 → D8 → D7 → D6 → D5 → D4 → D3 → D2 逐 step（alembic d
    export RUISHENG_API_PASSWORD='dev-api-change-me'
    ```
 5. 确认 Docker stack 健康：`docker compose -f docker-compose.dev.yml ps`（worktree 目录下）
-6. Claude 接着从 **Stage E / Task E7（收尾 tag `plan-0-stage-e-complete`）** 开始
+6. Claude 接着从 **Stage G / Task G1（扩展 CI workflow — 加 integration / alembic check / schema guard）** 开始 — Stage G 是 Plan 0 **最后一个** Stage（7 task：G1-G7）
 7. 继续 subagent-driven-development 流程（pre-dispatch sanity check → implementer → spec review → quality review）
+
+### Stage G 任务快照（下次起跑的 roadmap）
+
+| # | Task | 估时 | 备注 |
+|---|---|---|---|
+| G1 | 扩展 CI workflow（加 integration / alembic check / schema guard） | 中 | GitHub Actions 扩展现有 `ci.yml` |
+| G2 | 完善 `tools/verify_schema_version.py` breaking 检测 | 中 | A5 建的 stub 现在填实逻辑 |
+| G3 | docs/ARCHITECTURE.md 开发侧架构速览 | 小 | 一页文档 |
+| G4 | 覆盖率门槛 + mutation testing 占位 | 小 | fail_under 已 90%，加 mutmut 占位 |
+| G5 | Plan 0 完成 README 补完 + 最终 tag `plan-0-complete` | 小 | 类 D10/E7/F6，纯文档 |
+| G6 | 技术债清理：`[tool.uv] dev-dependencies` → `[dependency-groups]`（PEP 735）+ 顺便再测 `testcontainers[postgres]` 自带 asyncpg | 中 | tech debt #1 + #3 |
+| G7 | ruisheng-shared release workflow（semver + SHARED_SCHEMA_VERSION + CHANGELOG + GitHub Release，**不发 PyPI**）| 中 | 给 Plan 1/2/3 消费 shared 用 |
 
 ### ⚠️ pytest → seed 工作流顺序注意
 
