@@ -50,7 +50,7 @@ exclude = ["tests/.*", "alembic/.*"]
 minversion = "8.0"
 asyncio_mode = "auto"
 testpaths = ["tests"]
-pythonpath = ["ruisheng-shared/src"]
+pythonpath = ["ruisheng-shared/src", "tools/pcap_gen/src"]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
   "integration: 需要 PG/Redis 的集成测试",
