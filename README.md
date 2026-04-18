@@ -48,12 +48,13 @@ ruisheng-scada/
 └── docker-compose.dev.yml
 ```
 
-## 后续阶段
+## 当前状态
 
-- **Plan 1**: 采集网关 `ruisheng-gw`
-- **Plan 2**: Web API `ruisheng-api`
-- **Plan 3**: 前端 `ruisheng-web`
-- **Plan 4**: 部署与运维
+- [x] **Plan 0**：基础设施（`ruisheng-shared` + alembic + docker compose + pcap gen）
+- [ ] **Plan 1**：采集网关 `ruisheng-gw`
+- [ ] **Plan 2**：Web API `ruisheng-api`
+- [ ] **Plan 3**：前端 `ruisheng-web`
+- [ ] **Plan 4**：部署与运维
 
 ## 贡献
 
