@@ -5589,6 +5589,10 @@ git commit -m "docs: developer architecture overview"
 **Files:**
 - Create: `D:\江苏润盛\.github\workflows\mutation.yml`（weekly 调度）
 
+**v2.0 修订（Plan bug #25 A+B，pre-dispatch 抓）**：
+- **#25-A**：`uv sync` → `uv sync --all-packages`（与 G1 Plan bug #22-A 同型；workspace + pcap_gen 子包统一口径，`ci.yml` lint/unit 已是 `--all-packages`，G4 新 workflow 对齐）
+- **#25-B**：原 "Fail if survival rate > 10%" 步 Python 脚本含字面 `[...]` 省略号 + `alive`/`total` 未更新导致 `ZeroDivisionError`，**照跑必炸**。改为 heredoc 真解析 `mutmut results` 输出的 `survived (N)` / `killed (N)` / `timeout (N)` / `suspicious (N)` 节头，total=0 时 exit 0（首次运行/全 skip 场景）
+
 - [ ] **Step 1：创建**
 
 Create `D:\江苏润盛\.github\workflows\mutation.yml`:
@@ -5606,7 +5610,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
-      - run: uv sync
+      - run: uv sync --all-packages
       - run: |
           uv pip install mutmut
           uv run mutmut run \
@@ -5615,7 +5619,22 @@ jobs:
       - run: uv run mutmut results
       - name: Fail if survival rate > 10%
         run: |
-          uv run mutmut results | python -c "import sys; lines=sys.stdin.read(); alive=0; total=0; [...]; exit(1 if alive/total > 0.1 else 0)"
+          python - <<'PY'
+          import re, subprocess, sys
+          out = subprocess.check_output(["uv", "run", "mutmut", "results"], text=True)
+          def count(label: str) -> int:
+              m = re.search(rf"^{label} \((\d+)\)", out, re.MULTILINE)
+              return int(m.group(1)) if m else 0
+          alive = count("survived")
+          total = alive + count("killed") + count("timeout") + count("suspicious")
+          print(f"alive={alive} total={total}")
+          if total == 0:
+              print("No mutants analyzed — treating as neutral (exit 0).")
+              sys.exit(0)
+          rate = alive / total
+          print(f"survival_rate={rate:.2%}")
+          sys.exit(1 if rate > 0.10 else 0)
+          PY
 ```
 
 - [ ] **Step 2：Commit**
