@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage F 进行中（F1-F5 完成 5/6）→ F6 收尾**
+## 当前状态：Plan 0 **Stage F 完结（6/6 ✅）→ 进 Stage G（最终收尾）**
 
-**最后更新**：2026-04-18（F4+F5 双落：typer CLI 注册 `[project.scripts]` + gen_initial_corpus.py 绕 CLI 直调 API 生成 30 文件；**user 决策**：#19 spec §A.5 gw→dev 确认为 non-bug + F5 走 Python API 而非 subprocess CLI；**review 抓 Plan bug #21** sys.path 单路径不够 scenarios→modbus_frames→ruisheng_shared 传递性 → v1.7 补两路径；**累计 D 9 + E 4 + F 7 = 20 个 plan bug** master 反向 fix，另 #19 close non-bug）
+**最后更新**：2026-04-18（F6 收尾 tag + 文档：annotated tag `plan-0-stage-f-complete` 指向 `ea2e514`，已 push；Stage F 7 个 plan bug 全部 master 反向 fix + 1 个 candidate close as non-bug；累计 D 9 + E 4 + F 7 = **20**；无 implementer 派发，类 D10/E7）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`ea2e514 chore(corpus): initial 15 normal pcaps for 5 device types × 3 seeds`（F5）
-**最新 tag**：`plan-0-stage-e-complete`（F6 即将打 `plan-0-stage-f-complete`）
-**master 最新 commit**：`c30fbb4 fix(plan): F5 Plan bug #20` → **F4+F5+v1.7 #21 PROGRESS commit（即将推送）**
-**SHARED_SCHEMA_VERSION**：`20260415`（Stage F 纯工具包，不触 shared 模型）
-**测试状态**：**339 passed + 8 skipped**（F4+F5 无新测试，无回归；裸跑 324+8）
+**最近 commit**（worktree）：`ea2e514 chore(corpus): initial 15 normal pcaps`（F6 无新 commit，纯 tag）
+**最新 tag**：**`plan-0-stage-f-complete`**（worktree HEAD `ea2e514`，已 push origin）
+**master 最新 commit**：`43d30a0 docs+fix(plan): F4+F5 complete` → **F6 PROGRESS 收尾 commit（即将推送）**
+**SHARED_SCHEMA_VERSION**：`20260415`（Stage F 全程不触 shared 模型）
+**测试状态**：**339 passed + 8 skipped**（无回归）
 
-**下一步**：**F6 — Stage F 收尾 tag `plan-0-stage-f-complete`**（纯 tag + 文档，类 D10/E7，~15 分钟，无 implementer）
+**下一步**：**Stage G（7 task，CI 完备 + 文档 + release + 技术债清理）** — Plan 0 最终 Stage；G6 处理 tech debt #1+#3 deps 迁移；G7 ruisheng-shared release workflow
 
 ---
 
@@ -57,6 +57,7 @@
 | F3 | scenarios.py — scapy + `gen_normal_session` 生成"注册+N 轮询+心跳"pcap + expected.json | `7bfa7a0` | ✅ 1 file +89/-0；**pre-dispatch 首个无 bug task**（controller probe scapy import OK / wrpcap & rdpcap CJK 路径 roundtrip OK）；implementer 4 个透明 auto-fix drift：ruff B007 `i→_i` / UP017 `timezone.utc→UTC` / ruff format chain 单行压缩 / mypy `# type: ignore[attr-defined]` for scapy（非 import-untyped，scapy.all 走动态 `__getattr__`）；implementer flag 的 docstring drift **未静默改**（遵守 memory feedback_never_silently_modify_spec）；**combined review APPROVED 0/0/2**（reviewer 独立跑 N=1/3/5/10 包数全对 4/8/12/22 = 1+2N+1；seed=42 两次 identical / seed=100 different；方向审查 register/poll 匹配 plan，heartbeat gw→dev 反直觉）；发现 **2 个 plan bug candidate**：#18 F3 docstring `frames:` vs code 只写 `values` 不写 `frames` → **controller v1.5 反向 fix plan** 补齐 6 字段记录（`1567a86`）；#19 heartbeat 方向 gw→dev vs IoT 常规 dev→gw → **user 决策 2026-04-18 spec §A.5 gw→dev 权威，close non-bug** |
 | F4 | typer CLI — `pcap-gen normal` + `[project.scripts]` | `4f75ee0` | ✅ 2 files +40/-0（cli.py 37 行 + pyproject.toml +3 行 scripts 段）；**pre-dispatch 无 bug**（plan v1.4 代码简洁，scapy/typer 生态对齐）；implementer 2 个透明 drift：5 `# noqa: B008` on `typer.Option(...)`（typer 标准 idiom，否则 ruff B008 拦）+ docstring 后空行 ruff auto；**combined review APPROVED 0/0/0**（defaults 逐字验证 / `python -m pcap_gen.cli --help` 输出 5 options 正确 / 端到端 frames_count=100 生成 202 pkts ✓ / typer 单命令 collapse 为 cosmetic 观察非 bug）；uv.lock 未动（entry-point 走 wheel metadata）；**CJK CLI `uv run pcap-gen` 仍炸 ModuleNotFoundError** 符合预期（Plan bug #20 已决策 F5 绕 CLI）|
 | F5 | gen_initial_corpus.py — 绕 CLI 直调 Python API 生成 15 pcap + 15 expected.json | `ea2e514` | ✅ 1 file +63/-0（tools/pcap_gen/scripts/gen_initial_corpus.py）；**user 决策 Plan bug #20**（2026-04-18）驱动 plan v1.6：F5 用 `sys.path.insert` + `from pcap_gen.scenarios import gen_normal_session` 直调，不再 subprocess CLI；F4 CLI 保留（Linux/ASCII 可用）；implementer 1 个必要扩展：plan v1.6 sys.path 只加 `tools/pcap_gen/src` 但 scenarios.py 传递 import `ruisheng_shared.constants.protocol` → 同样受 CJK .pth 炸，脚本加两路径（`tools/pcap_gen/src` + `ruisheng-shared/src`）；implementer 如实汇报非静默（遵守 memory）；**combined review APPROVED_WITH_MINORS**（drift 合理 legitimate + 15 唯一 dev_ser `DEMO-TYPE0-0`..`DEMO-TYPE4-2` 验证 #15 fix / 3 pcap 抽查 202 pkts/100 values / 幂等再跑不增 / gitignore corpus/generated/ 工作 / 324+8 无回归）；发现 **Plan bug #21 medium**（plan v1.6 F5 sys.path 单路径不够，传递 import ruisheng_shared 也需同策略）→ **controller v1.7 反向 fix plan**（本次 commit）；30 文件 gitignored 不进 git |
+| F6 | Stage F 收尾 tag `plan-0-stage-f-complete` + PROGRESS 更新 | tag `plan-0-stage-f-complete`（worktree HEAD `ea2e514`）+ master PROGRESS commit | ✅ **纯 tag + 文档**，无代码改动、无 plan bug、无 implementer（F6 controller 直接操作，类 D10/E7）；tag 带 annotated 消息含 Stage F 全部资产清点（pcap_gen 子包 4 文件：pyproject.toml + __init__.py + modbus_frames.py 6 函数 + scenarios.py gen_normal_session + cli.py typer `[project.scripts]` / tests/tools/test_pcap_gen.py 3 测试 / gen_initial_corpus.py 首批 15 corpus）+ 7 Plan bug 回溯提示（#14 CRC hex / #15 dev_ser CJK / #16 uv.sources / #17 pytest pythonpath / #18 docstring schema / #20 F5 CLI bypass / #21 sys.path 两路径）+ #19 close non-bug 说明；**Stage F 完结 — 7 个 Plan bug 全部反向 fix master（+1 close non-bug）**，累计 D 9 + E 4 + F 7 = **20 个 Plan bug** |
 
 ---
 
