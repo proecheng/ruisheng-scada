@@ -5,20 +5,20 @@
 
 ---
 
-## 当前状态：**Plan 1 启动 — Stage A 1/8 ✅**（Plan 0 完整闭环 Stage G 7/7）
+## 当前状态：**Plan 1 — Stage A 2/8 ✅**（Plan 0 完整闭环 Stage G 7/7）
 
 **Plan 1 spec/plan 产出**（已落盘 master）：
 - Spec v2 `docs/superpowers/specs/2026-04-18-plan-1-gw-design.md`（644 行，`726f38b`）
-- Plan 文件 `docs/superpowers/plans/2026-04-18-plan-1-gw.md`（**6039 行**，`d8157e8`）
+- Plan 文件 `docs/superpowers/plans/2026-04-18-plan-1-gw.md`（**v1.4，6039+行**，`d8157e8` → `2631abd`（#1）→ `7c7d7be`（#2）→ `3172925`（#3）→ `1a13317`（#4+#5 retro））
 - 5-role adversarial review 回应 22 P0 + 30 P1；7 Stage / ~48 task / subagent-driven 执行
 
-**Plan 1 Stage A 进度**（A1 done 2026-04-18 晚）：
+**Plan 1 Stage A 进度**（A2 done 2026-04-18 晚 session 2）：
 
 | # | Task | Commit | Notes |
 |---|---|---|---|
 | A1 | scaffold ruisheng-gw 子包 | `52b5d5e` | 4 files +241/-1：pyproject + __init__ + workspace.members 扩；pre-commit 全绿；ruff+mypy clean；Spec APPROVED + Quality APPROVED_WITH_MINORS 4 cosmetic；local CJK `.pth` drift = D1/F1 pre-existing |
-| A2 | main.py schema+alembic check | — | ← **下一步**（新 session 起跑）|
-| A3-A8 | config / logging / health / CI / docs / tag | — | pending |
+| A2 | main.py schema+alembic check + CLI + 3 单测 | `482a63a` | 5 files +111/-4（pyproject Step 0 扩 pytest pythonpath+testpaths+mypy_path+mypy.exclude / `.pre-commit-config.yaml` mypy exclude 对称扩 / main.py 72 行 / `__main__.py` 10 行 / test_startup_checks.py 24 行 3 tests）；**5 Plan bug 3 轮 reverse-fix**（#1 pre-dispatch `__main__.py` 缺 `python -m` 入口 → plan v1.1 `2631abd`；#2 implementer v1 root pyproject pythonpath/testpaths 漏 gw → v1.2 `7c7d7be`；#3 implementer v2 `tests/__init__.py` 双树 package 冲撞 + asyncio F401 → v1.3 `3172925`；#4+#5 implementer v3 内含 root-cause fix：mypy_path / pre-commit mypy exclude 对称 → v1.4 retro `1a13317`）；**342 passed + 8 skipped + coverage 91.09% ≥ 90%**（gw 代码暂不计 coverage.source，延至 E10 integration flip）；`python -m ruisheng_gw --check-only` → `ok: shared schema version matches` exit 0（Windows CJK `.pth` mbcs drift 需 PYTHONPATH 绕过，CI Linux 不受影响）；Spec APPROVED 8/8 + Quality APPROVED_WITH_MINORS 5 cosmetic/nit |
+| A3-A8 | config / logging / health / CI / docs / tag | — | pending（A3 下一步）|
 
 ---
 
