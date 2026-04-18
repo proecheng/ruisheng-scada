@@ -5825,43 +5825,67 @@ git push origin feature/plan-0-foundation
 
 **目的：** ruisheng-shared 将被 Plan 1（gw）/ Plan 2（api）通过 `SHARED_SCHEMA_VERSION` 引用。Plan 0 完成时需要一个清晰的版本发布流程：semver bump + CHANGELOG + git tag + GitHub Release。**不做 PyPI publish**（私有仓）。
 
-**Files：**
-- Create: `D:\江苏润盛\ruisheng-shared\CHANGELOG.md`
-- Create: `D:\江苏润盛\.github\workflows\release-shared.yml`
-- Modify: `D:\江苏润盛\ruisheng-shared\pyproject.toml`（version 字段保持 `0.1.0`）
-- Modify: `D:\江苏润盛\ruisheng-shared\src\ruisheng_shared\__init__.py`（暴露 `SHARED_SCHEMA_VERSION`）
+**v2.3 修订（Plan bug #28 A+B+C+D，pre-dispatch 抓）**：
+- **#28-A paths**：Files/paths 全 `D:\江苏润盛\...`（master）→ worktree `D:\江苏润盛\.claude\worktrees\plan-0-foundation\...`（同 G5/G6 #26-B/#27-B）
+- **#28-B SHARED_SCHEMA_VERSION 格式冲突（严重）**：原 Step 1 代码块把 `SHARED_SCHEMA_VERSION` 从现有整数 `20260415`（DB schema 兼容版本，api/gw 启动校验）改为 semver 字符串 `"0.1.0"`，会破坏 `test_smoke.py` 3 个 assertion（`isinstance(int)` / `>20250000`）+ `tools/verify_schema_version.py` 语义 + api/gw 启动校验 + **作废 G2 刚落的 schema-version-guard**。**两个版本概念必须分离**：`__version__`（包 API semver, pyproject `version` 同步, tag `shared-v<ver>` 用）≠ `SHARED_SCHEMA_VERSION`（DB schema 兼容日期整数, breaking change bump, 运行时校验）→ Step 1 改为 **verify-only**（现状 `__init__.py` 已 export `SHARED_SCHEMA_VERSION` + `__version__`，无 edit；仅补 `__all__` 加 `"__version__"` 让双字段外部可导入）
+- **#28-C awk 范围 bug（confirmed 实测）**：`awk '/^## \[VER\]/,/^## \[/' | sed '$d'` 对最后一版场景输出**空**（start/end 同一行都匹配 `^## \[` → awk range 单行 → `sed '$d'` 删掉）。改状态 flag：`awk '/^## \[VER\]/{flag=1;next} flag && /^## \[/{flag=0} flag'`（跳过 header 行，停在下一版 header）
+- **#28-D Step 7 强制执行**：原 plan 写"optional, can delay"。user 选 (a) — **真推 `shared-v0.1.0` tag 端到端验证 release workflow**（避免 Plan 1 引用时才发现 workflow bug）
 
-- [ ] **Step 1：在 ruisheng_shared 包暴露 SHARED_SCHEMA_VERSION**
+**两个版本概念总览**（#28-B 分离）：
 
-Edit `D:\江苏润盛\ruisheng-shared\src\ruisheng_shared\__init__.py`：
-```python
-"""Ruisheng shared package（跨 gw / api / web 的类型、枚举、常量、schemas）。"""
+| 字段 | 类型 | 值 | 用途 | Bump 时机 |
+|---|---|---|---|---|
+| `__version__` / pyproject `version` | str | `"0.1.0"` | 包 API semver, CHANGELOG, tag `shared-v<ver>` | 新功能/breaking/修复 |
+| `SHARED_SCHEMA_VERSION` | int | `20260415` | DB schema 兼容, api/gw 启动校验 | 仅 breaking schema change |
 
-SHARED_SCHEMA_VERSION = "0.1.0"  # 与 pyproject.toml version 同步；breaking 变更须 bump major
-__version__ = SHARED_SCHEMA_VERSION
+**Files（worktree）：**
+- Create: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\ruisheng-shared\CHANGELOG.md`
+- Create: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\.github\workflows\release-shared.yml`
+- Create: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\docs\RELEASE.md`
+- Modify: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\ruisheng-shared\src\ruisheng_shared\__init__.py`（**仅** `__all__` 补 `"__version__"`，保留 `SHARED_SCHEMA_VERSION: int = 20260415` 不动）
+- **不改**：`ruisheng-shared\pyproject.toml`（`version = "0.1.0"` 已是；无需 modify）
+
+- [ ] **Step 1：验证 + 微调 `__init__.py`**（**非破坏性**，保留 `SHARED_SCHEMA_VERSION` 整数）
+
+验证现状：
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+uv run python -c "from ruisheng_shared import SHARED_SCHEMA_VERSION, __version__; print(type(SHARED_SCHEMA_VERSION), SHARED_SCHEMA_VERSION, __version__)"
 ```
+期望：`<class 'int'> 20260415 0.1.0`
+
+唯一 edit — 把 `__all__` 扩展（让外部 `from ruisheng_shared import __version__` 显式工作）：
+```python
+__all__ = ["SHARED_SCHEMA_VERSION", "__version__"]
+```
+其余**保留原样**：`SHARED_SCHEMA_VERSION: int = 20260415`、docstring、`__version__ = "0.1.0"`。
 
 - [ ] **Step 2：写 CHANGELOG.md 初始条目**
 
-Create `D:\江苏润盛\ruisheng-shared\CHANGELOG.md`:
+Create `D:\江苏润盛\.claude\worktrees\plan-0-foundation\ruisheng-shared\CHANGELOG.md`:
 ```markdown
 # Changelog
 
 遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) + [SemVer](https://semver.org/lang/zh-CN/)。
 
+两个版本字段分离（详见 `docs/RELEASE.md`）：
+- `__version__` / pyproject `version`：包 API semver（本文件追踪）
+- `SHARED_SCHEMA_VERSION`（integer date）：DB schema 兼容，breaking schema change 才 bump
+
 ## [Unreleased]
 
-## [0.1.0] - 2026-04-XX
+## [0.1.0] - 2026-04-18
 ### Added
 - Plan 0 基础建设：enums / errors / constants / validators / schemas 骨架
 - ORM 23 张表 + Alembic 初始迁移（含 TimescaleDB hypertable / compression / retention）
 - PCAP 生成器雏形（15 个 corpus 场景）
-- CI：lint / unit / integration / alembic-check / schema-guard
+- CI：lint / unit / integration / alembic-check / schema-guard + weekly mutation
+- SHARED_SCHEMA_VERSION 基线 `20260415`（后续 breaking schema change 才 bump）
 ```
 
-- [ ] **Step 3：创建 release workflow**
+- [ ] **Step 3：创建 release workflow**（awk 状态 flag 修正版）
 
-Create `D:\江苏润盛\.github\workflows\release-shared.yml`:
+Create `D:\江苏润盛\.claude\worktrees\plan-0-foundation\.github\workflows\release-shared.yml`:
 ```yaml
 name: Release ruisheng-shared
 
@@ -5895,8 +5919,16 @@ jobs:
       - name: Extract changelog section
         id: changelog
         run: |
-          awk "/^## \\[${{ steps.version.outputs.VERSION }}\\]/,/^## \\[/" ruisheng-shared/CHANGELOG.md \
-            | sed '$d' > /tmp/release-notes.md
+          VER='${{ steps.version.outputs.VERSION }}'
+          awk -v ver="$VER" '
+            $0 ~ "^## \\[" ver "\\]" {flag=1; next}
+            flag && /^## \[/ {flag=0}
+            flag
+          ' ruisheng-shared/CHANGELOG.md > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "::error::Empty release notes for version $VER — CHANGELOG missing section?"
+            exit 1
+          fi
           cat /tmp/release-notes.md
 
       - name: Create GitHub Release
@@ -5908,53 +5940,73 @@ jobs:
           prerelease: false
 ```
 
-- [ ] **Step 4：写 docs/RELEASE.md 简短流程说明**
+- [ ] **Step 4：写 docs/RELEASE.md 流程说明**
 
-Create `D:\江苏润盛\docs\RELEASE.md`:
+Create `D:\江苏润盛\.claude\worktrees\plan-0-foundation\docs\RELEASE.md`:
 ```markdown
 # ruisheng-shared 发布流程
 
-1. 在 master 分支更新 `ruisheng-shared/pyproject.toml` 的 `version`（遵 semver）
-2. 同步更新 `src/ruisheng_shared/__init__.py` 的 `SHARED_SCHEMA_VERSION`
-3. 在 `ruisheng-shared/CHANGELOG.md` 把 `[Unreleased]` 下的条目搬到新版本下
-4. Commit：`chore(release): ruisheng-shared vX.Y.Z`
-5. 打 tag：`git tag -a shared-vX.Y.Z -m "..."`
-6. Push：`git push && git push --tags`
-7. GitHub Actions 会自动创建 Release（含 CHANGELOG 提取段）
+## 两个独立版本字段（不要混淆）
 
-## SemVer 规则
+| 字段 | 类型 | 例 | 用途 | Bump 时机 |
+|---|---|---|---|---|
+| `__version__` / pyproject `version` | str | `"0.1.0"` | 包 API semver，CHANGELOG 追踪，tag `shared-v<ver>` | 任何 release（major/minor/patch） |
+| `SHARED_SCHEMA_VERSION` | int | `20260415` | DB schema 兼容，api/gw 启动校验 | **仅 breaking schema change**（字段删/改类型/必填新增） |
+
+## 发布新版本
+
+1. 在 `ruisheng-shared/pyproject.toml` 更新 `version`（遵 semver）
+2. 同步更新 `src/ruisheng_shared/__init__.py` 的 `__version__`（与 pyproject 一致）
+3. **若** 本次含 breaking schema 变更，同步 bump `SHARED_SCHEMA_VERSION`（整数日期）
+4. 在 `ruisheng-shared/CHANGELOG.md` 把 `[Unreleased]` 下的条目搬到新版本下
+5. Commit：`chore(release): ruisheng-shared vX.Y.Z`
+6. 打 tag：`git tag -a shared-vX.Y.Z -m "..."`
+7. Push：`git push && git push --tags`
+8. GitHub Actions 自动创建 Release（CHANGELOG 对应段作为 body）
+
+## SemVer 规则（`__version__`）
 
 - **major**：shared 的 schema 接口（enum 值、常量、错误码、pydantic model 字段）有 **breaking** 改动
 - **minor**：新增枚举值 / 新增 schema 字段（向后兼容）
 - **patch**：文档、测试、内部实现改动
 ```
 
-- [ ] **Step 5：测试 tag 提取逻辑（dry run）**
+- [ ] **Step 5：本地 dry-run awk 提取**（#28-C 修正版）
 
 ```bash
-# 本地模拟：确认 awk 能提取 CHANGELOG 里的 0.1.0 段
-awk "/^## \\[0.1.0\\]/,/^## \\[/" ruisheng-shared/CHANGELOG.md | sed '$d'
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+awk -v ver="0.1.0" '
+  $0 ~ "^## \\[" ver "\\]" {flag=1; next}
+  flag && /^## \[/ {flag=0}
+  flag
+' ruisheng-shared/CHANGELOG.md
 ```
-期望：输出 0.1.0 段的 Added 列表。
+期望：输出 0.1.0 段的 Added 列表（`### Added` + bullet list），**非空**。
 
-- [ ] **Step 6：Commit**
+- [ ] **Step 6：Commit + push**
 
 ```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
 git add ruisheng-shared/CHANGELOG.md \
         ruisheng-shared/src/ruisheng_shared/__init__.py \
         .github/workflows/release-shared.yml \
         docs/RELEASE.md
-git commit -m "feat(release): ruisheng-shared release workflow with SHARED_SCHEMA_VERSION"
+git commit -m "feat(release): ruisheng-shared release workflow with separated version fields"
+git push origin feature/plan-0-foundation
 ```
 
-- [ ] **Step 7：（可选）实际打首个 tag**
+- [ ] **Step 7：真推首个 tag `shared-v0.1.0` 端到端验证**（#28-D user 选 a）
 
-> 只在 Plan 0 **全部完成后** 再做。此 step 可以延到 G5 的最终 tag 之后。
->
-> ```bash
-> git tag -a shared-v0.1.0 -m "ruisheng-shared 0.1.0 — Plan 0 foundation"
-> git push origin shared-v0.1.0
-> ```
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+git tag -a shared-v0.1.0 -m "ruisheng-shared 0.1.0 — Plan 0 foundation"
+git push origin shared-v0.1.0
+```
+
+然后 **手工验证**（controller / reviewer 任一）：
+- GitHub Actions → `Release ruisheng-shared` workflow run，step "Verify pyproject version matches tag" + "Extract changelog section" + "Create GitHub Release" 全绿
+- GitHub Releases 页面出现 `ruisheng-shared 0.1.0` 条目，body 含 CHANGELOG [0.1.0] 段内容
+- 若任一步失败（workflow 红 / body 空）→ BLOCKED，不记 G7 完成，反向 fix workflow
 
 ---
 
