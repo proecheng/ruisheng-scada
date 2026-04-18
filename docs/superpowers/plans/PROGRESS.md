@@ -266,7 +266,7 @@ Stage D 实施过程中累积的 spec 升级项（非阻塞，Stage E/F/G 或 Pl
 4. **§5.10 L1958-1960 摘除 `user_control_actions` hypertable 段**（Plan bug #5 Q3-B：保 UNIQUE(cmd_id) 幂等语义，TS hypertable 分区列要求冲突）
 5. **§4.2 `user_login_records` + §5.10 `alarm_records` compression 块改为 v1.3.7 TODO note**（Plan bug #6 Option A；等 TimescaleDB upstream issue #6827 修复 FORCE RLS 兼容 compression 后回填）
 6. （candidate）**pytest→seed workflow 顺序**：D9 `test_upgrade_down_and_up_again` downgrade 到 base → 跑 `task seed` 前需 `task migrate`；建议在 D9 测试末尾加 `alembic upgrade head` teardown（E3-E6 implementer 实测）
-7. （candidate）**spec §A.5 / §D.1 心跳方向**（Plan bug #19 candidate，F3 review 发现）：plan v1.4 scenarios.py `encode_heartbeat` 包从 server_ip→client_ip (gw→设备) 走向，与 IoT 常规 dev→gw keepalive 反。需 user 核对 spec §A.5 权威语义并决策：(A) 修 plan 心跳方向为 client_ip→server_ip；(B) spec §A.5 明确说 gw 下发心跳（保持 plan）；(C) 双向心跳（扩展 scenarios 签名）。**当前 F3 commit `7bfa7a0` 按 plan v1.4 写 gw→dev**，等 user 决定后 follow-up
+7. ~~**spec §A.5 / §D.1 心跳方向**（Plan bug #19 candidate）~~ **user 2026-04-18 决策：spec §A.5 确认 gw→dev 下发心跳，plan v1.4 正确，#19 close 为 non-bug**
 8. **20 个 optional Minor 批量清理**（D5 留 3 + D6 留 2 + D7 留 2 + D8 留 5 + D9 留 8；含 `from __future__ import annotations` 缺漏、downgrade operational warning、USING/WITH CHECK 字面重复、`pytest.raises(Exception)` 过宽、alembic.command API 替代 subprocess 等）—— 归入未来 polishing pass
 
 **执行方式**：建议另开 `docs/spec-v1.3.7` branch，批量改 spec `.md` + bump 文件头部 version 1.3.6 → 1.3.7，一次 PR merge master。与 Minor 清理 commit 分开，保证 spec 变更可追溯。
