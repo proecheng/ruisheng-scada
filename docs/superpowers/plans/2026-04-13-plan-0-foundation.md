@@ -4646,12 +4646,15 @@ git commit -m "chore(tools): EmbeddedPostgres stub — full impl pending Q-E06"
 > **devices 补 4 列**：`update_interval_decisec`=100 / `loss_count`=0 / `is_online`=false / `update_flag`=0
 > **device_points 补 5 列**：`point_ratio`=1.0 / `point_offset`=0.0 / `user_ratio`=1.0 / `user_point_offset`=0.0 / `show`=1
 
+> **v1.3 修订（2026-04-18，Plan bug #13 fix）**：v1.2 `# type: ignore[import-untyped]` 只覆盖 `uv run mypy`（asyncpg 安装在 uv venv，无 py.typed → `import-untyped`）；但 pre-commit `mirrors-mypy` 跑在**隔离 venv**，`additional_dependencies: [sqlalchemy, pydantic, types-redis]` 无 asyncpg → 变成 `import-not-found` 而非 `import-untyped` → `# type: ignore[import-untyped]` 不覆盖 + 报 `unused-ignore`。**根因修复**：`.pre-commit-config.yaml` mypy `additional_dependencies` 加 `asyncpg`，使 pre-commit env 与 uv venv 一致（Option A，principled：asyncpg 本就是项目 runtime dep）。加后 pre-commit mypy 看到 asyncpg 但无 py.typed → `import-untyped` → 与 `uv run mypy` 一致 → v1.2 的 `# type: ignore[import-untyped]` 正常生效。
+
 **Files:**
 - Create: `D:\江苏润盛\seeds\00_wx_groups.sql`
 - Create: `D:\江苏润盛\seeds\01_users.sql`
 - Create: `D:\江苏润盛\seeds\02_devices.sql`
 - Create: `D:\江苏润盛\seeds\03_device_points.sql`
 - Create: `D:\江苏润盛\tools\run_seeds.py`
+- Modify: `D:\江苏润盛\.pre-commit-config.yaml`（v1.3，mypy additional_dependencies 追加 `asyncpg`）
 
 ### E3: seeds/00_wx_groups.sql
 ```sql
@@ -4749,9 +4752,18 @@ if __name__ == "__main__":
 ```
 
 **E3–E6 Commits:**
+
+v1.3 需在同一 commit 包含 `.pre-commit-config.yaml` 修改（mypy deps 加 asyncpg），否则 `tools/run_seeds.py` 的 `# type: ignore[import-untyped]` 在 pre-commit 上仍会因为 asyncpg 缺席抛 `import-not-found`。
+
 ```bash
-git add seeds/ tools/run_seeds.py
-git commit -m "feat(db): seed data (demo wx group + users + devices + points)"
+git add seeds/ tools/run_seeds.py .pre-commit-config.yaml
+git commit -m "feat(db): E3-E6 seed data (demo wx_group + 2 users + 1 device + 2 points) + run_seeds.py"
+```
+
+`.pre-commit-config.yaml` delta（v1.3）：
+```diff
+-        additional_dependencies: [sqlalchemy, pydantic, types-redis]
++        additional_dependencies: [sqlalchemy, pydantic, types-redis, asyncpg]
 ```
 
 - [ ] **验证跑种子**
