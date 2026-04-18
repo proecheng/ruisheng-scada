@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage G 1/7 ✅ G1 完成，G2 待派**
+## 当前状态：Plan 0 **Stage G 2/7 ✅ G1+G2 完成，G3 待派**
 
-**最后更新**：2026-04-18（G1 ci.yml 扩展 + 93 pre-existing ruff debt 清零双 commit；plan bug #22 A+B pre-dispatch + #23 93 errors 暴露 mid-G1）
+**最后更新**：2026-04-18（G2 双模式 pre-commit/CI schema-version-guard 实现 + positive test 独立构造验证；plan bug #24 pre-dispatch）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`5c19435 chore(lint): resolve 93 pre-existing ruff errors exposed by G1 CI rollout` + `ecfa611 ci: add integration / alembic symmetry / schema-version jobs`
+**最近 commit**（worktree）：`33d9b27 ci(schema-guard): enforce version bump on breaking changes (dual-mode)`（单文件 tools/verify_schema_version.py +53/-20）
 **最新 tag**：`plan-0-stage-f-complete`（未 bump，Stage G tag 待 G5 收尾）
-**master 最新 commit**：`473383b fix(plan): G1 Plan bug #22 A+B pre-dispatch — uv sync --all-packages + CI passwords` → **本次 G1 完成 PROGRESS 更新 commit（即将推送）**
+**master 最新 commit**：`d628239 fix(plan): G2 Plan bug #24 pre-dispatch — dual-mode (pre-commit vs CI) diff detection` → **本次 G2 完成 PROGRESS 更新 commit（即将推送）**
 **SHARED_SCHEMA_VERSION**：`20260415`（Stage G 全程不触 shared 模型）
-**测试状态**：**324 passed + 8 skipped**（unit+tools scope；整体 339 + 15 integration 无回归；coverage 91.09% ≥ 90% threshold）
+**测试状态**：**324 passed + 8 skipped**（unit+tools scope；coverage 91.09% ≥ 90% threshold；G2 tools/ 不在 coverage source 不影响）
 
-**下一步**：**G2（完善 `tools/verify_schema_version.py` breaking 检测）** — G1 stub 返 0 degenerate-pass，G2 升级到 `git diff HEAD^ HEAD` 真实检测。
+**下一步**：**G3（docs/ARCHITECTURE.md 开发侧架构速览）** — 一页文档，小任务。
 
 ---
 
@@ -111,6 +111,7 @@
 | # | Task | Commit | Notes |
 |---|---|---|---|
 | G1 | CI workflow 扩展（5 job：lint / unit / integration / alembic-check / schema-version-guard）+ pre-existing ruff debt 清零 | `ecfa611` + cleanup `5c19435` | ✅ 2 files +73/-1（ci.yml 单文件 feat commit，byte-identical plan v1.8 yaml 块）+ 5 files +14/-14（独立 chore(lint) commit：pyproject per-file-ignores 加 PLC0415 + 3 enum 迁 StrEnum + test_models_timeseries 3 N817 改 module import）；**Plan bug #22 A+B pre-dispatch**：#22-A plan v1.7 `uv sync` 5 处应为 `uv sync --all-packages`（workspace + F1 pcap_gen 子包不装则 ModuleNotFoundError）+ #22-B integration + alembic-check 缺 `RUISHENG_GW_PASSWORD`/`RUISHENG_API_PASSWORD` env 块（D3 migration `_require_env()` + conftest api/gw_engine fixture 都读）→ **user 决策 Option A**（CI 硬编码 `ci-gw-change-me`/`ci-api-change-me`，不走 GitHub Secrets）→ master plan v1.8 fix `473383b`；**Plan bug #23 mid-G1**（首个 implementer 交付后 controller 跑全仓 `ruff check .` 发现 93 pre-existing errors；GH Actions `total_count: 0` 从未跑过故 pre-commit 增量 scope 一直掩盖；分布 87 PLC0415 + 3 UP042 + 3 N817）→ **user 批准 G1 增补 scope**（独立 chore commit 修完）→ cleanup implementer 5 文件 +14/-14 单 commit 完成；**combined review APPROVED**：CP1 ci.yml diff plan v1.8 byte-identical / CP2 lint cleanup 精确无 over-reach / CP3 ruff 0 errors + format clean + mypy clean + pytest 324+8 + coverage **91.09% ≥ 90% threshold** / CP4 yaml 结构合理 / CP5 alembic downgrade hypertable 在 fresh CI 容器 DROP CASCADE chunks 低风险 / CP6 无新 plan bug；**累计 Plan bug D 9 + E 4 + F 7 + G 2 = 22** |
+| G2 | `tools/verify_schema_version.py` 升级到双模式 breaking 检测 | `33d9b27` | ✅ 1 file +53/-20（单文件 feat commit，byte-identical plan v1.9 python 块）；**Plan bug #24 pre-dispatch**：plan v1.8 直接用 `git diff HEAD^ HEAD` replace G1 stub 的 `git diff --cached`，会让 `.pre-commit-config.yaml` 的 `shared-schema-version-bump` local hook **静默失效**（查 last-commit 而非 staged，用户改 shared/models/ 不升 SCHEMA_VERSION 不报警）→ **user 决策 Option A 双模式**：脚本读 `PRE_COMMIT=1` 环境变量（pre-commit 工具自动设置），pre-commit 上下文用 `--cached`，CI 用 `HEAD^ HEAD` → master plan v1.9 fix `d628239`；v1.9 还清 v1.8 2 个 dead 项（unused `VERSION_RE` + `_git_diff` 包装）；implementer 6 验收门全过（ruff 0 / mypy 0 / CI mode exit 0 / pre-commit mode exit 0 / pre-commit hook end-to-end Skipped / pytest 324+8）；**combined review APPROVED_WITH_MINORS**：CP1 diff plan v1.9 byte-identical / CP2 6 门复跑 5 过 1 无法验（gate 5 pre-commit CLI 在 Windows env 报 `/bin/bash not found`——非 G2 defect，CI Linux 不受影响，commit-time hook 实测 trigger 正常） / **CP3 独立构造 positive test 真工作**：stage1 CI shared-changed + no-today-entry → exit 1 ✓ / stage2 CI breaking + no-bump → exit 2 ✓ / pre-commit staged shared + no-today → exit 1 ✓ / pre-commit staged breaking + no-bump → exit 2 ✓；**真实 git commit 触发 hook 被 blocked** 验 end-to-end 集成 / CP4 边界扫描 5 点全合理（initial commit HEAD^ 不存在场景不实际、merge first-parent OK、fetch-depth 0 配 CI、regex DOTALL 正确、`breaking:` 粗匹可能误判 `non-breaking:` 但是 over-conservative safe） / CP5 无新 plan bug（M3 initial commit HEAD^ 未 try/except 留 G-后续 hardening 备忘） / 3 Minor non-blocking 都不必修（M1 `today in` substring 可改 `^## <today>` multiline / M2 `breaking:` 过宽 conservative / M3 CalledProcessError 未 handle）；**累计 Plan bug D 9 + E 4 + F 7 + G 3 = 23** |
 
 ---
 
@@ -119,9 +120,9 @@
 - **GitHub**：https://github.com/proecheng/ruisheng-scada （Private，账号 proecheng）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **master 最新 commit**：`473383b fix(plan): G1 Plan bug #22 A+B pre-dispatch` → **本次 G1 完成 PROGRESS 更新 commit（即将推送）**
-- **worktree 实施分支最新 commit**：`5c19435 chore(lint): resolve 93 pre-existing ruff errors` + `ecfa611 ci: add integration / alembic symmetry / schema-version jobs`（前置 `ea2e514` F5）
-- **alembic current**：`959079e6cae9 (head)` — D8 migration（G1 无新迁移）
+- **master 最新 commit**：`d628239 fix(plan): G2 Plan bug #24 pre-dispatch — dual-mode diff detection` → **本次 G2 完成 PROGRESS 更新 commit（即将推送）**
+- **worktree 实施分支最新 commit**：`33d9b27 ci(schema-guard): dual-mode verify_schema_version`（前置 `5c19435` G1 lint / `ecfa611` G1 ci.yml / `ea2e514` F5）
+- **alembic current**：`959079e6cae9 (head)` — D8 migration（G1/G2 无新迁移）
 - **两个 worktree**：
   - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
   - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation（实际代码）
