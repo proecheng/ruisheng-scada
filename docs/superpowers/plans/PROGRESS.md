@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage F 进行中（F1 完成 1/6）**
+## 当前状态：Plan 0 **Stage F 进行中（F1+F2 完成 2/6）**
 
-**最后更新**：2026-04-18（F1 落地：tools/pcap_gen 子包骨架 pyproject.toml + __init__.py；连抓 **3 个 Plan bug** 于 F 阶段派发前/中：#14 F2 CRC hex typo pre-dispatch / #15 F5 dev_ser CJK ASCII 崩解 pre-dispatch / #16 F1 `[tool.uv.sources]` 缺失 implementer BLOCKED；累计 D 9 + E 4 + F 3 = **16 个 plan bug**；另 F2 pythonpath #17 刚实测确认，即将反向 fix）
+**最后更新**：2026-04-18（F2 落地：modbus_frames.py 6 函数 + 3 测试 CRC16 + 帧构造；F2 + pythonpath fix 合单 commit；CRC 算法独立核验 3 向量全对；**累计 D 9 + E 4 + F 4 = 17 个 plan bug** 全部 master 反向 fix）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`ad5e441 feat(tools): pcap_gen package skeleton`（F1）
+**最近 commit**（worktree）：`0c79f0b feat(tools): ModBus RTU frame codec + CRC16 with test vectors`（F2）
 **最新 tag**：`plan-0-stage-e-complete`（下次打 `plan-0-stage-f-complete` 要到 F6）
-**master 最新 commit**：`a72422e fix(plan): F1 Plan bug #16` → **F1-post PROGRESS commit（即将推送）+ F2 #17 plan fix（紧接）**
+**master 最新 commit**：`2e62eb8 fix(plan): F2 Plan bug #17` → **F2-post PROGRESS commit（即将推送）**
 **SHARED_SCHEMA_VERSION**：`20260415`（Stage F 纯工具包，不触 shared 模型）
-**测试状态**：**336 passed + 8 skipped**（F1 无新测试，无回归；集成测试 15 环境依赖 RUISHENG_* env vars，本机裸跑统计为 321 + 8）
+**测试状态**：**339 passed + 8 skipped**（F2 新增 3 测试，无回归；裸跑 324 + 8，15 alembic env-dep）
 
-**下一步**：**F2 — modbus_frames.py + CRC16 + 帧构造（TDD 6 函数）** — plan v1.4 #17 fix 后派发
+**下一步**：**F3 — scenarios.py（scapy + 正常会话 pcap 生成）** — 派发前 pre-dispatch sanity check
 
 ---
 
@@ -53,6 +53,7 @@
 | # | Task | Commit | Notes |
 |---|---|---|---|
 | F1 | tools/pcap_gen 子包骨架 — pyproject.toml + src/pcap_gen/__init__.py | `ad5e441` | ✅ 3 files +129/-0（pyproject.toml 20 行 / __init__.py 3 行 / uv.lock 106 行）；**pre-dispatch 连抓 2 个 Plan bug**：#14 F2 CRC hex typo（`"0103000000020"+"2"` 实为 14 hex=7 bytes，CRC=0x528B 不是 0x0BC4 → master v1.1 `054b187`）+ #15 F5 dev_ser CJK ASCII 崩解（5 种中文 type 全坍缩为 3 个唯一名 → master v1.2 option B `5c2d86c` 改用 TYPE{i} ASCII）；**implementer BLOCKED 抓 Plan bug #16**（plan v1.2 pyproject.toml 缺 `[tool.uv.sources]` → uv 拒绝 workspace cross-ref → master v1.3 `a72422e` 加 `ruisheng-shared = { workspace = true }`）；implementer 遵守 memory `feedback_never_silently_modify_spec` 停下来报 BLOCKED，不静默改 plan；**最终验证**：`uv sync --all-packages` Resolved 68 packages / 9 个新包（pcap-gen 0.1.0 editable + scapy 2.7.0 + typer 0.24.1 + click/rich 等）/ pytest 336+8（15 alembic env-dependent，base 321+8 无回归）/ ruff clean / pre-commit 全绿（mypy 按 config 跳 tools/pcap_gen）；**combined review APPROVED 0/0/0**（byte-identical 匹配 plan v1.3 modulo ruff docstring 空行 canonical form）；**新 drift 记录**（非 F1 scope）：CJK 路径 + uv editable `.pth` mbcs 解码 → `uv run python -c "import pcap_gen"` 失败，`ruisheng_shared` 靠 pytest `pythonpath=["ruisheng-shared/src"]` 绕过，`pcap_gen` 未在 pythonpath → 即将触发 **Plan bug #17**（F2 测试 import 必炸）|
+| F2 | modbus_frames.py — CRC16 + 6 个帧构造函数 + 3 测试 + pythonpath fix | `0c79f0b` | ✅ 4 files +92/-1（pyproject.toml pythonpath 1 行 / modbus_frames.py 54 行 / tests/tools/__init__.py 0 / test_pcap_gen.py 38 行）；**controller 实测 probe 抓 Plan bug #17**（CJK 路径 uv editable .pth mbcs → `uv run python -c "import pcap_gen"` 失败，探测测试 `import pcap_gen` 在 pytest 也炸 ModuleNotFoundError → master v1.4 `2e62eb8` 加 F2 Step 0：root pyproject.toml `pythonpath` 追加 `tools/pcap_gen/src`）；implementer TDD 正确流程（Step 0 pythonpath → Step 1 test-first → Step 2 ModuleNotFoundError on `modbus_frames`（非 pcap_gen，证明 #17 修成功）→ Step 3 实现 → Step 4 3 passed → Step 5 单 commit 含 pythonpath）；**combined review APPROVED 0 Critical/0 Important/2 Minor**（reviewer 独立跑 CRC 算法 3 向量全对：`010300000002`=0x0BC4 ✓ / `''`=0xFFFF ✓ / `'00'`=0x40BF ✓；hand-verify 3 未直测 encoder byte layout 全对 9/8/8 bytes）；2 Minor：M1 3 个间接测试的 encoder 可补直测（F3 间接覆盖，Stage F 收尾候选）/ M2 encode_register_frame `[:24]` 静默截断过长 ser（spec A.4 固定 24，仁慈不严格）；**新 drift 记录**（非 F2 scope）：M3 `uv run pre-commit run` Windows 下 `/bin/bash not found`（本地 `git commit` 钩子 OK）/ M4 mypy isolated cwd 下 2 errors（canonical `mypy .` 根目录 clean） |
 
 ---
 
