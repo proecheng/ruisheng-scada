@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage E 完结（7/7 ✅）→ 准备进 Stage F**
+## 当前状态：Plan 0 **Stage F 进行中（F1 完成 1/6）**
 
-**最后更新**：2026-04-18（E7 收尾 tag + 文档：annotated tag `plan-0-stage-e-complete` 指向 `e42f06b`，已 push；Stage E 独占 4 个 plan bug 全部 master 反向 fix；累计 D 9 + E 4 = **13**；无 implementer 派发，无代码改动，类 D10）
+**最后更新**：2026-04-18（F1 落地：tools/pcap_gen 子包骨架 pyproject.toml + __init__.py；连抓 **3 个 Plan bug** 于 F 阶段派发前/中：#14 F2 CRC hex typo pre-dispatch / #15 F5 dev_ser CJK ASCII 崩解 pre-dispatch / #16 F1 `[tool.uv.sources]` 缺失 implementer BLOCKED；累计 D 9 + E 4 + F 3 = **16 个 plan bug**；另 F2 pythonpath #17 刚实测确认，即将反向 fix）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`e42f06b feat(db): E3-E6 seed data + run_seeds.py`（E7 无新 commit，纯 tag）
-**最新 tag**：**`plan-0-stage-e-complete`**（worktree HEAD `e42f06b`，已 push origin）
-**master 最新 commit**：`4627d36 docs(progress): session handoff` → **本次 E7 PROGRESS 收尾 commit（即将推送）**
-**SHARED_SCHEMA_VERSION**：`20260415`（Stage E 全程不触 shared 模型）
-**测试状态**：**336 passed + 8 skipped**（无回归）
+**最近 commit**（worktree）：`ad5e441 feat(tools): pcap_gen package skeleton`（F1）
+**最新 tag**：`plan-0-stage-e-complete`（下次打 `plan-0-stage-f-complete` 要到 F6）
+**master 最新 commit**：`a72422e fix(plan): F1 Plan bug #16` → **F1-post PROGRESS commit（即将推送）+ F2 #17 plan fix（紧接）**
+**SHARED_SCHEMA_VERSION**：`20260415`（Stage F 纯工具包，不触 shared 模型）
+**测试状态**：**336 passed + 8 skipped**（F1 无新测试，无回归；集成测试 15 环境依赖 RUISHENG_* env vars，本机裸跑统计为 321 + 8）
 
-**下一步**：**Stage F（6 task，PCAP 生成器）** — 待 controller 派发 F1 起跑
+**下一步**：**F2 — modbus_frames.py + CRC16 + 帧构造（TDD 6 函数）** — plan v1.4 #17 fix 后派发
 
 ---
 
@@ -45,6 +45,14 @@
 | E2 | tools/embedded_pg.py stub — async + sync start/stop 双 API | `b295f8e` | ✅ 单文件新建 45 行；verbatim plan v1.1 E2 Step 1 代码（byte-for-byte 匹配 plan §L4583-4629）；imports 只用 `__future__ annotations / asyncio / random / tempfile / pathlib.Path`；`_NOT_IMPLEMENTED_MSG` 模块常量（Windows no-Docker 解释 + Q-E06 待决）；class `EmbeddedPostgres(version="15")` 设 5 属性（version / port 15000-30000 random / data_dir mkdtemp prefix ruisheng-pg- / url asyncpg / _proc None）+ 4 方法（sync `start_sync` raise / sync `stop_sync` guarded terminate / async `start` raise / async `stop` terminate + await wait）；**无 `tools/__init__.py`**（A5 namespace 约定保持）；**验证**：ruff clean / mypy clean / `EmbeddedPostgres()` 实例化正常返回 url+port+data_dir / `start_sync()` 抛 NotImplementedError 含预期消息 / `stop_sync()` fresh 实例 noop / pytest 336+8 无回归；**review APPROVED 0/0/0**（combined spec + quality，line-by-line 对照 plan，0 deviation，0 minor）；**首个 Stage E 无 plan bug 的 task**（E1 有 #10） |
 | E3-E6 | seeds 4 SQL（demo wx_group + 2 users + 1 device + 2 points）+ tools/run_seeds.py + .pre-commit-config.yaml mypy dep | `e42f06b` | ✅ 6 文件单 commit +74/-1；**连抓 3 个 Plan bug** — master plan v1.1/1.2/1.3 三次反向 fix：(a) **#11 pre-dispatch** controller 查 D2 migration 发现 devices/device_points 多个 NOT NULL 无 server_default 列，raw SQL INSERT 漏列必炸 23502（同 D9 #8 模式）→ plan v1.1 补 devices 4 列（update_interval_decisec=100 / loss_count=0 / is_online=FALSE / update_flag=0）+ device_points 5 列（point_ratio=1.0 / point_offset=0.0 / user_ratio=1.0 / user_point_offset=0.0 / show=1）= `f0c5614`；(b) **#12 implementer live-DB** 实测双跑 device_points 从 2→4 行，发现无 UQ on (dev_number, point_number) 故 `ON CONFLICT DO NOTHING` no-op → plan v1.2 改 Option A：`INSERT ... SELECT FROM (VALUES) AS v WHERE NOT EXISTS`（无 schema 改动）+ `# type: ignore[import-untyped]` for asyncpg = `08f12d2`；(c) **#13 implementer pre-commit** 实测 mirrors-mypy 隔离 venv 缺 asyncpg 变 `import-not-found` → v1.2 ignore 不覆盖 + unused-ignore → plan v1.3 改 .pre-commit-config.yaml mypy `additional_dependencies` 加 asyncpg（Option A，principled）= `260729e`；**最终验证**：pre-commit 全绿（ruff / ruff-format / mypy --strict 都 pass）/ `uv run task seed` 双跑稳定 counts 1/2/1/2（wx_groups/users/devices/device_points）/ pytest 336+8 / 6 文件最终 clean commit；**Stage E 独占 3 个 plan bug，累计 13**（D 9 + E 4） |
 | E7 | Stage E 收尾 tag `plan-0-stage-e-complete` + PROGRESS 更新 | tag `plan-0-stage-e-complete`（worktree HEAD `e42f06b`）+ master PROGRESS commit | ✅ **纯 tag + 文档**，无代码改动、无 plan bug、无 implementer（E7 controller 直接操作，类 D10）；tag 带 annotated 消息含 Stage E 全部资产清点（conftest 双轨 fixture + embedded_pg stub + seeds 4 SQL + run_seeds.py + pre-commit mypy asyncpg dep + idempotency 双跑 1/2/1/2 稳定 + 336 passed + 8 skipped）+ 4 Plan bug 回溯提示（#10 E1 Replace→Merge + session→function scope / #11 seeds NOT NULL / #12 device_points UQ `NOT EXISTS` / #13 pre-commit mypy isolated venv asyncpg）；**Stage E 完结 — 4 个 Plan bug 全部反向 fix master**，累计 D 9 + E 4 = **13 个 Plan bug** |
+
+---
+
+### Stage F 进度表
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| F1 | tools/pcap_gen 子包骨架 — pyproject.toml + src/pcap_gen/__init__.py | `ad5e441` | ✅ 3 files +129/-0（pyproject.toml 20 行 / __init__.py 3 行 / uv.lock 106 行）；**pre-dispatch 连抓 2 个 Plan bug**：#14 F2 CRC hex typo（`"0103000000020"+"2"` 实为 14 hex=7 bytes，CRC=0x528B 不是 0x0BC4 → master v1.1 `054b187`）+ #15 F5 dev_ser CJK ASCII 崩解（5 种中文 type 全坍缩为 3 个唯一名 → master v1.2 option B `5c2d86c` 改用 TYPE{i} ASCII）；**implementer BLOCKED 抓 Plan bug #16**（plan v1.2 pyproject.toml 缺 `[tool.uv.sources]` → uv 拒绝 workspace cross-ref → master v1.3 `a72422e` 加 `ruisheng-shared = { workspace = true }`）；implementer 遵守 memory `feedback_never_silently_modify_spec` 停下来报 BLOCKED，不静默改 plan；**最终验证**：`uv sync --all-packages` Resolved 68 packages / 9 个新包（pcap-gen 0.1.0 editable + scapy 2.7.0 + typer 0.24.1 + click/rich 等）/ pytest 336+8（15 alembic env-dependent，base 321+8 无回归）/ ruff clean / pre-commit 全绿（mypy 按 config 跳 tools/pcap_gen）；**combined review APPROVED 0/0/0**（byte-identical 匹配 plan v1.3 modulo ruff docstring 空行 canonical form）；**新 drift 记录**（非 F1 scope）：CJK 路径 + uv editable `.pth` mbcs 解码 → `uv run python -c "import pcap_gen"` 失败，`ruisheng_shared` 靠 pytest `pythonpath=["ruisheng-shared/src"]` 绕过，`pcap_gen` 未在 pythonpath → 即将触发 **Plan bug #17**（F2 测试 import 必炸）|
 
 ---
 
