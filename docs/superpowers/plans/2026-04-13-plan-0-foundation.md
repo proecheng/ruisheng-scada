@@ -5825,10 +5825,13 @@ git push origin feature/plan-0-foundation
 
 **目的：** ruisheng-shared 将被 Plan 1（gw）/ Plan 2（api）通过 `SHARED_SCHEMA_VERSION` 引用。Plan 0 完成时需要一个清晰的版本发布流程：semver bump + CHANGELOG + git tag + GitHub Release。**不做 PyPI publish**（私有仓）。
 
+**v2.4 修订（Plan bug #28-E，implementer 实测抓）**：
+- **#28-E gawk dynamic regex 转义**：v2.3 的 `$0 ~ "^## \\[" ver "\\]"` 在 gawk 5.x 下**实测 empty output**（警告 `escape sequence '\[' treated as plain '['`，gawk 对动态构造 regex 里的 `\[` 不识别转义反而降级为字符类）。**实测确认 fix**：双转义 `$0 ~ "^## \\\\[" ver "\\\\]"`（awk string 值 `\\[` 3 字符 → dynamic regex `\\[` → gawk 识别为 literal `[`）。Step 3 workflow + Step 5 dry-run 同步修。Controller 本地 bash 双路（原/修）验证过 output 差异
+
 **v2.3 修订（Plan bug #28 A+B+C+D，pre-dispatch 抓）**：
 - **#28-A paths**：Files/paths 全 `D:\江苏润盛\...`（master）→ worktree `D:\江苏润盛\.claude\worktrees\plan-0-foundation\...`（同 G5/G6 #26-B/#27-B）
 - **#28-B SHARED_SCHEMA_VERSION 格式冲突（严重）**：原 Step 1 代码块把 `SHARED_SCHEMA_VERSION` 从现有整数 `20260415`（DB schema 兼容版本，api/gw 启动校验）改为 semver 字符串 `"0.1.0"`，会破坏 `test_smoke.py` 3 个 assertion（`isinstance(int)` / `>20250000`）+ `tools/verify_schema_version.py` 语义 + api/gw 启动校验 + **作废 G2 刚落的 schema-version-guard**。**两个版本概念必须分离**：`__version__`（包 API semver, pyproject `version` 同步, tag `shared-v<ver>` 用）≠ `SHARED_SCHEMA_VERSION`（DB schema 兼容日期整数, breaking change bump, 运行时校验）→ Step 1 改为 **verify-only**（现状 `__init__.py` 已 export `SHARED_SCHEMA_VERSION` + `__version__`，无 edit；仅补 `__all__` 加 `"__version__"` 让双字段外部可导入）
-- **#28-C awk 范围 bug（confirmed 实测）**：`awk '/^## \[VER\]/,/^## \[/' | sed '$d'` 对最后一版场景输出**空**（start/end 同一行都匹配 `^## \[` → awk range 单行 → `sed '$d'` 删掉）。改状态 flag：`awk '/^## \[VER\]/{flag=1;next} flag && /^## \[/{flag=0} flag'`（跳过 header 行，停在下一版 header）
+- **#28-C awk 范围 bug（confirmed 实测）**：`awk '/^## \[VER\]/,/^## \[/' | sed '$d'` 对最后一版场景输出**空**（start/end 同一行都匹配 `^## \[` → awk range 单行 → `sed '$d'` 删掉）。改状态 flag：`awk '/^## \[VER\]/{flag=1;next} flag && /^## \[/{flag=0} flag'`（跳过 header 行，停在下一版 header）— **注**：v2.4 再 fix 此处 `\[` 转义细节，见 #28-E
 - **#28-D Step 7 强制执行**：原 plan 写"optional, can delay"。user 选 (a) — **真推 `shared-v0.1.0` tag 端到端验证 release workflow**（避免 Plan 1 引用时才发现 workflow bug）
 
 **两个版本概念总览**（#28-B 分离）：
@@ -5921,7 +5924,7 @@ jobs:
         run: |
           VER='${{ steps.version.outputs.VERSION }}'
           awk -v ver="$VER" '
-            $0 ~ "^## \\[" ver "\\]" {flag=1; next}
+            $0 ~ "^## \\\\[" ver "\\\\]" {flag=1; next}
             flag && /^## \[/ {flag=0}
             flag
           ' ruisheng-shared/CHANGELOG.md > /tmp/release-notes.md
@@ -5976,7 +5979,7 @@ Create `D:\江苏润盛\.claude\worktrees\plan-0-foundation\docs\RELEASE.md`:
 ```bash
 cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
 awk -v ver="0.1.0" '
-  $0 ~ "^## \\[" ver "\\]" {flag=1; next}
+  $0 ~ "^## \\\\[" ver "\\\\]" {flag=1; next}
   flag && /^## \[/ {flag=0}
   flag
 ' ruisheng-shared/CHANGELOG.md
