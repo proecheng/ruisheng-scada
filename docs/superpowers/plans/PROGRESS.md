@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage F 进行中（F1+F2 完成 2/6）**
+## 当前状态：Plan 0 **Stage F 进行中（F1+F2+F3 完成 3/6）**
 
-**最后更新**：2026-04-18（F2 落地：modbus_frames.py 6 函数 + 3 测试 CRC16 + 帧构造；F2 + pythonpath fix 合单 commit；CRC 算法独立核验 3 向量全对；**累计 D 9 + E 4 + F 4 = 17 个 plan bug** 全部 master 反向 fix）
+**最后更新**：2026-04-18（F3 落地：scenarios.py gen_normal_session 89 行；scapy IP/TCP/Raw 直通 wrpcap；runtime 独立核验 N=1/3/5/10 包数全对 + seed 可重复；pre-dispatch 首个无 bug task；review 期间发现 **Plan bug #18**（docstring `frames:` 宣告但代码不写 → v1.5 反向 fix 补齐 6 字段记录）；**Plan bug #19 candidate**（heartbeat gw→dev 反 IoT 常规，flag 为 spec v1.3.7 follow-up #8 等用户对 spec §A.5 判决）；**累计 D 9 + E 4 + F 5 = 18 个 plan bug** master 反向 fix，另 #19 等决策）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`0c79f0b feat(tools): ModBus RTU frame codec + CRC16 with test vectors`（F2）
+**最近 commit**（worktree）：`7bfa7a0 feat(tools): pcap scenarios (normal_session with register+poll+heartbeat)`（F3）
 **最新 tag**：`plan-0-stage-e-complete`（下次打 `plan-0-stage-f-complete` 要到 F6）
-**master 最新 commit**：`2e62eb8 fix(plan): F2 Plan bug #17` → **F2-post PROGRESS commit（即将推送）**
+**master 最新 commit**：`8114199 docs(progress): F2 complete` → **F3-post PROGRESS commit + #18 fix（即将推送）**
 **SHARED_SCHEMA_VERSION**：`20260415`（Stage F 纯工具包，不触 shared 模型）
-**测试状态**：**339 passed + 8 skipped**（F2 新增 3 测试，无回归；裸跑 324 + 8，15 alembic env-dep）
+**测试状态**：**339 passed + 8 skipped**（F3 无新测试，无回归；裸跑 324 + 8）
 
-**下一步**：**F3 — scenarios.py（scapy + 正常会话 pcap 生成）** — 派发前 pre-dispatch sanity check
+**下一步**：**F4 — typer CLI（`pcap-gen normal` 命令）** — ⚠ CJK 路径下 console script 仍会撞 .pth mbcs 问题，**需 pre-dispatch 评估 CLI 绕路方案**（`python -m pcap_gen.cli` / `PYTHONUTF8=1` / `UV_LINK_MODE=copy` / 或改 F5 脚本用 Python 直调 scenarios 不走 CLI）。**建议：派发 F4 前先与用户对齐方案**
 
 ---
 
@@ -54,6 +54,7 @@
 |---|---|---|---|
 | F1 | tools/pcap_gen 子包骨架 — pyproject.toml + src/pcap_gen/__init__.py | `ad5e441` | ✅ 3 files +129/-0（pyproject.toml 20 行 / __init__.py 3 行 / uv.lock 106 行）；**pre-dispatch 连抓 2 个 Plan bug**：#14 F2 CRC hex typo（`"0103000000020"+"2"` 实为 14 hex=7 bytes，CRC=0x528B 不是 0x0BC4 → master v1.1 `054b187`）+ #15 F5 dev_ser CJK ASCII 崩解（5 种中文 type 全坍缩为 3 个唯一名 → master v1.2 option B `5c2d86c` 改用 TYPE{i} ASCII）；**implementer BLOCKED 抓 Plan bug #16**（plan v1.2 pyproject.toml 缺 `[tool.uv.sources]` → uv 拒绝 workspace cross-ref → master v1.3 `a72422e` 加 `ruisheng-shared = { workspace = true }`）；implementer 遵守 memory `feedback_never_silently_modify_spec` 停下来报 BLOCKED，不静默改 plan；**最终验证**：`uv sync --all-packages` Resolved 68 packages / 9 个新包（pcap-gen 0.1.0 editable + scapy 2.7.0 + typer 0.24.1 + click/rich 等）/ pytest 336+8（15 alembic env-dependent，base 321+8 无回归）/ ruff clean / pre-commit 全绿（mypy 按 config 跳 tools/pcap_gen）；**combined review APPROVED 0/0/0**（byte-identical 匹配 plan v1.3 modulo ruff docstring 空行 canonical form）；**新 drift 记录**（非 F1 scope）：CJK 路径 + uv editable `.pth` mbcs 解码 → `uv run python -c "import pcap_gen"` 失败，`ruisheng_shared` 靠 pytest `pythonpath=["ruisheng-shared/src"]` 绕过，`pcap_gen` 未在 pythonpath → 即将触发 **Plan bug #17**（F2 测试 import 必炸）|
 | F2 | modbus_frames.py — CRC16 + 6 个帧构造函数 + 3 测试 + pythonpath fix | `0c79f0b` | ✅ 4 files +92/-1（pyproject.toml pythonpath 1 行 / modbus_frames.py 54 行 / tests/tools/__init__.py 0 / test_pcap_gen.py 38 行）；**controller 实测 probe 抓 Plan bug #17**（CJK 路径 uv editable .pth mbcs → `uv run python -c "import pcap_gen"` 失败，探测测试 `import pcap_gen` 在 pytest 也炸 ModuleNotFoundError → master v1.4 `2e62eb8` 加 F2 Step 0：root pyproject.toml `pythonpath` 追加 `tools/pcap_gen/src`）；implementer TDD 正确流程（Step 0 pythonpath → Step 1 test-first → Step 2 ModuleNotFoundError on `modbus_frames`（非 pcap_gen，证明 #17 修成功）→ Step 3 实现 → Step 4 3 passed → Step 5 单 commit 含 pythonpath）；**combined review APPROVED 0 Critical/0 Important/2 Minor**（reviewer 独立跑 CRC 算法 3 向量全对：`010300000002`=0x0BC4 ✓ / `''`=0xFFFF ✓ / `'00'`=0x40BF ✓；hand-verify 3 未直测 encoder byte layout 全对 9/8/8 bytes）；2 Minor：M1 3 个间接测试的 encoder 可补直测（F3 间接覆盖，Stage F 收尾候选）/ M2 encode_register_frame `[:24]` 静默截断过长 ser（spec A.4 固定 24，仁慈不严格）；**新 drift 记录**（非 F2 scope）：M3 `uv run pre-commit run` Windows 下 `/bin/bash not found`（本地 `git commit` 钩子 OK）/ M4 mypy isolated cwd 下 2 errors（canonical `mypy .` 根目录 clean） |
+| F3 | scenarios.py — scapy + `gen_normal_session` 生成"注册+N 轮询+心跳"pcap + expected.json | `7bfa7a0` | ✅ 1 file +89/-0；**pre-dispatch 首个无 bug task**（controller probe scapy import OK / wrpcap & rdpcap CJK 路径 roundtrip OK）；implementer 4 个透明 auto-fix drift：ruff B007 `i→_i` / UP017 `timezone.utc→UTC` / ruff format chain 单行压缩 / mypy `# type: ignore[attr-defined]` for scapy（非 import-untyped，scapy.all 走动态 `__getattr__`）；implementer flag 的 docstring drift **未静默改**（遵守 memory feedback_never_silently_modify_spec）；**combined review APPROVED 0/0/2**（reviewer 独立跑 N=1/3/5/10 包数全对 4/8/12/22 = 1+2N+1；seed=42 两次 identical / seed=100 different；方向审查 register/poll 匹配 plan，heartbeat gw→dev 反直觉）；发现 **2 个 plan bug candidate**：#18 F3 docstring `frames:` vs code 只写 `values` 不写 `frames` → **controller v1.5 反向 fix plan** 补齐 6 字段记录（`8114199` 后追加 commit）/ #19 heartbeat 方向 gw→dev vs IoT 常规 dev→gw → **flag 为 spec v1.3.7 follow-up #8**，不静默改，等用户对 spec §A.5 / §D.1 决策 |
 
 ---
 
@@ -264,7 +265,9 @@ Stage D 实施过程中累积的 spec 升级项（非阻塞，Stage E/F/G 或 Pl
 3. **§4.1 GRANT 通用规约补 SEQUENCES**（Plan v1.1 M4；D3 实施已落 `GRANT USAGE,SELECT ON ALL SEQUENCES` + `ALTER DEFAULT PRIVILEGES`）
 4. **§5.10 L1958-1960 摘除 `user_control_actions` hypertable 段**（Plan bug #5 Q3-B：保 UNIQUE(cmd_id) 幂等语义，TS hypertable 分区列要求冲突）
 5. **§4.2 `user_login_records` + §5.10 `alarm_records` compression 块改为 v1.3.7 TODO note**（Plan bug #6 Option A；等 TimescaleDB upstream issue #6827 修复 FORCE RLS 兼容 compression 后回填）
-6. **20 个 optional Minor 批量清理**（D5 留 3 + D6 留 2 + D7 留 2 + D8 留 5 + D9 留 8；含 `from __future__ import annotations` 缺漏、downgrade operational warning、USING/WITH CHECK 字面重复、`pytest.raises(Exception)` 过宽、alembic.command API 替代 subprocess 等）—— 归入未来 polishing pass
+6. （candidate）**pytest→seed workflow 顺序**：D9 `test_upgrade_down_and_up_again` downgrade 到 base → 跑 `task seed` 前需 `task migrate`；建议在 D9 测试末尾加 `alembic upgrade head` teardown（E3-E6 implementer 实测）
+7. （candidate）**spec §A.5 / §D.1 心跳方向**（Plan bug #19 candidate，F3 review 发现）：plan v1.4 scenarios.py `encode_heartbeat` 包从 server_ip→client_ip (gw→设备) 走向，与 IoT 常规 dev→gw keepalive 反。需 user 核对 spec §A.5 权威语义并决策：(A) 修 plan 心跳方向为 client_ip→server_ip；(B) spec §A.5 明确说 gw 下发心跳（保持 plan）；(C) 双向心跳（扩展 scenarios 签名）。**当前 F3 commit `7bfa7a0` 按 plan v1.4 写 gw→dev**，等 user 决定后 follow-up
+8. **20 个 optional Minor 批量清理**（D5 留 3 + D6 留 2 + D7 留 2 + D8 留 5 + D9 留 8；含 `from __future__ import annotations` 缺漏、downgrade operational warning、USING/WITH CHECK 字面重复、`pytest.raises(Exception)` 过宽、alembic.command API 替代 subprocess 等）—— 归入未来 polishing pass
 
 **执行方式**：建议另开 `docs/spec-v1.3.7` branch，批量改 spec `.md` + bump 文件头部 version 1.3.6 → 1.3.7，一次 PR merge master。与 Minor 清理 commit 分开，保证 spec 变更可追溯。
 

@@ -5032,10 +5032,17 @@ def gen_normal_session(
 
     同步输出 expected.json：
       {
+        "scenario": "normal_session",
         "dev_ser": "...",
-        "frames": [{"type": "register", ...}, {"type": "read", ...}, ...],
+        "slave": 1,
+        "frames_count": N,
         "values": [[v0, v1], [v2, v3], ...],
+        "generated_at": "<ISO8601 UTC>",
       }
+
+    Plan bug #18 fix (v1.5): 原 docstring 写 "frames": [...] 但代码未输出该字段，
+    docstring 与 runtime 自相矛盾。改为如实记录 6 个字段。若未来需要 frames 元信息，
+    另开 Plan 1 task 扩展 scenarios 签名 + expected.json schema。
     """
     rng = random.Random(seed)
     packets = []
