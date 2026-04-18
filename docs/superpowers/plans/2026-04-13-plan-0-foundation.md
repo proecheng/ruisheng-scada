@@ -5649,39 +5649,56 @@ git commit -m "ci: weekly mutation testing (mutmut) with 10% survival gate"
 ## Task G5：Plan 0 完成 README 补完 + 最终 tag
 
 **Files:**
-- Modify: `D:\江苏润盛\README.md`
+- Modify: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\README.md`
 
-- [ ] **Step 1：在 README 末尾追加 "状态"**
+**v2.1 修订（Plan bug #26 A+B+C，pre-dispatch 抓）**：
+- **#26-A**：README 现存 `## 后续阶段` 已列 Plan 1-4；原 plan "append `## 当前状态`" 会造成两节重复。user 选 **A1** — **替换** `## 后续阶段` → `## 当前状态`（带 checkbox，Plan 0 勾上），单一源。
+- **#26-B**：Step 2 `cd "D:\江苏润盛"`（master，只放 docs）无 pyproject/Taskfile/代码必炸 → 改 worktree `D:\江苏润盛\.claude\worktrees\plan-0-foundation`
+- **#26-C**：Step 3 缺 `git push origin plan-0-complete`，与 D10/E7/F6 6 个 tag 的 push 惯例不一致 → 补齐
+- **Stage G roadmap 提示**：G5 tag `plan-0-complete` 意为 **plan 主干完成**；G6（deps 迁移）+ G7（release workflow）属 post-complete 清理/增强，不阻塞 tag 语义。
 
-Append to `D:\江苏润盛\README.md`:
+- [ ] **Step 1：替换 README `## 后续阶段` 为 `## 当前状态`**
+
+Edit `D:\江苏润盛\.claude\worktrees\plan-0-foundation\README.md`，删除现有：
 ```markdown
+## 后续阶段
 
----
+- **Plan 1**: 采集网关 `ruisheng-gw`
+- **Plan 2**: Web API `ruisheng-api`
+- **Plan 3**: 前端 `ruisheng-web`
+- **Plan 4**: 部署与运维
+```
 
+替换为：
+```markdown
 ## 当前状态
 
-- [x] **Plan 0**：基础设施（本仓库的 `ruisheng-shared` + alembic + docker compose + pcap gen）
-- [ ] Plan 1：采集网关 `ruisheng-gw`
-- [ ] Plan 2：Web API `ruisheng-api`
-- [ ] Plan 3：前端 `ruisheng-web`
-- [ ] Plan 4：部署与运维
+- [x] **Plan 0**：基础设施（`ruisheng-shared` + alembic + docker compose + pcap gen）
+- [ ] **Plan 1**：采集网关 `ruisheng-gw`
+- [ ] **Plan 2**：Web API `ruisheng-api`
+- [ ] **Plan 3**：前端 `ruisheng-web`
+- [ ] **Plan 4**：部署与运维
 ```
 
-- [ ] **Step 2：最终验收**
+- [ ] **Step 2：最终验收**（worktree 内）
 
 ```bash
-cd "D:\江苏润盛"
-uv run task bootstrap   # 一键全跑
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+uv run task bootstrap   # 一键全跑（uv sync --all-packages + pre-commit install + docker up + pytest -x）
 uv run pytest tests/ --cov --cov-fail-under=90
 ```
-期望：全部通过。
+期望：bootstrap 全链通过 + 324 passed + 8 skipped + coverage ≥ 90%。
+**前置**：Docker Desktop 运行中（`task up` 需拉 PG+Redis 容器）。
 
-- [ ] **Step 3：打最终 tag**
+- [ ] **Step 3：打最终 tag + push**
 
 ```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
 git add README.md
 git commit -m "docs: mark Plan 0 complete in README"
-git tag -a plan-0-complete -m "Plan 0 Foundation fully complete (2026-04-13)"
+git push origin feature/plan-0-foundation
+git tag -a plan-0-complete -m "Plan 0 Foundation fully complete (2026-04-18)"
+git push origin plan-0-complete
 ```
 
 ---
