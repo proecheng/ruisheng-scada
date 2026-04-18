@@ -5,7 +5,7 @@
 
 ---
 
-## 当前状态：**Plan 1 — Stage A 3/8 ✅**（Plan 0 完整闭环 Stage G 7/7）
+## 当前状态：**Plan 1 — Stage A 4/8 ✅**（Plan 0 完整闭环 Stage G 7/7）
 
 **Plan 1 spec/plan 产出**（已落盘 master）：
 - Spec v2 `docs/superpowers/specs/2026-04-18-plan-1-gw-design.md`（644 行，`726f38b`）
@@ -18,8 +18,9 @@
 |---|---|---|---|
 | A1 | scaffold ruisheng-gw 子包 | `52b5d5e` | 4 files +241/-1：pyproject + __init__ + workspace.members 扩；pre-commit 全绿；ruff+mypy clean；Spec APPROVED + Quality APPROVED_WITH_MINORS 4 cosmetic；local CJK `.pth` drift = D1/F1 pre-existing |
 | A2 | main.py schema+alembic check + CLI + 3 单测 | `482a63a` | 5 files +111/-4；**5 Plan bug 3 轮 reverse-fix**（#1 `__main__.py` / #2 root pythonpath+testpaths / #3 `__init__.py` 包冲撞 + asyncio F401 / #4+#5 mypy_path + pre-commit exclude 对称）；342 passed + 8 skipped + 91.09%；Spec 8/8 + Quality 5 cosmetic/nit |
-| A3 | config.py pydantic-settings + --print-config + exit 3 | `36bc674` | 5 files +~100（config.py ~55 行 14 字段 + `@model_validator` D7 扫描 / `.env.example` 6 行 / test_config.py 3 tests / main.py --print-config handler / `.pre-commit-config.yaml` mypy deps 加 pydantic-settings）；**2 Plan bug 2 轮 reverse-fix**（#6 pydantic-settings `extra="forbid"` 不扫 os.environ → plan v1.5 `78764fd` 挂 `@model_validator(mode="before")` 手扫 os.environ 比对 `cls.model_fields` 未知键 raise ValueError("extra unknown GW_ env vars...")；#7 implementer v2 内含 `.pre-commit-config.yaml` mypy `additional_dependencies` 加 `pydantic-settings` root-cause → v1.6 retro 本次同步）；**345 passed + 8 skipped + coverage 91.09%**（gw 仍不计 coverage.source）；`--print-config` JSON 14 字段 exit 0；`GW_UNKNOWN_FIELD=oops` → exit 3 stderr `ERROR: config invalid: ... extra unknown GW_ env vars (v2 D7): ['GW_UNKNOWN_FIELD']`；Spec APPROVED 8/8 + Quality APPROVED_WITH_MINORS 3 cosmetic/nit（test 4 env setup 重复 / 2 test 未 scrub ambient env / `key[3:]` 魔数 3 可 `removeprefix("GW_")`）；ruff auto-fix 5 项 + ruff-format 白空间（A2 precedent） |
-| A4-A8 | logging / health / CI / docs / tag | — | pending（A4 下一步 structlog JSON + ctx vars）|
+| A3 | config.py pydantic-settings + --print-config + exit 3 | `36bc674` | 5 files；**2 Plan bug 2 轮 reverse-fix**（#6 `extra="forbid"` 不扫 os.environ → v1.5 `@model_validator(mode="before")` 手扫；#7 `.pre-commit-config.yaml` mypy deps 加 pydantic-settings → v1.6 retro）；345 + 8 skip + 91.09%；`--print-config` JSON exit 0；`GW_UNKNOWN_FIELD` → exit 3；Spec 8/8 + Quality 3 nit |
+| A4 | logging_setup.py structlog JSON + ctx vars | `5647fe4` | 4 files（logging_setup.py ~55 行 configure_logging + get_logger + `@contextmanager bind_context` 包 contextvars.bind/unbind / test_logging_setup.py 2 tests 验 JSON 必带 timestamp+level+event 与 context vars auto-inject / `docs/gw-logs.md` 3 table schema + 4 ctx vars + 9 standard event 名 / `.pre-commit-config.yaml` mypy deps 加 structlog）；**1 Plan bug retro**（#8 mypy hook `additional_dependencies` 加 structlog，与 #7 同源 → v1.7 retro）；implementer autonomy 应用 2 项：drop unused `tokens=bind_contextvars(...)` F841 + PLR2004 `== 42` noqa（A2/A3 precedent）；**347 passed + 8 skipped**；ruff + mypy clean；Spec APPROVED 8/8 + Quality APPROVED 8/8（零 minor） |
+| A5-A8 | health / CI / docs / tag | — | pending（A5 下一步 /health + /ready + /metrics）|
 
 ---
 
