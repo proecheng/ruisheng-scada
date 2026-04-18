@@ -284,53 +284,73 @@ D10 → D9 → D8 → D7 → D6 → D5 → D4 → D3 → D2 逐 step（alembic d
 
 1. 打开 `D:\江苏润盛`，重新连接 Claude Code session
 2. 指向本文件：让 Claude 读 `docs/superpowers/plans/PROGRESS.md` 恢复状态
-3. （可选）同步远端：`cd D:\江苏润盛\.claude\worktrees\plan-0-foundation && git pull`
-4. Claude 按本文件 "下一步待办" 接着从 **Stage D / Task D2（autogenerate 初始 schema）** 开始
-5. 继续 subagent-driven-development 流程（implementer → spec review → quality review）
+3. 同步远端：`cd D:\江苏润盛\.claude\worktrees\plan-0-foundation && git pull` + `cd D:\江苏润盛 && git pull`
+4. 重 export 环境变量（shell 会话不保留）：
+   ```bash
+   export RUISHENG_GW_PASSWORD='dev-gw-change-me'
+   export RUISHENG_API_PASSWORD='dev-api-change-me'
+   ```
+5. 确认 Docker stack 健康：`docker compose -f docker-compose.dev.yml ps`（worktree 目录下）
+6. Claude 接着从 **Stage E / Task E7（收尾 tag `plan-0-stage-e-complete`）** 开始
+7. 继续 subagent-driven-development 流程（pre-dispatch sanity check → implementer → spec review → quality review）
+
+### ⚠️ pytest → seed 工作流顺序注意
+
+E3-E6 implementer 实测发现：`test_upgrade_down_and_up_again`（D9 集成测试）跑完会把 DB 降到 base → 之后 `task seed` 会炸 "relation does not exist"。解决：pytest 之后若要跑 seed，需先 `uv run task migrate` 恢复 schema。此非 E3-E6 bug，属测试夹具 teardown 设计（alembic downgrade 无 upgrade 回补）。后续 Plan 1/2 若要 seed 驱动 fixture 可能要在 D9 那个测试后加 `alembic upgrade head` 收尾，**作为 spec v1.3.7 follow-up 第 7 项候选**。
 
 ---
 
-## 🔖 会话交接点（2026-04-17，Stage D 全部完成 — Stage E 准备）
+## 🔖 会话交接点（2026-04-18，Stage E 6/7 完成 — E7 准备）
 
-**当前位置**：Stage D **10/10 + tag ✅ 全部完成**，下一步 **Stage E（testcontainers + embedded PG + seeds，7 task）**
+**当前位置**：Stage E **E1 + E2 + E3-E6 ✅ 6/7**，下一步 **E7（收尾 tag `plan-0-stage-e-complete`）**
 
 **环境状态**（续跑直接用，无需重建）：
 - Docker stack 运行中（postgres + redis，均 healthy）
-- alembic 当前：`959079e6cae9 (head)` = D8 timescale hypertables
-- PG 库里已有：26 张表 + alembic_version + 2 角色 + GRANT + 3 PL/pgSQL 函数 + 13 trg_<table>_updated 触发器 + 3 scene 触发器 + 12 张表 FORCE RLS + 12 tenant_isolation policy + 3 张表 fillfactor + autovacuum tuning + **5 张 TimescaleDB hypertable（含 3 张复合 PK）+ 5 retention policy + 3 compression policy**
-- 环境变量（续跑时重新 export，shell 会话不保留）：
+- alembic 当前：`959079e6cae9 (head)` = D8 timescale hypertables（Stage E 无新迁移）
+- PG 库里已有：D8 schema（26 表 + 2 角色 + GRANT + 3 函数 + 16 触发器 + 12 FORCE RLS + 12 policy + 3 fillfactor/autovacuum + 5 hypertable + 5 retention + 3 compression + 3 复合 PK）+ **E3-E6 seed 数据**（wx_groups 'demo' × 1 + users × 2 + devices '60270012' × 1 + device_points × 2）
+- 如 pytest 后 DB 降到 base，需 `uv run task migrate` 恢复（见上文 workflow 注意）
+- 环境变量（每次新 shell export）：
   ```bash
   export RUISHENG_GW_PASSWORD='dev-gw-change-me'
   export RUISHENG_API_PASSWORD='dev-api-change-me'
   ```
-  值以 `.env.example` 为准；dev 直接用占位；生产走 secret manager
 
-**Stage D 收官成果（D0 → D10 全程累计）**：
-- **DB schema**：26 表 + 2 角色（ruisheng_gw BYPASSRLS / ruisheng_api 非）+ GRANT（含 SEQUENCES）+ 3 PL/pgSQL 函数（全 SECURITY INVOKER + search_path 硬绑）+ 16 触发器（13 trg_<table>_updated + 3 scene）+ 12 FORCE RLS + 12 tenant_isolation policy + 3 张表 fillfactor/autovacuum + 5 TimescaleDB hypertable + 5 retention + 3 compression + 3 复合 PK
-- **7 migration**（head `959079e6cae9`）+ **15 integration tests**（336 passed + 8 skipped + 11.38s）
-- **9 个 Plan bug** 全部 controller 反向 fix master：#1 D3 REVOKE PUBLIC / #2 D4 varchar 窄+插值剥 / #3 D5 updated_at 计数 17→13 / #4 D6 RLS 列 19→12 / #5 D8 FK→hypertable+PK 分区 / #6 D8 compression vs FORCE RLS / #7 D9 updated_at 断言 / #8 D9 devices NOT NULL+wx_groups 错表 / #9 D9 SQL alias `def` Python 关键字
-- **D10 纯文档 + tag**：tag `plan-0-stage-d-complete`（指向 worktree HEAD `02516f7`）pushed；PROGRESS 补 spec v1.3.7 follow-up 6 项 + Stage D 回滚 Runbook
-- **Process 收获**：controller pre-dispatch sanity check（ORM scan × 3 / live-DB probe × 1 / plan diff × 1）直接抓 5 个 Plan bug，省掉 5 轮 implementer；implementer BLOCKED 报告（D3 / D4 / D8#6 / D9#8 / D9#9）均按"不静默改"纪律执行；subagent-driven 每 task 双 review（spec + quality）全 APPROVED
+**Stage D 历史收官**（2026-04-17 完成，历史存档）：
+- **DB schema**：26 表 + 2 角色 + GRANT + 3 PL/pgSQL 函数 + 16 触发器 + 12 FORCE RLS + 5 hypertable（detail 见 Stage D 进度表）
+- **9 Plan bug** 全部 master 反向 fix（#1-#9）
+- **tag `plan-0-stage-d-complete`** 指向 worktree `02516f7`
 
-**下一步：Stage E — testcontainers + embedded PG + seeds（7 task）**
+**本次会话 Stage E 进展（E1 + E2 + E3-E6）**：
+1. ✅ **E1** (`d2b3482` + fixup `396b2e0`) — conftest 双轨 fixture；**Plan bug #10 pre-dispatch 抓**（Replace 会删 D9 fixture + session-scope async pitfall）→ master plan v1.1 fix `8a0cd8e`（Merge + function-scope）；双 review APPROVED；1 Important fixup（PLC0415 noqa）
+2. ✅ **E2** (`b295f8e`) — `tools/embedded_pg.py` stub 45 行 verbatim plan；async+sync 双 API NotImplementedError；review APPROVED 0/0/0；**首个 Stage E 无 plan bug 的 task**
+3. ✅ **E3-E6** (`e42f06b`, 6 文件 single commit) — seeds SQL × 4 + run_seeds.py + .pre-commit-config.yaml mypy deps；**3 个 Plan bug 连抓**：
+   - **#11** pre-dispatch：devices/device_points raw SQL INSERT 漏 NOT NULL 无 server_default 列（同 D9 #8）→ v1.1 `f0c5614`
+   - **#12** implementer live-DB：device_points 无 UQ 故 `ON CONFLICT DO NOTHING` no-op → v1.2 `08f12d2`（`WHERE NOT EXISTS` + `# type: ignore`）
+   - **#13** implementer pre-commit：mirrors-mypy 隔离 venv 缺 asyncpg → `import-not-found` → v1.3 `260729e`（pre-commit mypy deps 加 asyncpg）
+   - idempotency 双跑 counts 1/2/1/2 稳定；pre-commit 全绿；pytest 336+8 无回归
 
-**Spec/Plan 依据**：plan §Stage E；spec §3.6（种子数据策略）+ §7（CI/CD）
+**下一步：E7 — Stage E 收尾 tag + PROGRESS（纯文档 + tag，类 D10）**
 
-**Stage E 任务链（plan §Task E1-E7）**：
-| # | Title | 产出 |
+**Spec/Plan 依据**：plan §Task E7；spec 无相关依赖
+
+**E7 任务列表**（plan §Task E7 很简短）：
+1. **打 tag**：`git tag -a plan-0-stage-e-complete -m "Stage E: fixtures + embedded PG stub + seeds (E1 conftest dual-mode / E2 EmbeddedPostgres stub / E3-E6 seeds + run_seeds). 336 passed + 8 skipped. Plan bugs #10-#13 reverse-fixed."` + `git push origin plan-0-stage-e-complete`
+2. **master PROGRESS 更新**：Stage E 7/7 完成 + 状态翻页 + 更新仓库坐标
+3. **memory 更新**：`project_ruisheng_scada.md` 反映 Stage E 完结 + Stage F 作为下一步
+
+**E7 可附加（可选）**：
+- spec v1.3.7 follow-up 清单补第 7 项（pytest teardown 不恢复 schema）
+- Stage E 回滚 Runbook（可选，E1/E2 无 DB 状态改动，E3-E6 seed 可 `TRUNCATE` 或直接 alembic downgrade+upgrade）
+
+**Stage E 任务链（plan §Task E1-E7，以实际完成为准）**：
+| # | Title | 状态 |
 |---|---|---|
-| E1 | conftest.py 扩展 postgres/redis session fixture（embedded/container 双轨） | `tests/conftest.py` 重写 |
-| E2 | Embedded PG 包装（Windows 无 Docker fallback） | `tools/embedded_pg.py`（初版 stub） |
-| E3 | seeds/base.sql — 2 tenants + 3 users + 5 devices + 20 points | `alembic/seeds/base.sql` |
-| E4 | seeds 应用助手 `apply_seed.py` | 命令行 + conftest fixture |
-| E5 | pytest-xdist 并行 + 事务隔离 fixture | `tests/conftest.py` 增强 |
-| E6 | CI Linux 跑 testcontainers + artifact 上传 | `.github/workflows/ci.yml` |
-| E7 | Stage E 收尾 tag `plan-0-stage-e-complete` | tag + PROGRESS |
+| E1 | conftest.py 扩展（testcontainers/embedded 双轨 fixture） | ✅ `d2b3482` + fixup `396b2e0` |
+| E2 | Embedded PG 包装（stub） | ✅ `b295f8e` |
+| E3-E6 | seeds 4 SQL + run_seeds.py + pre-commit asyncpg | ✅ `e42f06b`（单 commit） |
+| E7 | Stage E 收尾 tag | **← 下一步** |
 
-**Stage E 前置确认**：
-- Docker stack 保持运行（D0 起已 up，D10 不触）
-- `tests/integration/*` D9 已落地（15 case + 3 engine fixture + seed_tenants），E1 conftest 扩展建议合并 D9 遗产
-- Plan §Task E1 建议的 PostgresContainer 用 `timescale/timescaledb:2.16.1-pg15`（含 TS 扩展，避免与 D0 不同构）
+**注意**：plan §Stage E 原本预设 E3/E4/E5/E6 各是独立 task（seeds/base.sql / apply_seed.py / pytest-xdist / CI Linux），但 v1.0 plan 其实把这 4 个合并为 "E3-E6 bundled"（§Task E3-E6 章节）——pytest-xdist 并行 + CI Linux 跑 testcontainers 在 v1.0 plan 里**未定义具体 task**。**建议 E7 结束后若要补足，可作为 Stage G 或 Plan 1 前置。当前 Plan 0 按"plan 原文 + E7 收尾"算 Stage E 完结。**
 
 **执行纪律**：
 - subagent-driven：每 task 1 implementer + 2 review（spec → quality）
