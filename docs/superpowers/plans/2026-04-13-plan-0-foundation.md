@@ -4641,6 +4641,11 @@ git commit -m "chore(tools): EmbeddedPostgres stub — full impl pending Q-E06"
 
 ## Task E3–E6：种子数据 SQL 文件 + 导入脚本
 
+> **v1.1 修订（2026-04-18，Plan bug #11 反向 fix）**：E5 `02_devices.sql` 和 E6 `03_device_points.sql` 的 INSERT 列清单漏 NOT NULL 无 `server_default` 列——D2 migration 只在 created_at/updated_at 上设了 `server_default`，其他 NOT NULL 列（devices 4 个 / device_points 5 个）的"ORM Python default"在**原生 SQL INSERT 路径不生效**（D9 Plan bug #8 同类问题，run_seeds.py 直接用 asyncpg 跑 SQL 字符串会炸 23502）。v1.1 SQL 补齐所有 NOT NULL 列，值匹配 ORM Python default 以保持语义一致。
+>
+> **devices 补 4 列**：`update_interval_decisec`=100 / `loss_count`=0 / `is_online`=false / `update_flag`=0
+> **device_points 补 5 列**：`point_ratio`=1.0 / `point_offset`=0.0 / `user_ratio`=1.0 / `user_point_offset`=0.0 / `show`=1
+
 **Files:**
 - Create: `D:\江苏润盛\seeds\00_wx_groups.sql`
 - Create: `D:\江苏润盛\seeds\01_users.sql`
@@ -4658,6 +4663,9 @@ ON CONFLICT (usr_group) DO NOTHING;
 
 ### E4: seeds/01_users.sql
 ```sql
+-- authority ∈ {'Administrators','GroupCompany','Company','User'}（ck_users_authority）
+-- user_name 匹配 ^1[3-9][0-9]{9}$（手机号）或 ^[a-zA-Z][a-zA-Z0-9_]{3,29}$（用户名）
+-- password_hash 当前仅 dev stub；生产由后端 bcrypt 计算
 INSERT INTO users (user_name, password_hash, authority, control_authority, usr_group)
 VALUES
   ('13800138000', '$2b$12$PLACEHOLDER_BCRYPT_HASH', 'Administrators', 3, 'demo'),
@@ -4665,19 +4673,32 @@ VALUES
 ON CONFLICT (user_name) DO NOTHING;
 ```
 
-### E5: seeds/02_devices.sql + 03_device_points.sql
+### E5: seeds/02_devices.sql
 ```sql
--- 02_devices.sql
-INSERT INTO devices (dev_number, dev_ser_number, modbus_addr, baud_rate, usr_group, administrators)
+-- v1.1 补全 NOT NULL 列：update_interval_decisec(100)/loss_count(0)/is_online(false)/update_flag(0)
+-- 原生 SQL INSERT 路径不走 ORM Python default，必须显式给值（D9 Plan bug #8 / E5 Plan bug #11 教训）
+-- CHECK: modbus_addr ∈ [1,247] / baud_rate ∈ {9600,19200,38400,57600,115200} / update_interval_decisec ∈ [10,1000]
+INSERT INTO devices (
+    dev_number, dev_ser_number, modbus_addr, baud_rate,
+    usr_group, administrators,
+    update_interval_decisec, loss_count, is_online, update_flag
+)
 VALUES
-  ('60270012', 'DEMO-SN-0001', 1, 9600, 'demo', '13800138000')
+  ('60270012', 'DEMO-SN-0001', 1, 9600, 'demo', '13800138000', 100, 0, FALSE, 0)
 ON CONFLICT (dev_number) DO NOTHING;
+```
 
--- 03_device_points.sql
-INSERT INTO device_points (dev_number, point_name, point_number, fun_code, dev_addr, value_type)
+### E6: seeds/03_device_points.sql
+```sql
+-- v1.1 补全 NOT NULL 列：point_ratio(1.0)/point_offset(0.0)/user_ratio(1.0)/user_point_offset(0.0)/show(1)
+-- CHECK: point_number ∈ [0,65535] / fun_code ∈ {1,2,3,4}
+INSERT INTO device_points (
+    dev_number, point_name, point_number, fun_code, dev_addr, value_type,
+    point_ratio, point_offset, user_ratio, user_point_offset, show
+)
 VALUES
-  ('60270012', 'temperature', 0, 3, 1, '字'),
-  ('60270012', 'pressure', 1, 3, 1, '字')
+  ('60270012', 'temperature', 0, 3, 1, '字', 1.0, 0.0, 1.0, 0.0, 1),
+  ('60270012', 'pressure',    1, 3, 1, '字', 1.0, 0.0, 1.0, 0.0, 1)
 ON CONFLICT DO NOTHING;
 ```
 
