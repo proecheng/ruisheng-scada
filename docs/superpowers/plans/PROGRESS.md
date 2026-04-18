@@ -5,7 +5,7 @@
 
 ---
 
-## 当前状态：**Plan 1 — Stage A 4/8 ✅**（Plan 0 完整闭环 Stage G 7/7）
+## 当前状态：**Plan 1 — Stage A 5/8 ✅**（Plan 0 完整闭环 Stage G 7/7）
 
 **Plan 1 spec/plan 产出**（已落盘 master）：
 - Spec v2 `docs/superpowers/specs/2026-04-18-plan-1-gw-design.md`（644 行，`726f38b`）
@@ -19,8 +19,9 @@
 | A1 | scaffold ruisheng-gw 子包 | `52b5d5e` | 4 files +241/-1：pyproject + __init__ + workspace.members 扩；pre-commit 全绿；ruff+mypy clean；Spec APPROVED + Quality APPROVED_WITH_MINORS 4 cosmetic；local CJK `.pth` drift = D1/F1 pre-existing |
 | A2 | main.py schema+alembic check + CLI + 3 单测 | `482a63a` | 5 files +111/-4；**5 Plan bug 3 轮 reverse-fix**（#1 `__main__.py` / #2 root pythonpath+testpaths / #3 `__init__.py` 包冲撞 + asyncio F401 / #4+#5 mypy_path + pre-commit exclude 对称）；342 passed + 8 skipped + 91.09%；Spec 8/8 + Quality 5 cosmetic/nit |
 | A3 | config.py pydantic-settings + --print-config + exit 3 | `36bc674` | 5 files；**2 Plan bug 2 轮 reverse-fix**（#6 `extra="forbid"` 不扫 os.environ → v1.5 `@model_validator(mode="before")` 手扫；#7 `.pre-commit-config.yaml` mypy deps 加 pydantic-settings → v1.6 retro）；345 + 8 skip + 91.09%；`--print-config` JSON exit 0；`GW_UNKNOWN_FIELD` → exit 3；Spec 8/8 + Quality 3 nit |
-| A4 | logging_setup.py structlog JSON + ctx vars | `5647fe4` | 4 files（logging_setup.py ~55 行 configure_logging + get_logger + `@contextmanager bind_context` 包 contextvars.bind/unbind / test_logging_setup.py 2 tests 验 JSON 必带 timestamp+level+event 与 context vars auto-inject / `docs/gw-logs.md` 3 table schema + 4 ctx vars + 9 standard event 名 / `.pre-commit-config.yaml` mypy deps 加 structlog）；**1 Plan bug retro**（#8 mypy hook `additional_dependencies` 加 structlog，与 #7 同源 → v1.7 retro）；implementer autonomy 应用 2 项：drop unused `tokens=bind_contextvars(...)` F841 + PLR2004 `== 42` noqa（A2/A3 precedent）；**347 passed + 8 skipped**；ruff + mypy clean；Spec APPROVED 8/8 + Quality APPROVED 8/8（零 minor） |
-| A5-A8 | health / CI / docs / tag | — | pending（A5 下一步 /health + /ready + /metrics）|
+| A4 | logging_setup.py structlog JSON + ctx vars | `5647fe4` | 4 files；**1 Plan bug retro**（#8 mypy deps 加 structlog → v1.7）；347 + 8 skip；Spec 8/8 + Quality 8/8 零 minor |
+| A5 | /health /ready /metrics aiohttp endpoints | `02dcfe4` | 3 files（health.py 67 行 `HealthState` dataclass 4 fields + 4 methods + `is_ready` 三判合取（db_ok + redis_ok + flush_fresh<5s） / `_health_handler` 200 `{"status":"alive"}` / `_ready_handler` 200 或 503 / `_metrics_handler` Prometheus text `# HELP` + `# TYPE gauge` + `ruisheng_gw_build_info{version="0.1.0"} 1` content_type text/plain;version=0.0.4 / `create_health_app` 注 3 GET route + state store / test_health.py 51 行 4 tests / `.pre-commit-config.yaml` mypy deps 加 aiohttp）；**1 Plan bug retro**（#9 mypy deps 加 aiohttp，与 #7/#8 同源 → v1.8 retro）；implementer autonomy 5 项（drop unused `field` import / `# noqa: ARG001` on unused request / PLR2004 noqa 4 处 HTTP status 200/503 / I001 auto-fix / `.pre-commit-config.yaml` mypy deps）；**351 passed + 8 skipped**（`alembic upgrade head` 后；9 integration fail + 6 error 是 pre-existing DB downgrade 状态非 A5 regression，controller 实测确认 post-upgrade 351）；ruff + mypy clean；Spec APPROVED 6/6 + Quality APPROVED_WITH_MINORS 2 nit（fixture `-> TestClient` 技术应 `AsyncIterator[TestClient]` / aiohttp 3.9 `NotAppKeyWarning` 建议用 `web.AppKey`，均非 blocker） |
+| A6-A8 | CI / docs / tag | — | pending（A6 下一步 test_startup.py 完整 exit code 断言 + gw-smoke CI job）|
 
 ---
 
