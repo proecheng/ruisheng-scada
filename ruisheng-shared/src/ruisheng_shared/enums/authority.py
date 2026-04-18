@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class Authority(str, Enum):
+class Authority(StrEnum):
     USER = "User"
     COMPANY = "Company"
     GROUP_COMPANY = "GroupCompany"

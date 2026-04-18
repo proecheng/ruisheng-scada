@@ -398,21 +398,21 @@ def test_waveform_docstring_mentions_stage_d() -> None:
 
 
 def test_init_exports_point_data_realtime() -> None:
-    from ruisheng_shared.models import PointDataRealtime as PDR
+    from ruisheng_shared import models as reexported_models
 
-    assert PDR is PointDataRealtime
+    assert reexported_models.PointDataRealtime is PointDataRealtime
 
 
 def test_init_exports_point_data_history() -> None:
-    from ruisheng_shared.models import PointDataHistory as PDH
+    from ruisheng_shared import models as reexported_models
 
-    assert PDH is PointDataHistory
+    assert reexported_models.PointDataHistory is PointDataHistory
 
 
 def test_init_exports_waveform_history() -> None:
-    from ruisheng_shared.models import WaveformHistory as WH
+    from ruisheng_shared import models as reexported_models
 
-    assert WH is WaveformHistory
+    assert reexported_models.WaveformHistory is WaveformHistory
 
 
 def test_init_all_contains_timeseries() -> None:

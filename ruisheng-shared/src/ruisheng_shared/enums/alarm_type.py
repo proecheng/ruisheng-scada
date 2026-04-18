@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class AlarmType(str, Enum):
+class AlarmType(StrEnum):
     """5 种告警判定类型。值直接存 DB，故用字符串常量。"""
 
     GT = ">"

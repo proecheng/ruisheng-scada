@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlStatus(str, Enum):
+class ControlStatus(StrEnum):
     PENDING = "pending"
     SUCCESS = "success"
     FAILED = "failed"
