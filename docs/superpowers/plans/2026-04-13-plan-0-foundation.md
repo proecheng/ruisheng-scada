@@ -5825,8 +5825,11 @@ git push origin feature/plan-0-foundation
 
 **目的：** ruisheng-shared 将被 Plan 1（gw）/ Plan 2（api）通过 `SHARED_SCHEMA_VERSION` 引用。Plan 0 完成时需要一个清晰的版本发布流程：semver bump + CHANGELOG + git tag + GitHub Release。**不做 PyPI publish**（私有仓）。
 
-**v2.4 修订（Plan bug #28-E，implementer 实测抓）**：
-- **#28-E gawk dynamic regex 转义**：v2.3 的 `$0 ~ "^## \\[" ver "\\]"` 在 gawk 5.x 下**实测 empty output**（警告 `escape sequence '\[' treated as plain '['`，gawk 对动态构造 regex 里的 `\[` 不识别转义反而降级为字符类）。**实测确认 fix**：双转义 `$0 ~ "^## \\\\[" ver "\\\\]"`（awk string 值 `\\[` 3 字符 → dynamic regex `\\[` → gawk 识别为 literal `[`）。Step 3 workflow + Step 5 dry-run 同步修。Controller 本地 bash 双路（原/修）验证过 output 差异
+**v2.5 修订（Plan bug #28-F，CI 实测抓）**：
+- **#28-F mawk vs gawk 分歧**：v2.4 `\\\\[` 在 **local gawk 5.x** 工作，但 GitHub Actions `ubuntu-latest` 默认 `/usr/bin/awk` = **mawk 1.3.x**，对同 pattern 仍输出空 → workflow run `24600246937` "Extract changelog section" 步 FAILED `::error::Empty release notes`。**彻底避坑方案 — 用 Python heredoc 替换整个 awk**（沿用 G4 mutation.yml precedent，跨所有 awk 实现免疫）。Step 3 workflow + Step 5 dry-run 同步切 Python。awk 双转义记录为失败方案（v2.4 → 归档）
+
+**v2.4 修订（Plan bug #28-E，implementer 实测抓）— 归档**：
+- **#28-E gawk dynamic regex 转义**：v2.3 的 `$0 ~ "^## \\[" ver "\\]"` 在 gawk 5.x 下**实测 empty output**（警告 `escape sequence '\[' treated as plain '['`，gawk 对动态构造 regex 里的 `\[` 不识别转义反而降级为字符类）。v2.4 双转义 `"\\\\["` 本地 gawk 通过但 CI mawk 仍失败 → 见 #28-F 彻底换 Python
 
 **v2.3 修订（Plan bug #28 A+B+C+D，pre-dispatch 抓）**：
 - **#28-A paths**：Files/paths 全 `D:\江苏润盛\...`（master）→ worktree `D:\江苏润盛\.claude\worktrees\plan-0-foundation\...`（同 G5/G6 #26-B/#27-B）
@@ -5923,11 +5926,21 @@ jobs:
         id: changelog
         run: |
           VER='${{ steps.version.outputs.VERSION }}'
-          awk -v ver="$VER" '
-            $0 ~ "^## \\\\[" ver "\\\\]" {flag=1; next}
-            flag && /^## \[/ {flag=0}
-            flag
-          ' ruisheng-shared/CHANGELOG.md > /tmp/release-notes.md
+          python - "$VER" <<'PY' > /tmp/release-notes.md
+          import sys
+          ver = sys.argv[1]
+          header = f"## [{ver}]"
+          in_section = False
+          for raw in open("ruisheng-shared/CHANGELOG.md", encoding="utf-8"):
+              line = raw.rstrip("\n")
+              if line.startswith(header):
+                  in_section = True
+                  continue
+              if in_section:
+                  if line.startswith("## ["):
+                      break
+                  print(line)
+          PY
           if [ ! -s /tmp/release-notes.md ]; then
             echo "::error::Empty release notes for version $VER — CHANGELOG missing section?"
             exit 1
@@ -5974,15 +5987,25 @@ Create `D:\江苏润盛\.claude\worktrees\plan-0-foundation\docs\RELEASE.md`:
 - **patch**：文档、测试、内部实现改动
 ```
 
-- [ ] **Step 5：本地 dry-run awk 提取**（#28-C 修正版）
+- [ ] **Step 5：本地 dry-run Python 提取**（v2.5，替换 awk，跨 mawk/gawk 免疫）
 
 ```bash
 cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
-awk -v ver="0.1.0" '
-  $0 ~ "^## \\\\[" ver "\\\\]" {flag=1; next}
-  flag && /^## \[/ {flag=0}
-  flag
-' ruisheng-shared/CHANGELOG.md
+python - "0.1.0" <<'PY'
+import sys
+ver = sys.argv[1]
+header = f"## [{ver}]"
+in_section = False
+for raw in open("ruisheng-shared/CHANGELOG.md", encoding="utf-8"):
+    line = raw.rstrip("\n")
+    if line.startswith(header):
+        in_section = True
+        continue
+    if in_section:
+        if line.startswith("## ["):
+            break
+        print(line)
+PY
 ```
 期望：输出 0.1.0 段的 Added 列表（`### Added` + bullet list），**非空**。
 
