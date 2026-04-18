@@ -4846,9 +4846,39 @@ git commit -m "feat(tools): pcap_gen package skeleton"
 ## Task F2：modbus_frames.py — CRC16 + 帧构造
 
 **Files:**
+- Modify: `D:\江苏润盛\pyproject.toml`（Plan bug #17 fix，pythonpath extend）
 - Create: `D:\江苏润盛\tools\pcap_gen\src\pcap_gen\modbus_frames.py`
 - Create: `D:\江苏润盛\tests\tools\__init__.py`（空）
 - Create: `D:\江苏润盛\tests\tools\test_pcap_gen.py`
+
+- [ ] **Step 0：Plan bug #17 fix — 扩展 pytest pythonpath**（v1.4 新增）
+
+> **背景（plan v1.4 2026-04-18 新增）**：Windows CJK 路径 `D:\江苏润盛\...` 下，uv editable install 生成的 `.pth` 文件走 mbcs 编码，但 `site.addsitedir` 读回时用 UTF-8 解码 → 路径注入静默失败。`ruisheng_shared` 在 A1 时靠 root `pyproject.toml` `[tool.pytest.ini_options] pythonpath = ["ruisheng-shared/src"]` 绕过；`pcap_gen` 未加入该列表 → F2 测试 `from pcap_gen.modbus_frames import ...` 必炸 ModuleNotFoundError（controller 已实测 probe 确认）。
+
+修改 `D:\江苏润盛\pyproject.toml` `[tool.pytest.ini_options]` 段：
+```diff
+ [tool.pytest.ini_options]
+ minversion = "8.0"
+ asyncio_mode = "auto"
+ testpaths = ["tests"]
+-pythonpath = ["ruisheng-shared/src"]
++pythonpath = ["ruisheng-shared/src", "tools/pcap_gen/src"]
+ addopts = "-ra --strict-markers --strict-config"
+```
+
+验证：
+```bash
+# F1 后应立即成功（无需等 F2 Step 3 modbus_frames.py 落地）：
+uv run python -c "
+import sys
+print('pcap_gen probe:', end=' ')
+import pcap_gen
+print(pcap_gen.__version__)
+"
+# 期望：pcap_gen probe: 0.1.0
+```
+
+**注意**：仅改这一行（pythonpath），其他 tool 段不动。commit 单独合入 Step 5 一起提（或允许本 Step 单独先 commit `chore(pytest): extend pythonpath for pcap_gen workspace member`，implementer 自行判断 — 但若单独 commit，Step 5 的 commit message 也要相应调整）。
 
 - [ ] **Step 1：测试 CRC + 注册帧构造**
 
