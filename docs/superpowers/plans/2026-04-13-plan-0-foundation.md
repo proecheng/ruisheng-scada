@@ -5211,11 +5211,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# CJK 路径绕路：把 tools/pcap_gen/src 加 sys.path（同 [tool.pytest.ini_options] 策略）
+# CJK 路径绕路：把需要的 editable 子包 src 加 sys.path（同 [tool.pytest.ini_options] 策略）
+# Plan bug #21 fix (v1.7)：v1.6 只加 tools/pcap_gen/src，但 scenarios.py → modbus_frames.py
+# 间接 import `ruisheng_shared.constants.protocol`，同样受 CJK .pth mbcs 影响，必须一起加。
+# 通用规则：CJK 路径下任何 script/test 需要的 in-repo editable 包，都必须 prepend 其 src 根。
 _REPO_ROOT = Path(__file__).resolve().parents[3]  # scripts/ → pcap_gen/ → tools/ → repo
-_PCAP_GEN_SRC = _REPO_ROOT / "tools" / "pcap_gen" / "src"
-if str(_PCAP_GEN_SRC) not in sys.path:
-    sys.path.insert(0, str(_PCAP_GEN_SRC))
+for _src_root in (
+    _REPO_ROOT / "tools" / "pcap_gen" / "src",
+    _REPO_ROOT / "ruisheng-shared" / "src",
+):
+    if str(_src_root) not in sys.path:
+        sys.path.insert(0, str(_src_root))
 
 from pcap_gen.scenarios import gen_normal_session  # noqa: E402
 
