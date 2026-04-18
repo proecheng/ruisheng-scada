@@ -7,7 +7,7 @@ readme = "README.md"
 license = { text = "Proprietary" }
 
 [tool.uv.workspace]
-members = ["ruisheng-shared", "tools/pcap_gen"]
+members = ["ruisheng-shared", "tools/pcap_gen", "ruisheng-gw"]
 
 [dependency-groups]
 dev = [
