@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage G 6/7 ✅ G1-G6 完成，G7 release workflow 待派**
+## 当前状态：Plan 0 **🎉 全部完成 ✅ Stage G 7/7（G1-G7）+ tag `plan-0-stage-g-complete` + `plan-0-complete` + `shared-v0.1.0`**
 
-**最后更新**：2026-04-18（G6 PEP 735 dependency-groups 迁移 + asyncpg 成功去显式 transitively via testcontainers[postgres] 0.31.0；Plan bug #27 A+B+C pre-dispatch 反向 fix plan；combined review 8 CP APPROVED 无 minor）
+**最后更新**：2026-04-18（G7 ruisheng-shared release workflow 端到端验证：workflow run `24600624203` GREEN + 真 GitHub Release `ruisheng-shared 0.1.0` 发布 non-draft；Plan bug #28 A+B+C+D+E+F 共 6 sub 全 master 反向 fix；Stage G 正式 7/7 收官 → **Plan 0 全部完成**）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`d2be630 chore(deps): migrate to PEP 735 dependency-groups; retry testcontainers extras`（2 文件：pyproject.toml +6/-6 + uv.lock 重新生成 +72/-74）
-**最新 tag**：**`plan-0-complete`** ✅（G5 推，Stage G tag 等 G7 收尾后的 plan-0-foundation 全部完成）
-**master 最新 commit**：`10ec51e fix(plan): G6 Plan bug #27 A+B+C pre-dispatch` → **本次 G6 完成 PROGRESS 更新 commit（即将推送）**
-**SHARED_SCHEMA_VERSION**：`20260415`（Stage G 全程不触 shared 模型）
-**测试状态**：**339 passed + 8 skipped + coverage 91.09% ≥ 90%**（G6 验证跑；无 `dev-dependencies` 弃用警告）
+**最近 commit**（worktree）：`4bd0726 fix(release): replace awk extraction with Python heredoc (mawk compatibility)`（前置 `12a97bb` G7 Step 1-6 / `d2be630` G6 / `66fb9c1` G5 / ...）
+**最新 tag**：**`plan-0-stage-g-complete`** ✅（Stage G 完结）+ **`plan-0-complete`** ✅（G5 推）+ **`shared-v0.1.0`** ✅（G7 推，真 GitHub Release 对应）
+**master 最新 commit**：`12e03b4 fix(plan): G7 Plan bug #28-F CI-caught — replace awk with Python heredoc` → **本次 G7 完成 PROGRESS 更新 commit（即将推送）**
+**SHARED_SCHEMA_VERSION**：`20260415`（Plan 0 全程不触 shared 业务模型；保留整数日期格式，与 pyproject semver `0.1.0` 分离）
+**测试状态**：**339 passed + 8 skipped + coverage 91.09% ≥ 90%**
 
-**下一步**：**G7（`ruisheng-shared` release workflow — semver + CHANGELOG + git tag + GitHub Release，不发 PyPI）** — 中型 task，派 implementer。完成即 Plan 0 Stage G 收官。
+**下一步**：**Plan 1（`ruisheng-gw` 采集网关）** — Plan 0 基础已就绪，可以正式开工网关实现。Plan 0 foundations 全部可消费：ruisheng-shared 0.1.0（ORM + enums + errors + validators + schemas）/ alembic 7 迁移 / docker-compose 开发栈 / CI 5 job + weekly mutation / pre-commit schema-version-guard / pcap_gen 15 corpus / 双轨 testcontainers+embedded_pg fixture。
 
 ---
 
@@ -116,6 +116,8 @@
 | G4 | `.github/workflows/mutation.yml` weekly mutmut + 10% survival gate | `163d377` | ✅ 1 file +38/-0（单文件新建，byte-identical plan v2.0 yaml 块）；**Plan bug #25 A+B pre-dispatch**：#25-A plan v1.x `uv sync` 应为 `uv sync --all-packages`（同 G1 #22-A 回归）；#25-B 原 "Fail if survival rate > 10%" 步 Python 字面 `[...]` 省略号 + `alive`/`total` 从未更新 → `ZeroDivisionError`，照跑必炸 → **user 选 Option A**：`uv sync --all-packages` + 改 heredoc 真解析 `mutmut results` 的 `survived/killed/timeout/suspicious (N)` 节头 + total=0 → exit 0（首次/全 skip 中性保护）→ master plan v2.0 fix `ef33cda`；implementer 报告 yaml parse OK / Python py_compile OK / pre-commit 全过；**combined review APPROVED**（独立 subagent）：CP1 diff plan v2.0 byte-identical / CP2 yaml safe_load silent / **CP3 3 fixture 独立验证**：A（50 killed 0 survived）exit=0 ✓ / B（11/100 survived = 11% > 10%）exit=1 ✓ / C（空输出 total=0）exit=0 中性 ✓ / CP4 cron `0 2 * * 0` = Sun 10:00 CST 与 ci.yml 无冲突 / CP5 yaml 结构合理（checkout@v4 + setup-uv@v3 一致） / CP6 无新 plan bug；2 Minor 非阻塞（M1 `subprocess.check_output` 未 handle `CalledProcessError` → 首次 cache 空场景抛 traceback，红信号等同，低优；M2 `uv pip install mutmut` ad hoc vs 加 dev dep — **匹配 plan，不擅改**，可 G6 一并）；**累计 Plan bug D 9 + E 4 + F 7 + G 4 = 24** |
 | G5 | Plan 0 完成 README 补完 + 最终 tag `plan-0-complete` | `66fb9c1` + tag `plan-0-complete` | ✅ 1 file +6/-5（worktree README.md）；**Plan bug #26 A+B+C pre-dispatch**：#26-A README 已有 `## 后续阶段` 列 Plan 1-4，plan 原写"append `## 当前状态`" 会重复 → **user 选 A1 替换**（带 checkbox Plan 0 ✓ / Plan 1-4 ☐，单一源）；#26-B Step 2 `cd "D:\江苏润盛"`（master docs-only）错 → worktree；#26-C tag 缺 `git push origin plan-0-complete`（与 D10/E7/F6 6 tag 惯例不一致）→ master plan v2.1 fix `b6904ab`；**controller 直接操作**（类 D10/E7/F6 纯文档+tag 模式，无 implementer 派发）；**最终验收** `uv run pytest tests/ --cov --cov-fail-under=90` → **339 passed + 8 skipped + coverage 91.09%** ✅（较 PROGRESS 之前 324 高出 15 = D9 integration 测试在 Docker+env 就绪场景实跑，非回归；plan Step 2 `task bootstrap` 在 `pre-commit install` 踩 Windows `/bin/bash not found` **已记录 G2/F2 review 在案**，绕过直接跑 pytest 不阻塞）；**tag `plan-0-complete` annotated 消息含**：Plan 0 主干 G1-G5 完成（G6/G7 属 post-complete）+ 资产清点（monorepo+shared 23 表 ORM / alembic 7 迁移 head `959079e6cae9` / DB 26 表+2 角色+3 PL/pgSQL+16 触发器+12 FORCE RLS+5 hypertable / seeds 4 SQL / pcap_gen 4 文件 / CI 5 job + weekly mutation / pre-commit 含双模式 schema-version-guard / 339+8 coverage 91.09% / docs README+CONTRIBUTING+ARCHITECTURE） + G5 前置 commit 链（66fb9c1 + 163d377 + e302dab + 33d9b27 + ecfa611+5c19435）；**累计 Plan bug D 9 + E 4 + F 7 + G 5 = 25** |
 | G6 | 技术债清理：`[tool.uv] dev-dependencies` → `[dependency-groups].dev`（PEP 735）+ asyncpg transitive | `d2be630` | ✅ 2 files（pyproject.toml +6/-6 + uv.lock +72/-74 重新生成）；**Plan bug #27 A+B+C pre-dispatch**：#27-A 原 Step 3 "在 `[project].dependencies` 里把 asyncpg 注释掉" 前提错误（根 pyproject.toml 无此块，所有依赖在 `[tool.uv].dev-dependencies` 14 条） → rewrite Step 3 为"在新 `[dependency-groups].dev` 列表注释"；#27-B 文件路径 master → worktree（同 #26-B）；#27-C CI `uv sync --all-packages` 无 `--group` 标志，需 implementer **实测** `[dependency-groups].dev` 在 uv 0.4.30+ 是否特殊默认装（若不装则 Step 6 要改 ci.yml 5 处）→ master plan v2.2 fix `10ec51e`（verbatim-copy 14 条 dep 入 Step 2 替换块 + worktree 路径 + #27-C 实测分支）；**implementer 执行**：Step 3 asyncpg 成功去显式（testcontainers[postgres,redis]>=4.7 transitively 拉入 asyncpg 0.31.0）；Step 6 **no-op**（uv 0.11.2 `uv sync --all-packages` 自动装 `[dependency-groups].dev`，`ruff 0.15.11` / `mypy 1.20.1` / `pytest 9.0.3` / `alembic 1.18.4` / `pre-commit 4.5.1` 全可用）；**combined review 8 CP APPROVED 无 minor**（独立 subagent）：CP1 pyproject diff 2 处唯一改动 + `[tool.uv.workspace]` 保留 / CP2 弃用警告消失 / CP3 asyncpg+testcontainers.postgres+run_seeds.py 三路 import 全绿 + uv.lock 确认 transitive 非直接依赖 / CP4 5 工具全可用 / CP5 339+8 coverage 91.09% / CP6 ci.yml 未触 / CP7 无残留 pyproject.toml.bak / CP8 无新 plan bug；**累计 Plan bug D 9 + E 4 + F 7 + G 6 = 26** |
+| G7 | `ruisheng-shared` release workflow（CHANGELOG + workflow + docs/RELEASE + 真 tag push → GitHub Release） | `12a97bb` + fix `4bd0726` + tag `shared-v0.1.0` + **真 GitHub Release** | ✅ 4 文件（CHANGELOG.md 17 行 / release-shared.yml 最终 53 行 / docs/RELEASE.md 25 行 / `__init__.py` +1/-1 仅 `__all__` 补 `"__version__"`）；**Plan bug #28 共 6 sub**：#28-A paths master→worktree / **#28-B（严重）** 原 Step 1 要求把 `SHARED_SCHEMA_VERSION int 20260415` → `"0.1.0"` 会破坏 test_smoke 3 assertion + G2 schema-version-guard 作废，rewrite 为**两版本字段分离**（`__version__` semver 供 tag/release 用；`SHARED_SCHEMA_VERSION` int 日期供运行时 schema 兼容校验）/ #28-C awk 范围 bug（start/end 同一行 → 单行 → sed '$d' 删空），改状态 flag / #28-D Step 7 强制真推 tag（避免 Plan 1 引用时才暴露 bug）/ **#28-E** implementer 实测 gawk dynamic regex `\[` 被降级，双转义 `\\\\[` 本地 gawk pass / **#28-F CI 首次真跑** (run `24600246937` FAILED) 暴露 GitHub Actions ubuntu-latest `/usr/bin/awk` = **mawk 1.3.x**，`\\\\[` 仍拒绝 → user 选 A+(i)，彻底换 **Python heredoc**（沿用 G4 mutation.yml precedent 跨所有 awk 实现免疫）+ 删 broken tag 重推；master plan v2.3→2.4→2.5 三次 fix `cb73de0`/`b34cf20`/`12e03b4`；**最终验证 端到端 GREEN**：retag 后 workflow run `24600624203` completed success 9s，5 plan step 全 ✓（checkout / Extract version / Verify pyproject / Extract changelog / Create GitHub Release），真 GitHub Release `ruisheng-shared 0.1.0` published non-draft，body 含 5 bullet + SHARED_SCHEMA_VERSION 行 UTF-8 CJK 正确；advisory: Node.js 20 deprecation for checkout@v4/action-gh-release@v2（2026-06-02 强制迁移，Plan 1 refresh 时一并）；**累计 Plan bug D 9 + E 4 + F 7 + G 7 = 27**（G5 #26 + G6 #27 + G7 #28 以 "sub-count 计为 1 个 plan bug" 统计）|
+| **Stage G ✅ 7/7 完结** | tag `plan-0-stage-g-complete` → `4bd0726` | ✅ controller 直接打 tag；annotated 消息含 Stage G 全部 7 task 清点 + Stage G 累计 7 个 plan bug 回溯（#22-#28 含 sub）；Plan 0 **三个最终 tag 同 branch**：`plan-0-stage-g-complete`（本）+ `plan-0-complete`（G5）+ `shared-v0.1.0`（G7）|
 
 ---
 
@@ -124,10 +126,10 @@
 - **GitHub**：https://github.com/proecheng/ruisheng-scada （Private，账号 proecheng）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **master 最新 commit**：`10ec51e fix(plan): G6 Plan bug #27 A+B+C pre-dispatch` → **本次 G6 完成 PROGRESS 更新 commit（即将推送）**
-- **worktree 实施分支最新 commit**：`d2be630 chore(deps): migrate to PEP 735 dependency-groups`（前置 `66fb9c1` G5 README / `163d377` G4 / `e302dab` G3 / `33d9b27` G2 / `5c19435` G1 lint / `ecfa611` G1 ci.yml）
-- **alembic current**：`959079e6cae9 (head)` — D8 migration（G1-G6 无新迁移）
-- **已 push 的 tag**（7 个）：`plan-0-stage-a-complete` / `...-b-...` / `...-c-...` / `...-d-...` / `...-e-...` / `...-f-...` + **`plan-0-complete`**（G5 新增）
+- **master 最新 commit**：`12e03b4 fix(plan): G7 Plan bug #28-F CI-caught — replace awk with Python heredoc` → **本次 G7 完成 PROGRESS 更新 commit（即将推送）**
+- **worktree 实施分支最新 commit**：`4bd0726 fix(release): replace awk extraction with Python heredoc (mawk compatibility)`（前置 `12a97bb` G7 Step 1-6 / `d2be630` G6 / `66fb9c1` G5 / ...）
+- **alembic current**：`959079e6cae9 (head)` — D8 migration（G1-G7 无新迁移）
+- **已 push 的 tag（9 个）**：`plan-0-stage-a-complete` / `...-b-...` / `...-c-...` / `...-d-...` / `...-e-...` / `...-f-...` / **`...-g-complete`**（本次 G7 新增）+ **`plan-0-complete`**（G5 新增）+ **`shared-v0.1.0`**（G7 新增，附 GitHub Release）
 - **两个 worktree**：
   - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
   - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation（实际代码）
