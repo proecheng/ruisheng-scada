@@ -31,11 +31,21 @@ jobs:
         id: changelog
         run: |
           VER='${{ steps.version.outputs.VERSION }}'
-          awk -v ver="$VER" '
-            $0 ~ "^## \\\\[" ver "\\\\]" {flag=1; next}
-            flag && /^## \[/ {flag=0}
-            flag
-          ' ruisheng-shared/CHANGELOG.md > /tmp/release-notes.md
+          python - "$VER" <<'PY' > /tmp/release-notes.md
+          import sys
+          ver = sys.argv[1]
+          header = f"## [{ver}]"
+          in_section = False
+          for raw in open("ruisheng-shared/CHANGELOG.md", encoding="utf-8"):
+              line = raw.rstrip("\n")
+              if line.startswith(header):
+                  in_section = True
+                  continue
+              if in_section:
+                  if line.startswith("## ["):
+                      break
+                  print(line)
+          PY
           if [ ! -s /tmp/release-notes.md ]; then
             echo "::error::Empty release notes for version $VER — CHANGELOG missing section?"
             exit 1
