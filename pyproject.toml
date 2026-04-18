@@ -9,8 +9,8 @@ license = { text = "Proprietary" }
 [tool.uv.workspace]
 members = ["ruisheng-shared", "tools/pcap_gen"]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
   "pytest-cov>=5.0",
@@ -21,7 +21,7 @@ dev-dependencies = [
   "pydantic>=2.7",
   "pre-commit>=3.7",
   "testcontainers[postgres,redis]>=4.7",
-  "asyncpg>=0.29",
+  # "asyncpg>=0.29",  # G6: retry transitive via testcontainers[postgres]
   "taskipy>=1.13",
   "fakeredis>=2.23",
   "alembic>=1.13",
