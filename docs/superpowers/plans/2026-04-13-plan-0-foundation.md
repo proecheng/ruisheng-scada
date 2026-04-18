@@ -5707,64 +5707,116 @@ git push origin plan-0-complete
 
 **目的：** Stage A 用了 uv 已弃用的 `[tool.uv] dev-dependencies` 写法（每次 `uv sync` 报 warning）。PEP 735 `[dependency-groups]` 是 uv 新推荐写法。同时借此根治 Stage A 遗留的 `testcontainers[postgres]` extra 解析问题（当时靠显式加 `asyncpg` 绕过）。
 
-**Files：**
-- Modify: `D:\江苏润盛\pyproject.toml`
-- Modify: `D:\江苏润盛\uv.lock`
-- Modify: `D:\江苏润盛\.github\workflows\ci.yml`（若 sync 命令需改为 `--group dev`）
+**v2.2 修订（Plan bug #27 A+B+C，pre-dispatch 抓）**：
+- **#27-A**：原 Step 3 "在 `[project]` 的 `dependencies` 里把 `asyncpg` 注释掉" — **前提错误**，worktree 根 pyproject.toml 的 `[project]` 段只有 name/version/description 等 metadata，**没有 `dependencies` 块**；所有依赖（含 asyncpg）都在 `[tool.uv] dev-dependencies` 14 条里。修正：Step 3 改为"在 Step 2 新建的 `[dependency-groups].dev` 列表里把 asyncpg 注释掉"
+- **#27-B**：Files/paths `D:\江苏润盛\...`（master 只放 docs）全错 → worktree `D:\江苏润盛\.claude\worktrees\plan-0-foundation\...`（同 G5 #26-B）
+- **#27-C**：CI `ci.yml` 5 处 `uv sync --all-packages`（无 `--group` 标志）。PEP 735 `[dependency-groups].dev` 在 uv 0.4.30+ 特殊默认装，但需 implementer **实测确认**：Step 5 跑 pytest 前先验 `ruff/mypy/pytest/testcontainers` 可用；若缺则 Step 6 给 5 job 加 `--group dev`（或 `--all-groups`），否则 Step 6 保持 no-op
+- **辅助提示**：`tools/run_seeds.py` `import asyncpg` 是运行时依赖（非仅 test），若 testcontainers[postgres] 不带 asyncpg，原有 Step 3 fallback 分支（保留 asyncpg 显式）适用
+
+**Files（worktree）：**
+- Modify: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\pyproject.toml`
+- Modify: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\uv.lock`（由 `uv sync` 重新生成）
+- Modify: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\.github\workflows\ci.yml`（仅当 #27-C 实测需要时）
 
 - [ ] **Step 1：备份当前 pyproject.toml**
 
 ```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
 cp pyproject.toml pyproject.toml.bak
 ```
 
-- [ ] **Step 2：把 `[tool.uv] dev-dependencies` 块改为 `[dependency-groups] dev`**
+- [ ] **Step 2：把 `[tool.uv] dev-dependencies` 块改为 `[dependency-groups].dev`**
 
-Edit `D:\江苏润盛\pyproject.toml`，删除：
+Edit `D:\江苏润盛\.claude\worktrees\plan-0-foundation\pyproject.toml`，删除现有（line 12-28）：
 ```toml
 [tool.uv]
-dev-dependencies = [ ... ]
+dev-dependencies = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
+  "pytest-rerunfailures>=14.0",
+  "hypothesis>=6.100",
+  "ruff>=0.5",
+  "mypy>=1.11",
+  "pydantic>=2.7",
+  "pre-commit>=3.7",
+  "testcontainers[postgres,redis]>=4.7",
+  "asyncpg>=0.29",
+  "taskipy>=1.13",
+  "fakeredis>=2.23",
+  "alembic>=1.13",
+]
 ```
 替换为：
 ```toml
 [dependency-groups]
 dev = [
-    # 把原 dev-dependencies 的条目完整复制到这里
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
+  "pytest-rerunfailures>=14.0",
+  "hypothesis>=6.100",
+  "ruff>=0.5",
+  "mypy>=1.11",
+  "pydantic>=2.7",
+  "pre-commit>=3.7",
+  "testcontainers[postgres,redis]>=4.7",
+  "asyncpg>=0.29",
+  "taskipy>=1.13",
+  "fakeredis>=2.23",
+  "alembic>=1.13",
 ]
 ```
 
-- [ ] **Step 3：尝试去掉显式 `asyncpg`**
+**保留 `[tool.uv.workspace]` 段**（workspace members 定义不可动）。
 
-在 `[project]` 的 `dependencies` 里先把 `asyncpg` 注释掉，保留 `testcontainers[postgres]`。
+- [ ] **Step 3：尝试去掉显式 `asyncpg`**（在新 `[dependency-groups].dev` 里）
+
+在 Step 2 新建的 `[dependency-groups].dev` 列表里把 `"asyncpg>=0.29",` 注释掉：
+```toml
+# "asyncpg>=0.29",  # G6: 尝试由 testcontainers[postgres] 间接带入
+```
+**保留 `testcontainers[postgres,redis]>=4.7`** 不动。
 
 - [ ] **Step 4：重新解析 + 测试 testcontainers extra**
 
 ```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
 rm uv.lock
-uv sync --group dev
+uv sync --all-packages   # 或 uv sync --all-packages --group dev，按 #27-C 实测
 uv run python -c "import testcontainers.postgres; import asyncpg; print('ok')"
+uv run python -c "import tools.run_seeds" 2>/dev/null || uv run python tools/run_seeds.py --help 2>&1 | head -3   # 运行时 asyncpg 可 import
 ```
-期望：无警告；`asyncpg` 能被间接拉入（通过 testcontainers[postgres]）。
+期望：无 `dev-dependencies` 弃用警告；`asyncpg` 能被间接拉入（通过 testcontainers[postgres]）。
 
-若 testcontainers 仍未把 asyncpg 带进来 → 保留 `asyncpg` 显式依赖（只做 dependency-groups 迁移部分即可）。
+**若 `import asyncpg` 失败** → 回退：把 Step 3 注释恢复（保留 asyncpg 显式，只做 dependency-groups 迁移部分），重跑 Step 4。
 
-- [ ] **Step 5：跑全量测试**
+- [ ] **Step 5：跑全量测试 + 工具可用性实测**
 
 ```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+export RUISHENG_GW_PASSWORD='dev-gw-change-me'
+export RUISHENG_API_PASSWORD='dev-api-change-me'
+# 先验工具可用（#27-C 关键检查）
+uv run ruff --version && uv run mypy --version && uv run pytest --version
+# 再跑全量
 uv run pytest tests/ --cov --cov-fail-under=90
 ```
-期望：全部通过；无 dev-dependencies 弃用警告。
+期望：ruff/mypy/pytest 全装可用（若缺 → 记录 #27-C 需要 `--group dev`）；**339 passed + 8 skipped + coverage ≥ 90%**；**无 `dev-dependencies` 弃用警告**。
 
-- [ ] **Step 6：更新 CI（如需要）**
+- [ ] **Step 6：更新 CI（仅当 #27-C 实测需要）**
 
-检查 `.github/workflows/ci.yml` 的 `uv sync` 命令，若仍用旧写法需改为 `uv sync --group dev`（或 `--all-groups`，视 CI job 需求）。
+若 Step 5 验出 `uv sync --all-packages` 不带 dev 组 → 改 `.github/workflows/ci.yml` 5 处 `uv sync --all-packages` → `uv sync --all-packages --group dev`（或 `--all-groups`）。
+若 Step 5 工具齐全 → **本步 no-op，不改 ci.yml**。
 
 - [ ] **Step 7：删除备份 + Commit**
 
 ```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
 rm pyproject.toml.bak
-git add pyproject.toml uv.lock .github/workflows/ci.yml
+git add pyproject.toml uv.lock   # ci.yml 仅当 Step 6 改了才 add
 git commit -m "chore(deps): migrate to PEP 735 dependency-groups; retry testcontainers extras"
+git push origin feature/plan-0-foundation
 ```
 
 ---
