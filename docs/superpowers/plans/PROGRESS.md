@@ -5,7 +5,24 @@
 
 ---
 
-## 当前状态：Plan 0 **🎉 全部完成 ✅ Stage G 7/7（G1-G7）+ tag `plan-0-stage-g-complete` + `plan-0-complete` + `shared-v0.1.0`**
+## 当前状态：**Plan 1 启动 — Stage A 1/8 ✅**（Plan 0 完整闭环 Stage G 7/7）
+
+**Plan 1 spec/plan 产出**（已落盘 master）：
+- Spec v2 `docs/superpowers/specs/2026-04-18-plan-1-gw-design.md`（644 行，`726f38b`）
+- Plan 文件 `docs/superpowers/plans/2026-04-18-plan-1-gw.md`（**6039 行**，`d8157e8`）
+- 5-role adversarial review 回应 22 P0 + 30 P1；7 Stage / ~48 task / subagent-driven 执行
+
+**Plan 1 Stage A 进度**（A1 done 2026-04-18 晚）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| A1 | scaffold ruisheng-gw 子包 | `52b5d5e` | 4 files +241/-1：pyproject + __init__ + workspace.members 扩；pre-commit 全绿；ruff+mypy clean；Spec APPROVED + Quality APPROVED_WITH_MINORS 4 cosmetic；local CJK `.pth` drift = D1/F1 pre-existing |
+| A2 | main.py schema+alembic check | — | ← **下一步**（新 session 起跑）|
+| A3-A8 | config / logging / health / CI / docs / tag | — | pending |
+
+---
+
+## Plan 0 历史闭环
 
 **最后更新**：2026-04-18（G7 ruisheng-shared release workflow 端到端验证：workflow run `24600624203` GREEN + 真 GitHub Release `ruisheng-shared 0.1.0` 发布 non-draft；Plan bug #28 A+B+C+D+E+F 共 6 sub 全 master 反向 fix；Stage G 正式 7/7 收官 → **Plan 0 全部完成**）
 **工作分支**：`feature/plan-0-foundation`
