@@ -9,6 +9,9 @@ dependencies = [
   "ruisheng-shared",
 ]
 
+[project.scripts]
+pcap-gen = "pcap_gen.cli:app"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
