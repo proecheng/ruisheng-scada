@@ -63,6 +63,19 @@ def main() -> int:
         print("ok: shared schema version matches")
         return 0
 
+    if args.print_config:
+        from pydantic import ValidationError  # noqa: PLC0415
+
+        from ruisheng_gw.config import Config  # noqa: PLC0415
+
+        try:
+            cfg = Config()
+        except ValidationError as e:
+            print(f"ERROR: config invalid: {e}", file=sys.stderr)
+            return 3
+        print(cfg.model_dump_json(indent=2))
+        return 0
+
     # TODO A4+ — structlog + health + run_server (后续 task)
     print("ruisheng-gw main not yet fully implemented (Stage A4+)", file=sys.stderr)
     return 0
