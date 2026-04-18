@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage G 5/7 ✅ G1-G5 完成，`plan-0-complete` tag 已推**
+## 当前状态：Plan 0 **Stage G 6/7 ✅ G1-G6 完成，G7 release workflow 待派**
 
-**最后更新**：2026-04-18（G5 README 补完 + `plan-0-complete` 最终 tag；Plan bug #26 A+B+C pre-dispatch 反向 fix plan；339 passed + 8 skipped + coverage 91.09% 最终验收）
+**最后更新**：2026-04-18（G6 PEP 735 dependency-groups 迁移 + asyncpg 成功去显式 transitively via testcontainers[postgres] 0.31.0；Plan bug #27 A+B+C pre-dispatch 反向 fix plan；combined review 8 CP APPROVED 无 minor）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`66fb9c1 docs: mark Plan 0 complete in README`（单文件 README.md 替换"后续阶段"为"当前状态" checkbox）
-**最新 tag**：**`plan-0-complete`** ✅（Plan 0 主干完成，G6/G7 属 post-complete cleanup/enhancement）
-**master 最新 commit**：`b6904ab fix(plan): G5 Plan bug #26 A+B+C pre-dispatch` → **本次 G5 完成 PROGRESS 更新 commit（即将推送）**
+**最近 commit**（worktree）：`d2be630 chore(deps): migrate to PEP 735 dependency-groups; retry testcontainers extras`（2 文件：pyproject.toml +6/-6 + uv.lock 重新生成 +72/-74）
+**最新 tag**：**`plan-0-complete`** ✅（G5 推，Stage G tag 等 G7 收尾后的 plan-0-foundation 全部完成）
+**master 最新 commit**：`10ec51e fix(plan): G6 Plan bug #27 A+B+C pre-dispatch` → **本次 G6 完成 PROGRESS 更新 commit（即将推送）**
 **SHARED_SCHEMA_VERSION**：`20260415`（Stage G 全程不触 shared 模型）
-**测试状态**：**339 passed + 8 skipped**（较早先 324 高出 15 集成测试——Docker+env 就绪故 D9 integration 实跑，非回归；coverage 91.09% ≥ 90%）
+**测试状态**：**339 passed + 8 skipped + coverage 91.09% ≥ 90%**（G6 验证跑；无 `dev-dependencies` 弃用警告）
 
-**下一步**：**G6（tech debt 清理 — `[tool.uv] dev-dependencies` → `[dependency-groups]` PEP 735 + testcontainers[postgres] extra 再测）** — 中型 task，派 implementer。
+**下一步**：**G7（`ruisheng-shared` release workflow — semver + CHANGELOG + git tag + GitHub Release，不发 PyPI）** — 中型 task，派 implementer。完成即 Plan 0 Stage G 收官。
 
 ---
 
@@ -115,6 +115,7 @@
 | G3 | docs/ARCHITECTURE.md 开发者视角架构速览 | `e302dab` | ✅ 1 file +29/-0（单文件新建，byte-identical plan markdown 块；5 段：三个运行单元 / 共享基座 / 关键契约（FunCode 归一化 + RS485 物理约束 + ErrCode/BizError + SHARED_SCHEMA_VERSION 4 契约）/ 查看设计决策 / 贡献流程）；**pre-dispatch 无 bug**（controller 核验 4 契约 factually 对：FunCode.normalize alias `{13: 3, 26: 6}` ✓ / `validators.rs485.min_poll_interval_decisec(baud, device_count)` ✓ / `ruisheng_shared.errors.codes` 含 `ErrCode` + `BizError` ✓）；implementer 无 drift（唯一澄清：plan 写绝对路径 `D:\江苏润盛\docs\ARCHITECTURE.md` 歧义 master vs worktree，controller 指示 worktree 下创建因 README.md/CONTRIBUTING.md 已在 worktree，合并自然带过）；pre-commit 6 hooks 全过（markdown 无 ruff/mypy trigger 故 skip，trailing/eof/merge-conflict/case-conflict/line-ending/private-key 全 pass）；**无需正式 combined review**（byte-identical plan + 链接验证 + pre-commit 绿已足够，参考 D10/E7/F6 小文档任务模式） |
 | G4 | `.github/workflows/mutation.yml` weekly mutmut + 10% survival gate | `163d377` | ✅ 1 file +38/-0（单文件新建，byte-identical plan v2.0 yaml 块）；**Plan bug #25 A+B pre-dispatch**：#25-A plan v1.x `uv sync` 应为 `uv sync --all-packages`（同 G1 #22-A 回归）；#25-B 原 "Fail if survival rate > 10%" 步 Python 字面 `[...]` 省略号 + `alive`/`total` 从未更新 → `ZeroDivisionError`，照跑必炸 → **user 选 Option A**：`uv sync --all-packages` + 改 heredoc 真解析 `mutmut results` 的 `survived/killed/timeout/suspicious (N)` 节头 + total=0 → exit 0（首次/全 skip 中性保护）→ master plan v2.0 fix `ef33cda`；implementer 报告 yaml parse OK / Python py_compile OK / pre-commit 全过；**combined review APPROVED**（独立 subagent）：CP1 diff plan v2.0 byte-identical / CP2 yaml safe_load silent / **CP3 3 fixture 独立验证**：A（50 killed 0 survived）exit=0 ✓ / B（11/100 survived = 11% > 10%）exit=1 ✓ / C（空输出 total=0）exit=0 中性 ✓ / CP4 cron `0 2 * * 0` = Sun 10:00 CST 与 ci.yml 无冲突 / CP5 yaml 结构合理（checkout@v4 + setup-uv@v3 一致） / CP6 无新 plan bug；2 Minor 非阻塞（M1 `subprocess.check_output` 未 handle `CalledProcessError` → 首次 cache 空场景抛 traceback，红信号等同，低优；M2 `uv pip install mutmut` ad hoc vs 加 dev dep — **匹配 plan，不擅改**，可 G6 一并）；**累计 Plan bug D 9 + E 4 + F 7 + G 4 = 24** |
 | G5 | Plan 0 完成 README 补完 + 最终 tag `plan-0-complete` | `66fb9c1` + tag `plan-0-complete` | ✅ 1 file +6/-5（worktree README.md）；**Plan bug #26 A+B+C pre-dispatch**：#26-A README 已有 `## 后续阶段` 列 Plan 1-4，plan 原写"append `## 当前状态`" 会重复 → **user 选 A1 替换**（带 checkbox Plan 0 ✓ / Plan 1-4 ☐，单一源）；#26-B Step 2 `cd "D:\江苏润盛"`（master docs-only）错 → worktree；#26-C tag 缺 `git push origin plan-0-complete`（与 D10/E7/F6 6 tag 惯例不一致）→ master plan v2.1 fix `b6904ab`；**controller 直接操作**（类 D10/E7/F6 纯文档+tag 模式，无 implementer 派发）；**最终验收** `uv run pytest tests/ --cov --cov-fail-under=90` → **339 passed + 8 skipped + coverage 91.09%** ✅（较 PROGRESS 之前 324 高出 15 = D9 integration 测试在 Docker+env 就绪场景实跑，非回归；plan Step 2 `task bootstrap` 在 `pre-commit install` 踩 Windows `/bin/bash not found` **已记录 G2/F2 review 在案**，绕过直接跑 pytest 不阻塞）；**tag `plan-0-complete` annotated 消息含**：Plan 0 主干 G1-G5 完成（G6/G7 属 post-complete）+ 资产清点（monorepo+shared 23 表 ORM / alembic 7 迁移 head `959079e6cae9` / DB 26 表+2 角色+3 PL/pgSQL+16 触发器+12 FORCE RLS+5 hypertable / seeds 4 SQL / pcap_gen 4 文件 / CI 5 job + weekly mutation / pre-commit 含双模式 schema-version-guard / 339+8 coverage 91.09% / docs README+CONTRIBUTING+ARCHITECTURE） + G5 前置 commit 链（66fb9c1 + 163d377 + e302dab + 33d9b27 + ecfa611+5c19435）；**累计 Plan bug D 9 + E 4 + F 7 + G 5 = 25** |
+| G6 | 技术债清理：`[tool.uv] dev-dependencies` → `[dependency-groups].dev`（PEP 735）+ asyncpg transitive | `d2be630` | ✅ 2 files（pyproject.toml +6/-6 + uv.lock +72/-74 重新生成）；**Plan bug #27 A+B+C pre-dispatch**：#27-A 原 Step 3 "在 `[project].dependencies` 里把 asyncpg 注释掉" 前提错误（根 pyproject.toml 无此块，所有依赖在 `[tool.uv].dev-dependencies` 14 条） → rewrite Step 3 为"在新 `[dependency-groups].dev` 列表注释"；#27-B 文件路径 master → worktree（同 #26-B）；#27-C CI `uv sync --all-packages` 无 `--group` 标志，需 implementer **实测** `[dependency-groups].dev` 在 uv 0.4.30+ 是否特殊默认装（若不装则 Step 6 要改 ci.yml 5 处）→ master plan v2.2 fix `10ec51e`（verbatim-copy 14 条 dep 入 Step 2 替换块 + worktree 路径 + #27-C 实测分支）；**implementer 执行**：Step 3 asyncpg 成功去显式（testcontainers[postgres,redis]>=4.7 transitively 拉入 asyncpg 0.31.0）；Step 6 **no-op**（uv 0.11.2 `uv sync --all-packages` 自动装 `[dependency-groups].dev`，`ruff 0.15.11` / `mypy 1.20.1` / `pytest 9.0.3` / `alembic 1.18.4` / `pre-commit 4.5.1` 全可用）；**combined review 8 CP APPROVED 无 minor**（独立 subagent）：CP1 pyproject diff 2 处唯一改动 + `[tool.uv.workspace]` 保留 / CP2 弃用警告消失 / CP3 asyncpg+testcontainers.postgres+run_seeds.py 三路 import 全绿 + uv.lock 确认 transitive 非直接依赖 / CP4 5 工具全可用 / CP5 339+8 coverage 91.09% / CP6 ci.yml 未触 / CP7 无残留 pyproject.toml.bak / CP8 无新 plan bug；**累计 Plan bug D 9 + E 4 + F 7 + G 6 = 26** |
 
 ---
 
@@ -123,9 +124,9 @@
 - **GitHub**：https://github.com/proecheng/ruisheng-scada （Private，账号 proecheng）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **master 最新 commit**：`b6904ab fix(plan): G5 Plan bug #26 A+B+C pre-dispatch` → **本次 G5 完成 PROGRESS 更新 commit（即将推送）**
-- **worktree 实施分支最新 commit**：`66fb9c1 docs: mark Plan 0 complete in README`（前置 `163d377` G4 / `e302dab` G3 / `33d9b27` G2 / `5c19435` G1 lint / `ecfa611` G1 ci.yml）
-- **alembic current**：`959079e6cae9 (head)` — D8 migration（G1-G5 无新迁移）
+- **master 最新 commit**：`10ec51e fix(plan): G6 Plan bug #27 A+B+C pre-dispatch` → **本次 G6 完成 PROGRESS 更新 commit（即将推送）**
+- **worktree 实施分支最新 commit**：`d2be630 chore(deps): migrate to PEP 735 dependency-groups`（前置 `66fb9c1` G5 README / `163d377` G4 / `e302dab` G3 / `33d9b27` G2 / `5c19435` G1 lint / `ecfa611` G1 ci.yml）
+- **alembic current**：`959079e6cae9 (head)` — D8 migration（G1-G6 无新迁移）
 - **已 push 的 tag**（7 个）：`plan-0-stage-a-complete` / `...-b-...` / `...-c-...` / `...-d-...` / `...-e-...` / `...-f-...` + **`plan-0-complete`**（G5 新增）
 - **两个 worktree**：
   - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
