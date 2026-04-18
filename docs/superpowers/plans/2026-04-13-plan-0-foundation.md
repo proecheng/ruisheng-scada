@@ -4858,7 +4858,9 @@ from pcap_gen.modbus_frames import crc16, encode_read_holding, encode_register_f
 @pytest.mark.parametrize(
     ("body", "expected_lo_hi"),
     [
-        (bytes.fromhex("0103000000020" + "2"), (0xC4, 0x0B)),  # 01 03 00 00 00 02 -> C4 0B
+        # Plan bug #14 fix (v1.1)：原 "0103000000020" + "2" = 14 hex chars = 7 bytes (01 03 00 00 00 02 02)，
+        # CRC=0x528B 与断言 (0xC4, 0x0B) 不符。改为 12 hex chars = 6 bytes 的标准 ModBus 向量。
+        (bytes.fromhex("010300000002"), (0xC4, 0x0B)),  # 01 03 00 00 00 02 -> CRC=0x0BC4, wire lo=C4 hi=0B
     ],
 )
 def test_crc16_standard_vectors(body: bytes, expected_lo_hi: tuple[int, int]) -> None:
