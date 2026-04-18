@@ -5146,21 +5146,31 @@ git commit -m "feat(tools): pcap-gen CLI (normal command)"
 - [ ] **Step 1：批量脚本**
 
 ```python
-"""首批 15 个 pcap：5 种设备类型 × 3 种工况。"""
+"""首批 15 个 pcap：5 种设备类型 × 3 种工况。
+
+Plan bug #15 fix (v1.2): 原脚本用中文 DEVICE_TYPES 做 ASCII encode errors="ignore"，
+5 种中文类型全部被剥成空，f"DEMO-{dtype}-{j}" 变成 "DEMO--0/1/2"，
+`or fallback` 不触发（"DEMO--0" truthy），5 种 type 全坍缩为 3 个唯一文件名，
+产物 6 文件（3 pcap + 3 expected），不是期望的 30。
+
+修复：直接用 ASCII TYPE{i} 编码，不依赖 CJK 剥离。中文类型语义改记录在 COMMENT 注释。
+后续若要人类可读命名，Plan 1 期再引入 pinyin 映射或 type code 映射表。
+"""
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
 
-DEVICE_TYPES = ["采油机", "保温", "电气", "液位", "温湿度"]
+# 5 种设备类型（注释仅说明，实际 dev_ser 走 TYPE{i} ASCII）
+# TYPE0=采油机 / TYPE1=保温 / TYPE2=电气 / TYPE3=液位 / TYPE4=温湿度
+DEVICE_TYPE_COUNT = 5
 SEEDS = [100, 200, 300]  # 3 种工况
 
 
 def main() -> None:
-    for i, dtype in enumerate(DEVICE_TYPES):
+    for i in range(DEVICE_TYPE_COUNT):
         for j, seed in enumerate(SEEDS):
-            dev_ser = f"DEMO-{dtype}-{j}".encode("ascii", errors="ignore").decode() \
-                or f"DEMO-TYPE{i}-{j}"
+            dev_ser = f"DEMO-TYPE{i}-{j}"
             subprocess.check_call([
                 "uv", "run", "pcap-gen", "normal",
                 "--dev-ser", dev_ser,
