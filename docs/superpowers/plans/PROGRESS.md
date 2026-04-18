@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage G 4/7 ✅ G1+G2+G3+G4 完成，G5 待派**
+## 当前状态：Plan 0 **Stage G 5/7 ✅ G1-G5 完成，`plan-0-complete` tag 已推**
 
-**最后更新**：2026-04-18（G4 mutation.yml 38 行 byte-identical plan v2.0；Plan bug #25 A+B pre-dispatch 反向 fix plan，combined review APPROVED 3 fixture 独立验证全对）
+**最后更新**：2026-04-18（G5 README 补完 + `plan-0-complete` 最终 tag；Plan bug #26 A+B+C pre-dispatch 反向 fix plan；339 passed + 8 skipped + coverage 91.09% 最终验收）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`163d377 ci: weekly mutation testing (mutmut) with 10% survival gate`（单文件 .github/workflows/mutation.yml 38 行新建）
-**最新 tag**：`plan-0-stage-f-complete`（未 bump，Stage G tag 待 G5 收尾）
-**master 最新 commit**：`ef33cda fix(plan): G4 Plan bug #25 A+B pre-dispatch — uv sync --all-packages + working mutmut parser` → **本次 G4 完成 PROGRESS 更新 commit（即将推送）**
+**最近 commit**（worktree）：`66fb9c1 docs: mark Plan 0 complete in README`（单文件 README.md 替换"后续阶段"为"当前状态" checkbox）
+**最新 tag**：**`plan-0-complete`** ✅（Plan 0 主干完成，G6/G7 属 post-complete cleanup/enhancement）
+**master 最新 commit**：`b6904ab fix(plan): G5 Plan bug #26 A+B+C pre-dispatch` → **本次 G5 完成 PROGRESS 更新 commit（即将推送）**
 **SHARED_SCHEMA_VERSION**：`20260415`（Stage G 全程不触 shared 模型）
-**测试状态**：**324 passed + 8 skipped**（G4 纯 yaml 不影响；weekly cron 首次需 GH Actions 手动触发验 mutmut 跑起来）
+**测试状态**：**339 passed + 8 skipped**（较早先 324 高出 15 集成测试——Docker+env 就绪故 D9 integration 实跑，非回归；coverage 91.09% ≥ 90%）
 
-**下一步**：**G5（Plan 0 完成 README 补完 + 最终 tag `plan-0-complete`）** — 纯文档 + tag，类 D10/E7/F6 controller 直接操作模式。
+**下一步**：**G6（tech debt 清理 — `[tool.uv] dev-dependencies` → `[dependency-groups]` PEP 735 + testcontainers[postgres] extra 再测）** — 中型 task，派 implementer。
 
 ---
 
@@ -114,6 +114,7 @@
 | G2 | `tools/verify_schema_version.py` 升级到双模式 breaking 检测 | `33d9b27` | ✅ 1 file +53/-20（单文件 feat commit，byte-identical plan v1.9 python 块）；**Plan bug #24 pre-dispatch**：plan v1.8 直接用 `git diff HEAD^ HEAD` replace G1 stub 的 `git diff --cached`，会让 `.pre-commit-config.yaml` 的 `shared-schema-version-bump` local hook **静默失效**（查 last-commit 而非 staged，用户改 shared/models/ 不升 SCHEMA_VERSION 不报警）→ **user 决策 Option A 双模式**：脚本读 `PRE_COMMIT=1` 环境变量（pre-commit 工具自动设置），pre-commit 上下文用 `--cached`，CI 用 `HEAD^ HEAD` → master plan v1.9 fix `d628239`；v1.9 还清 v1.8 2 个 dead 项（unused `VERSION_RE` + `_git_diff` 包装）；implementer 6 验收门全过（ruff 0 / mypy 0 / CI mode exit 0 / pre-commit mode exit 0 / pre-commit hook end-to-end Skipped / pytest 324+8）；**combined review APPROVED_WITH_MINORS**：CP1 diff plan v1.9 byte-identical / CP2 6 门复跑 5 过 1 无法验（gate 5 pre-commit CLI 在 Windows env 报 `/bin/bash not found`——非 G2 defect，CI Linux 不受影响，commit-time hook 实测 trigger 正常） / **CP3 独立构造 positive test 真工作**：stage1 CI shared-changed + no-today-entry → exit 1 ✓ / stage2 CI breaking + no-bump → exit 2 ✓ / pre-commit staged shared + no-today → exit 1 ✓ / pre-commit staged breaking + no-bump → exit 2 ✓；**真实 git commit 触发 hook 被 blocked** 验 end-to-end 集成 / CP4 边界扫描 5 点全合理（initial commit HEAD^ 不存在场景不实际、merge first-parent OK、fetch-depth 0 配 CI、regex DOTALL 正确、`breaking:` 粗匹可能误判 `non-breaking:` 但是 over-conservative safe） / CP5 无新 plan bug（M3 initial commit HEAD^ 未 try/except 留 G-后续 hardening 备忘） / 3 Minor non-blocking 都不必修（M1 `today in` substring 可改 `^## <today>` multiline / M2 `breaking:` 过宽 conservative / M3 CalledProcessError 未 handle）；**累计 Plan bug D 9 + E 4 + F 7 + G 3 = 23** |
 | G3 | docs/ARCHITECTURE.md 开发者视角架构速览 | `e302dab` | ✅ 1 file +29/-0（单文件新建，byte-identical plan markdown 块；5 段：三个运行单元 / 共享基座 / 关键契约（FunCode 归一化 + RS485 物理约束 + ErrCode/BizError + SHARED_SCHEMA_VERSION 4 契约）/ 查看设计决策 / 贡献流程）；**pre-dispatch 无 bug**（controller 核验 4 契约 factually 对：FunCode.normalize alias `{13: 3, 26: 6}` ✓ / `validators.rs485.min_poll_interval_decisec(baud, device_count)` ✓ / `ruisheng_shared.errors.codes` 含 `ErrCode` + `BizError` ✓）；implementer 无 drift（唯一澄清：plan 写绝对路径 `D:\江苏润盛\docs\ARCHITECTURE.md` 歧义 master vs worktree，controller 指示 worktree 下创建因 README.md/CONTRIBUTING.md 已在 worktree，合并自然带过）；pre-commit 6 hooks 全过（markdown 无 ruff/mypy trigger 故 skip，trailing/eof/merge-conflict/case-conflict/line-ending/private-key 全 pass）；**无需正式 combined review**（byte-identical plan + 链接验证 + pre-commit 绿已足够，参考 D10/E7/F6 小文档任务模式） |
 | G4 | `.github/workflows/mutation.yml` weekly mutmut + 10% survival gate | `163d377` | ✅ 1 file +38/-0（单文件新建，byte-identical plan v2.0 yaml 块）；**Plan bug #25 A+B pre-dispatch**：#25-A plan v1.x `uv sync` 应为 `uv sync --all-packages`（同 G1 #22-A 回归）；#25-B 原 "Fail if survival rate > 10%" 步 Python 字面 `[...]` 省略号 + `alive`/`total` 从未更新 → `ZeroDivisionError`，照跑必炸 → **user 选 Option A**：`uv sync --all-packages` + 改 heredoc 真解析 `mutmut results` 的 `survived/killed/timeout/suspicious (N)` 节头 + total=0 → exit 0（首次/全 skip 中性保护）→ master plan v2.0 fix `ef33cda`；implementer 报告 yaml parse OK / Python py_compile OK / pre-commit 全过；**combined review APPROVED**（独立 subagent）：CP1 diff plan v2.0 byte-identical / CP2 yaml safe_load silent / **CP3 3 fixture 独立验证**：A（50 killed 0 survived）exit=0 ✓ / B（11/100 survived = 11% > 10%）exit=1 ✓ / C（空输出 total=0）exit=0 中性 ✓ / CP4 cron `0 2 * * 0` = Sun 10:00 CST 与 ci.yml 无冲突 / CP5 yaml 结构合理（checkout@v4 + setup-uv@v3 一致） / CP6 无新 plan bug；2 Minor 非阻塞（M1 `subprocess.check_output` 未 handle `CalledProcessError` → 首次 cache 空场景抛 traceback，红信号等同，低优；M2 `uv pip install mutmut` ad hoc vs 加 dev dep — **匹配 plan，不擅改**，可 G6 一并）；**累计 Plan bug D 9 + E 4 + F 7 + G 4 = 24** |
+| G5 | Plan 0 完成 README 补完 + 最终 tag `plan-0-complete` | `66fb9c1` + tag `plan-0-complete` | ✅ 1 file +6/-5（worktree README.md）；**Plan bug #26 A+B+C pre-dispatch**：#26-A README 已有 `## 后续阶段` 列 Plan 1-4，plan 原写"append `## 当前状态`" 会重复 → **user 选 A1 替换**（带 checkbox Plan 0 ✓ / Plan 1-4 ☐，单一源）；#26-B Step 2 `cd "D:\江苏润盛"`（master docs-only）错 → worktree；#26-C tag 缺 `git push origin plan-0-complete`（与 D10/E7/F6 6 tag 惯例不一致）→ master plan v2.1 fix `b6904ab`；**controller 直接操作**（类 D10/E7/F6 纯文档+tag 模式，无 implementer 派发）；**最终验收** `uv run pytest tests/ --cov --cov-fail-under=90` → **339 passed + 8 skipped + coverage 91.09%** ✅（较 PROGRESS 之前 324 高出 15 = D9 integration 测试在 Docker+env 就绪场景实跑，非回归；plan Step 2 `task bootstrap` 在 `pre-commit install` 踩 Windows `/bin/bash not found` **已记录 G2/F2 review 在案**，绕过直接跑 pytest 不阻塞）；**tag `plan-0-complete` annotated 消息含**：Plan 0 主干 G1-G5 完成（G6/G7 属 post-complete）+ 资产清点（monorepo+shared 23 表 ORM / alembic 7 迁移 head `959079e6cae9` / DB 26 表+2 角色+3 PL/pgSQL+16 触发器+12 FORCE RLS+5 hypertable / seeds 4 SQL / pcap_gen 4 文件 / CI 5 job + weekly mutation / pre-commit 含双模式 schema-version-guard / 339+8 coverage 91.09% / docs README+CONTRIBUTING+ARCHITECTURE） + G5 前置 commit 链（66fb9c1 + 163d377 + e302dab + 33d9b27 + ecfa611+5c19435）；**累计 Plan bug D 9 + E 4 + F 7 + G 5 = 25** |
 
 ---
 
@@ -122,9 +123,10 @@
 - **GitHub**：https://github.com/proecheng/ruisheng-scada （Private，账号 proecheng）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **master 最新 commit**：`ef33cda fix(plan): G4 Plan bug #25 A+B pre-dispatch` → **本次 G4 完成 PROGRESS 更新 commit（即将推送）**
-- **worktree 实施分支最新 commit**：`163d377 ci: weekly mutation testing (mutmut) with 10% survival gate`（前置 `e302dab` G3 / `33d9b27` G2 / `5c19435` G1 lint / `ecfa611` G1 ci.yml）
-- **alembic current**：`959079e6cae9 (head)` — D8 migration（G1-G4 无新迁移）
+- **master 最新 commit**：`b6904ab fix(plan): G5 Plan bug #26 A+B+C pre-dispatch` → **本次 G5 完成 PROGRESS 更新 commit（即将推送）**
+- **worktree 实施分支最新 commit**：`66fb9c1 docs: mark Plan 0 complete in README`（前置 `163d377` G4 / `e302dab` G3 / `33d9b27` G2 / `5c19435` G1 lint / `ecfa611` G1 ci.yml）
+- **alembic current**：`959079e6cae9 (head)` — D8 migration（G1-G5 无新迁移）
+- **已 push 的 tag**（7 个）：`plan-0-stage-a-complete` / `...-b-...` / `...-c-...` / `...-d-...` / `...-e-...` / `...-f-...` + **`plan-0-complete`**（G5 新增）
 - **两个 worktree**：
   - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
   - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation（实际代码）
