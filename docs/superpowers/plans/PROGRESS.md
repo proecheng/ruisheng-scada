@@ -12,7 +12,7 @@
 - Plan 文件 `docs/superpowers/plans/2026-04-18-plan-1-gw.md`（**v1.6**）：`d8157e8` → `2631abd`（#1）→ `7c7d7be`（#2）→ `3172925`（#3）→ `1a13317`（#4+#5 retro）→ `78764fd`（#6）→ v1.6（#7 retro 本 commit 同步）
 - 5-role adversarial review 回应 22 P0 + 30 P1；7 Stage / ~48 task / subagent-driven 执行
 
-**Plan 1 Stage A 进度**（A3 done 2026-04-18 晚 session 2）：
+**Plan 1 Stage A 进度**（A5 done 2026-04-18 晚 session 2）：
 
 | # | Task | Commit | Notes |
 |---|---|---|---|
@@ -22,6 +22,52 @@
 | A4 | logging_setup.py structlog JSON + ctx vars | `5647fe4` | 4 files；**1 Plan bug retro**（#8 mypy deps 加 structlog → v1.7）；347 + 8 skip；Spec 8/8 + Quality 8/8 零 minor |
 | A5 | /health /ready /metrics aiohttp endpoints | `02dcfe4` | 3 files（health.py 67 行 `HealthState` dataclass 4 fields + 4 methods + `is_ready` 三判合取（db_ok + redis_ok + flush_fresh<5s） / `_health_handler` 200 `{"status":"alive"}` / `_ready_handler` 200 或 503 / `_metrics_handler` Prometheus text `# HELP` + `# TYPE gauge` + `ruisheng_gw_build_info{version="0.1.0"} 1` content_type text/plain;version=0.0.4 / `create_health_app` 注 3 GET route + state store / test_health.py 51 行 4 tests / `.pre-commit-config.yaml` mypy deps 加 aiohttp）；**1 Plan bug retro**（#9 mypy deps 加 aiohttp，与 #7/#8 同源 → v1.8 retro）；implementer autonomy 5 项（drop unused `field` import / `# noqa: ARG001` on unused request / PLR2004 noqa 4 处 HTTP status 200/503 / I001 auto-fix / `.pre-commit-config.yaml` mypy deps）；**351 passed + 8 skipped**（`alembic upgrade head` 后；9 integration fail + 6 error 是 pre-existing DB downgrade 状态非 A5 regression，controller 实测确认 post-upgrade 351）；ruff + mypy clean；Spec APPROVED 6/6 + Quality APPROVED_WITH_MINORS 2 nit（fixture `-> TestClient` 技术应 `AsyncIterator[TestClient]` / aiohttp 3.9 `NotAppKeyWarning` 建议用 `web.AppKey`，均非 blocker） |
 | A6-A8 | CI / docs / tag | — | pending（A6 下一步 test_startup.py 完整 exit code 断言 + gw-smoke CI job）|
+
+---
+
+### Session 2 总览（2026-04-18 晚）
+
+**起点**：Plan 1 Stage A 1/8 (A1 only, commit `52b5d5e`)
+**终点**：Plan 1 Stage A 5/8 (A2+A3+A4+A5 done, worktree HEAD `02dcfe4`, master HEAD `2c0857d`)
+
+**代码产出**（feature/plan-0-foundation 4 commit）
+- `482a63a` A2 main.py skeleton + schema/alembic check + CLI
+- `36bc674` A3 pydantic-settings config + --print-config + exit 3
+- `5647fe4` A4 structlog JSON + correlation context vars
+- `02dcfe4` A5 /health /ready /metrics aiohttp endpoints
+
+**测试状态**：**351 passed + 8 skipped**（A1 起 324 → A5 末 351，+27 测试全 green；需 `alembic upgrade head` 续跑）；ruff + mypy clean；coverage 91.09%
+
+**Plan bug 清单（Plan 1 累计 9 个，全 master 反向 fix）**
+| # | Stage | 抓法 | 描述 | fix commit |
+|---|---|---|---|---|
+| 1 | A2 | pre-dispatch | `__main__.py` 缺 → `python -m ruisheng_gw` 炸 | `2631abd` v1.1 |
+| 2 | A2 | implementer v1 真跑 | 根 pyproject pythonpath/testpaths 漏 gw | `7c7d7be` v1.2 |
+| 3 | A2 | implementer v2 真跑 | tests/__init__.py 双树 tests.unit 包冲撞 + unused asyncio F401 | `3172925` v1.3 |
+| 4,5 | A2 | implementer v3 内含 | pyproject mypy_path + `.pre-commit-config.yaml` mypy exclude 对称扩 | `1a13317` v1.4 retro |
+| 6 | A3 | implementer v1 真跑 | pydantic-settings `extra="forbid"` 不扫 `os.environ` 未知 GW_* | `78764fd` v1.5 `@model_validator` 手扫 |
+| 7 | A3 | implementer v2 内含 | `.pre-commit-config.yaml` mypy deps 加 pydantic-settings | `994b495` v1.6 retro |
+| 8 | A4 | implementer v1 内含 | `.pre-commit-config.yaml` mypy deps 加 structlog | `fd8fd3a` v1.7 retro |
+| 9 | A5 | implementer v1 内含 | `.pre-commit-config.yaml` mypy deps 加 aiohttp | `2c0857d` v1.8 retro |
+
+**review 统计**：A2 Spec 8/8 + Quality 5 cosmetic；A3 Spec 8/8 + Quality 3 nit；A4 Spec 8/8 + Quality 8/8 零 minor；A5 Spec 6/6 + Quality 2 nit
+
+**剩余工作路线图**
+- **Stage A 剩**：A6 gw-smoke CI + test_startup.py exit code 全断言 / A7 gw-metrics.md doc / A8 stage tag
+- **Stage B**（8 task，前置 A）：CRC16 + FC 3/5/6/16/19/20/21/22/100 + ExceptionResp + framer + heartbeat stripper + Hypothesis
+- **Stage C**（5 task，前置 A/B）：tcp_server + connection + heartbeat timeout + session
+- **Stage D**（5 task，前置 A/C）：Device 状态机简化 + Point 标度 + Registry DB load + alarm_simple
+- **Stage E**（10 task，前置 B/C/D）：Clock + bus_lock + poller + supervisor + batch_writer + repository + WAL + tenant-filter lint + **E10 integration**（此时 flip coverage.source 把 gw 纳入）
+- **Stage F**（8 task，前置 E）：RealtimeEvent/AlarmEvent + publisher + contract + replay + P95
+- **Stage G**（5 task，前置 F）：CI 扩 + release-gw.yml + CHANGELOG + rollback runbook + tag
+
+**续跑准备（新 session）**
+1. 读本 PROGRESS + memory + plan §Task A6
+2. `cd D:\江苏润盛\.claude\worktrees\plan-0-foundation`
+3. `export RUISHENG_GW_PASSWORD='dev-gw-change-me' RUISHENG_API_PASSWORD='dev-api-change-me'`
+4. `docker compose -f docker-compose.dev.yml ps` 确认 healthy
+5. `uv run alembic upgrade head` 恢复 DB（A3/A5 integration 测试副作用）
+6. pre-dispatch sanity → 派 A6 implementer
 
 ---
 
