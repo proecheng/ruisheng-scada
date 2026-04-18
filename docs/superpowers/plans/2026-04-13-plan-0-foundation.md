@@ -5415,17 +5415,29 @@ git commit -m "ci: add integration / alembic symmetry / schema-version jobs"
 **Files:**
 - Modify: `D:\江苏润盛\tools\verify_schema_version.py`
 
+**v1.9 修订（Plan bug #24，pre-dispatch 抓）**：G1 留的 stub 用 `git diff --cached`（staged），pre-commit 友好；plan v1.8 直接 replace 为 `git diff HEAD^ HEAD`（CI 友好）会让 `.pre-commit-config.yaml` 的 `shared-schema-version-bump` local hook **静默失效**（查 last-commit 而非 staged，用户改 shared/models/ 不升 SCHEMA_VERSION 不报警）。
+
+**user 决策 Option A**（2026-04-18，双模式自动检测）：脚本检查 `PRE_COMMIT=1` 环境变量（pre-commit 工具自动设置），pre-commit 用 `--cached`，CI 用 `HEAD^ HEAD`。两上下文都绿，零回归风险。
+
+此外 v1.9 清理 v1.8 代码的 2 个 dead 项：unused `VERSION_RE` 常量 + unused `_git_diff` 包装函数（两者皆是 v1.8 起草时的遗留）。
+
 - [ ] **Step 1：升级实现**
 
 Replace `D:\江苏润盛\tools\verify_schema_version.py`:
 ```python
-"""验证：若 ruisheng-shared/src/ruisheng_shared/models/ 改动了，则：
+"""验证：若 ruisheng-shared/src/ruisheng_shared/models|schemas/ 改动了，则：
 1) CHANGELOG.md 必须有今日条目
-2) 若任一条目以 `breaking:` 前缀，SHARED_SCHEMA_VERSION 必须已升级
+2) 若任一条目以 `breaking:` 前缀，SHARED_SCHEMA_VERSION 必须同步升级
+
+双模式（v1.9 Plan bug #24 fix）：
+- pre-commit 上下文：`git diff --cached`（staged 变更）— pre-commit 工具自动设 PRE_COMMIT=1
+- CI 上下文：`git diff HEAD^ HEAD`（已提交变更）— schema-version-guard job 用
 """
+
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import pathlib
 import re
 import subprocess
@@ -5433,18 +5445,23 @@ import sys
 
 CHANGELOG = pathlib.Path("ruisheng-shared/src/ruisheng_shared/CHANGELOG.md")
 INIT = pathlib.Path("ruisheng-shared/src/ruisheng_shared/__init__.py")
-VERSION_RE = re.compile(r"SHARED_SCHEMA_VERSION\s*:\s*int\s*=\s*(\d+)")
 
 
-def _git_diff(*args: str) -> str:
-    return subprocess.check_output(["git", "diff", *args], text=True)
+def _is_precommit() -> bool:
+    """pre-commit 工具调用 hook 时会自动设置 PRE_COMMIT=1 环境变量。"""
+    return os.environ.get("PRE_COMMIT") == "1"
+
+
+def _diff_args() -> list[str]:
+    """根据上下文返回 git diff 参数（pre-commit 看 staged，CI 看已提交）。"""
+    if _is_precommit():
+        return ["--cached"]
+    return ["HEAD^", "HEAD"]
 
 
 def _schema_files_changed() -> bool:
-    out = subprocess.check_output(
-        ["git", "diff", "--name-only", "HEAD^", "HEAD"],
-        text=True,
-    )
+    args = ["git", "diff", *_diff_args(), "--name-only"]
+    out = subprocess.check_output(args, text=True)
     return any(
         p.startswith("ruisheng-shared/src/ruisheng_shared/models/")
         or p.startswith("ruisheng-shared/src/ruisheng_shared/schemas/")
@@ -5460,7 +5477,7 @@ def _has_today_entry() -> bool:
 def _has_breaking_today() -> bool:
     today = _dt.date.today().isoformat()
     text = CHANGELOG.read_text(encoding="utf-8")
-    # 从 "## <today>" 开始到下一个 "## " 之间
+    # 匹配 "## YYYY-MM-DD" 开始的段落到下一个 "## " 或文件末尾
     section = re.search(rf"## .*{today}.*?(?=\n## |\Z)", text, re.DOTALL)
     if not section:
         return False
@@ -5468,7 +5485,8 @@ def _has_breaking_today() -> bool:
 
 
 def _version_changed() -> bool:
-    diff = _git_diff("HEAD^", "HEAD", "--", str(INIT))
+    args = ["git", "diff", *_diff_args(), "--", str(INIT)]
+    diff = subprocess.check_output(args, text=True)
     return "SHARED_SCHEMA_VERSION" in diff and ("+SHARED" in diff or "-SHARED" in diff)
 
 
@@ -5491,11 +5509,28 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
+**验收门（implementer 必跑）**：
+1. `uv run ruff check tools/verify_schema_version.py` 0 errors
+2. `uv run mypy tools/verify_schema_version.py` 0 issues
+3. **CI 模式手工验证**（不改任何文件，仅跑）：
+   ```bash
+   unset PRE_COMMIT  # 确保非 pre-commit 模式
+   uv run python tools/verify_schema_version.py
+   echo "exit: $?"  # 期望 0（最近两 commit 若没动 shared/models/schemas/ 则 degenerate-pass）
+   ```
+4. **pre-commit 模式手工验证**（显式设 env）：
+   ```bash
+   PRE_COMMIT=1 uv run python tools/verify_schema_version.py
+   echo "exit: $?"  # 期望 0（无 staged 变更则 degenerate-pass）
+   ```
+5. 端到端 pre-commit 复测：`git add .pre-commit-config.yaml` 随便 staged 个非 shared 文件 → `uv run pre-commit run shared-schema-version-bump --files .pre-commit-config.yaml` 应 pass（filter 不匹配故跳过 hook）
+6. pytest 324+8 无回归（coverage 不受影响，tools/verify_schema_version.py 不在 coverage source）
+
 - [ ] **Step 2：Commit**
 
 ```bash
 git add tools/verify_schema_version.py
-git commit -m "ci(schema-guard): enforce version bump on breaking changes"
+git commit -m "ci(schema-guard): enforce version bump on breaking changes (dual-mode)"
 ```
 
 ---
