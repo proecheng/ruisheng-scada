@@ -5288,6 +5288,10 @@ git tag -a plan-0-stage-f-complete -m "Stage F: pcap generator + initial 15 corp
 **Files:**
 - Modify: `D:\江苏润盛\.github\workflows\ci.yml`
 
+**v1.8 修订（Plan bug #22 A+B，pre-dispatch 抓）**：
+- **#22-A**：所有 5 job 的 `uv sync` → `uv sync --all-packages`（项目是 uv workspace，F1 加了 tools/pcap_gen 子包；不加会漏装，mypy/ruff/pytest 都会报 `ModuleNotFoundError: pcap_gen`）。当前 `.github/workflows/ci.yml` 的 lint/unit job 已经是 `--all-packages`，plan v1.7 直接 replace 会回退。
+- **#22-B**：integration + alembic-check job 必须注入 `RUISHENG_GW_PASSWORD` + `RUISHENG_API_PASSWORD`（D3 migration `_require_env()` + conftest.py `api_engine/gw_engine` fixture 都读这俩，缺则 raise RuntimeError / KeyError）。user 决策 Option A（2026-04-18）：CI 硬编码值 `ci-gw-change-me` / `ci-api-change-me`（跟 `POSTGRES_PASSWORD: ruisheng_dev` 同风格；角色仅存在 CI 临时 PG 容器内，无泄漏风险；不走 GitHub Secrets）。
+
 - [ ] **Step 1：扩展**
 
 Edit `D:\江苏润盛\.github\workflows\ci.yml`:
@@ -5307,7 +5311,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-      - run: uv sync
+      - run: uv sync --all-packages
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy .
@@ -5319,7 +5323,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-      - run: uv sync
+      - run: uv sync --all-packages
       - run: uv run pytest tests/unit tests/tools -v --cov --cov-fail-under=90
 
   integration:
@@ -5338,10 +5342,14 @@ jobs:
       redis:
         image: redis:7-alpine
         ports: ['6379:6379']
+    env:
+      # v1.8 #22-B：D3 migration _require_env + conftest api/gw_engine fixture 必读；CI-only 值
+      RUISHENG_GW_PASSWORD: ci-gw-change-me
+      RUISHENG_API_PASSWORD: ci-api-change-me
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
-      - run: uv sync
+      - run: uv sync --all-packages
       - run: uv run alembic upgrade head
         env:
           DATABASE_URL: postgresql+asyncpg://ruisheng_dev:ruisheng_dev@127.0.0.1:5432/ruisheng
@@ -5363,10 +5371,14 @@ jobs:
         options: >-
           --health-cmd "pg_isready"
           --health-interval 5s --health-retries 10
+    env:
+      # v1.8 #22-B：D3 migration _require_env 必读；CI-only 值
+      RUISHENG_GW_PASSWORD: ci-gw-change-me
+      RUISHENG_API_PASSWORD: ci-api-change-me
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
-      - run: uv sync
+      - run: uv sync --all-packages
       - name: 验证迁移对称（up → down → up）
         run: |
           uv run alembic upgrade head
@@ -5382,10 +5394,12 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v3
-      - run: uv sync
+      - run: uv sync --all-packages
       - name: 检查 SHARED_SCHEMA_VERSION 是否随 models 变更同步升级
         run: uv run python tools/verify_schema_version.py
 ```
+
+**注**：`schema-version-guard` 本 task 调的是 `tools/verify_schema_version.py` stub（`git diff --cached` 模型，CI 上返 0 degenerate-pass）；G2 会升级成 `git diff HEAD^ HEAD` 真正检测 breaking 变更。G1 承接 stub 行为不阻塞。
 
 - [ ] **Step 2：Commit**
 
