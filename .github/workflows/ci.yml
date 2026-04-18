@@ -26,4 +26,76 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --all-packages
-      - run: uv run pytest tests/unit -v --cov --cov-fail-under=90
+      - run: uv run pytest tests/unit tests/tools -v --cov --cov-fail-under=90
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: timescale/timescaledb:2.16.1-pg15
+        env:
+          POSTGRES_USER: ruisheng_dev
+          POSTGRES_PASSWORD: ruisheng_dev
+          POSTGRES_DB: ruisheng
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ruisheng_dev"
+          --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+    env:
+      # v1.8 #22-B：D3 migration _require_env + conftest api/gw_engine fixture 必读；CI-only 值
+      RUISHENG_GW_PASSWORD: ci-gw-change-me
+      RUISHENG_API_PASSWORD: ci-api-change-me
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-packages
+      - run: uv run alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+asyncpg://ruisheng_dev:ruisheng_dev@127.0.0.1:5432/ruisheng
+      - run: uv run pytest tests/integration -v -m integration
+        env:
+          DATABASE_URL: postgresql+asyncpg://ruisheng_dev:ruisheng_dev@127.0.0.1:5432/ruisheng
+          REDIS_URL: redis://127.0.0.1:6379/0
+
+  alembic-check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: timescale/timescaledb:2.16.1-pg15
+        env:
+          POSTGRES_USER: ruisheng_dev
+          POSTGRES_PASSWORD: ruisheng_dev
+          POSTGRES_DB: ruisheng
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready"
+          --health-interval 5s --health-retries 10
+    env:
+      # v1.8 #22-B：D3 migration _require_env 必读；CI-only 值
+      RUISHENG_GW_PASSWORD: ci-gw-change-me
+      RUISHENG_API_PASSWORD: ci-api-change-me
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-packages
+      - name: 验证迁移对称（up → down → up）
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+asyncpg://ruisheng_dev:ruisheng_dev@127.0.0.1:5432/ruisheng
+
+  schema-version-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-packages
+      - name: 检查 SHARED_SCHEMA_VERSION 是否随 models 变更同步升级
+        run: uv run python tools/verify_schema_version.py
