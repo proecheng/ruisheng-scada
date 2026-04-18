@@ -4817,6 +4817,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pcap_gen"]
+
+# Plan bug #16 fix (v1.3): uv workspace members 不能自动 by-name 互引；
+# pcap_gen 依赖 ruisheng-shared 必须在此显式声明 workspace source，
+# 否则 `uv sync --all-packages` 会去 PyPI 解析 ruisheng-shared 失败。
+# 参考：https://docs.astral.sh/uv/concepts/projects/workspaces/
+[tool.uv.sources]
+ruisheng-shared = { workspace = true }
 ```
 
 - [ ] **Step 2：__init__**
