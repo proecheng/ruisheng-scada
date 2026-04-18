@@ -5,17 +5,17 @@
 
 ---
 
-## 当前状态：Plan 0 **Stage E 进行中（E1+E2 完成 2/7）**
+## 当前状态：Plan 0 **Stage E 进行中（E1+E2+E3-E6 完成 6/7）**
 
-**最后更新**：2026-04-17（E2 `tools/embedded_pg.py` stub 落地：async+sync 双 API 都 raise NotImplementedError；review APPROVED 0/0/0；无 plan bug）
+**最后更新**：2026-04-18（E3-E6 bundle 落地：seeds 4 SQL + run_seeds.py + .pre-commit-config.yaml mypy deps；**3 个 Plan bug** 连抓：#11 devices/device_points NOT NULL 漏列 / #12 device_points 无 UQ 故 ON CONFLICT no-op / #13 pre-commit mypy 隔离 venv 缺 asyncpg；idempotency 实测双跑 1/2/1/2 稳定）
 **工作分支**：`feature/plan-0-foundation`
-**最近 commit**（worktree）：`b295f8e chore(tools): E2 EmbeddedPostgres stub`（前置 E1 `396b2e0` / `d2b3482`）
+**最近 commit**（worktree）：`e42f06b feat(db): E3-E6 seed data + run_seeds.py`（前置 E2 `b295f8e` / E1 `396b2e0` / `d2b3482`）
 **最新 tag**：`plan-0-stage-d-complete`（Stage E 收尾 E7 才打 `plan-0-stage-e-complete`）
-**master 最新 commit**：`2812a47 docs(progress): E1` → **本次 E2 PROGRESS 更新（即将推送）**
-**SHARED_SCHEMA_VERSION**：`20260415`（E2 纯 tools stub 不触 shared 模型）
-**测试状态**：**336 passed + 8 skipped**（E2 stub 无 test invoke 其 embedded 分支，无回归）
+**master 最新 commit**：`260729e fix(plan): E3-E6 Plan bug #13` → **本次 E3-E6 PROGRESS 更新（即将推送）**
+**SHARED_SCHEMA_VERSION**：`20260415`（E3-E6 纯 seeds + script，不触 shared 模型）
+**测试状态**：**336 passed + 8 skipped**（E3-E6 无新测试，无回归）
 
-**下一步**：**E3-E6 — seeds SQL + run_seeds.py**（4 SQL 文件 + tools/run_seeds.py；1 demo tenant + 2 users + 1 device + 2 points）
+**下一步**：**E7 — Stage E 收尾 tag `plan-0-stage-e-complete`**（纯 tag + PROGRESS，类 D10）
 
 ---
 
@@ -43,6 +43,7 @@
 |---|---|---|---|
 | E1 | conftest.py 扩展 — testcontainers/embedded PG 双轨 fixture | `d2b3482` + fixup `396b2e0` | ✅ `tests/conftest.py`（+86/-3）；**Plan bug #10 pre-dispatch 抓**（plan v1.0 "Replace" 会删 D9 3 个 fixture + session-scope async 返祖 D9 L26-30 pitfall）→ master plan v1.1 fix `8a0cd8e`（Replace → Merge；async → function scope；`postgres_url`/`redis_url` → sync session；alembic upgrade 移入 `postgres_url`）；D9 fixtures（`is_windows`/`_DEV_DSN`/`dev_engine`/`api_engine`/`gw_engine`）byte-identical 保留（diff 确认）；新增 4 fixture：`postgres_url`（sync session，testcontainers `PostgresContainer("timescale/timescaledb:2.16.1-pg15")` + subprocess alembic upgrade head）+ `redis_url`（sync session，`RedisContainer("redis:7-alpine")`）+ `async_engine`（function，pool_pre_ping）+ `session`（function，async_sessionmaker + rollback teardown）；**双 review**：spec APPROVED（9/9 checkpoint PASS，byte-identical 确认，无 deviation）+ code quality APPROVED_WITH_MINORS after fixup（1 Important I1 PLC0415 → fixup `396b2e0` 加 3 条 noqa；3 Minor 都 OK：M1 `async_sessionmaker` rollback 冗余但匹配 plan 故保留 / M2 pool_pre_ping 可去但 noise-level / M3 pytest.skip 消息不全 actionable 但仅 stub 阶段不阻塞）；pytest **336 passed + 8 skipped 不变**（新 fixture 无测试 invoke，纯接口预留） |
 | E2 | tools/embedded_pg.py stub — async + sync start/stop 双 API | `b295f8e` | ✅ 单文件新建 45 行；verbatim plan v1.1 E2 Step 1 代码（byte-for-byte 匹配 plan §L4583-4629）；imports 只用 `__future__ annotations / asyncio / random / tempfile / pathlib.Path`；`_NOT_IMPLEMENTED_MSG` 模块常量（Windows no-Docker 解释 + Q-E06 待决）；class `EmbeddedPostgres(version="15")` 设 5 属性（version / port 15000-30000 random / data_dir mkdtemp prefix ruisheng-pg- / url asyncpg / _proc None）+ 4 方法（sync `start_sync` raise / sync `stop_sync` guarded terminate / async `start` raise / async `stop` terminate + await wait）；**无 `tools/__init__.py`**（A5 namespace 约定保持）；**验证**：ruff clean / mypy clean / `EmbeddedPostgres()` 实例化正常返回 url+port+data_dir / `start_sync()` 抛 NotImplementedError 含预期消息 / `stop_sync()` fresh 实例 noop / pytest 336+8 无回归；**review APPROVED 0/0/0**（combined spec + quality，line-by-line 对照 plan，0 deviation，0 minor）；**首个 Stage E 无 plan bug 的 task**（E1 有 #10） |
+| E3-E6 | seeds 4 SQL（demo wx_group + 2 users + 1 device + 2 points）+ tools/run_seeds.py + .pre-commit-config.yaml mypy dep | `e42f06b` | ✅ 6 文件单 commit +74/-1；**连抓 3 个 Plan bug** — master plan v1.1/1.2/1.3 三次反向 fix：(a) **#11 pre-dispatch** controller 查 D2 migration 发现 devices/device_points 多个 NOT NULL 无 server_default 列，raw SQL INSERT 漏列必炸 23502（同 D9 #8 模式）→ plan v1.1 补 devices 4 列（update_interval_decisec=100 / loss_count=0 / is_online=FALSE / update_flag=0）+ device_points 5 列（point_ratio=1.0 / point_offset=0.0 / user_ratio=1.0 / user_point_offset=0.0 / show=1）= `f0c5614`；(b) **#12 implementer live-DB** 实测双跑 device_points 从 2→4 行，发现无 UQ on (dev_number, point_number) 故 `ON CONFLICT DO NOTHING` no-op → plan v1.2 改 Option A：`INSERT ... SELECT FROM (VALUES) AS v WHERE NOT EXISTS`（无 schema 改动）+ `# type: ignore[import-untyped]` for asyncpg = `08f12d2`；(c) **#13 implementer pre-commit** 实测 mirrors-mypy 隔离 venv 缺 asyncpg 变 `import-not-found` → v1.2 ignore 不覆盖 + unused-ignore → plan v1.3 改 .pre-commit-config.yaml mypy `additional_dependencies` 加 asyncpg（Option A，principled）= `260729e`；**最终验证**：pre-commit 全绿（ruff / ruff-format / mypy --strict 都 pass）/ `uv run task seed` 双跑稳定 counts 1/2/1/2（wx_groups/users/devices/device_points）/ pytest 336+8 / 6 文件最终 clean commit；**Stage E 独占 3 个 plan bug，累计 13**（D 9 + E 4） |
 
 ---
 
@@ -51,9 +52,9 @@
 - **GitHub**：https://github.com/proecheng/ruisheng-scada （Private，账号 proecheng）
 - **工作树**：`D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 - **主仓库**（master，只有设计/计划文档）：`D:\江苏润盛`
-- **master 最新 commit**：`2812a47 docs(progress): E1` → **本次 E2 PROGRESS 更新 commit（即将推送）**
-- **worktree 实施分支最新 commit**：`b295f8e chore(tools): E2 EmbeddedPostgres stub`（前置 `396b2e0` E1 fixup / `d2b3482` E1 main）
-- **alembic current**：`959079e6cae9 (head)` — D8 migration（D9/D10/E1/E2 均无新迁移；E2 只新建 `tools/embedded_pg.py`）
+- **master 最新 commit**：`260729e fix(plan): E3-E6 Plan bug #13` → **本次 E3-E6 PROGRESS 更新 commit（即将推送）**
+- **worktree 实施分支最新 commit**：`e42f06b feat(db): E3-E6 seed data + run_seeds.py`（前置 `b295f8e` E2 / `396b2e0` E1 fixup / `d2b3482` E1 main）
+- **alembic current**：`959079e6cae9 (head)` — D8 migration（D9/D10/E1/E2/E3-E6 均无新迁移）
 - **两个 worktree**：
   - `D:/江苏润盛` → master（只放 spec / plan / progress 文档）
   - `D:/江苏润盛/.claude/worktrees/plan-0-foundation` → feature/plan-0-foundation（实际代码）
