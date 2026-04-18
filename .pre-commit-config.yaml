@@ -25,7 +25,7 @@ repos:
       - id: mypy
         additional_dependencies: [sqlalchemy, pydantic, types-redis, asyncpg]
         args: [--strict]
-        exclude: ^(tests/|alembic/|tools/pcap_gen/)
+        exclude: ^(tests/|ruisheng-gw/tests/|alembic/|tools/pcap_gen/)
 
   - repo: local
     hooks:
