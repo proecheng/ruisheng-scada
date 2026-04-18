@@ -1,0 +1,51 @@
+name: Release ruisheng-shared
+
+on:
+  push:
+    tags:
+      - "shared-v*.*.*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#shared-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify pyproject version matches tag
+        run: |
+          PY_VER=$(grep -E '^version\s*=' ruisheng-shared/pyproject.toml | head -1 | sed -E 's/.*"(.+)".*/\1/')
+          if [ "$PY_VER" != "${{ steps.version.outputs.VERSION }}" ]; then
+            echo "::error::pyproject version $PY_VER != tag ${{ steps.version.outputs.VERSION }}"
+            exit 1
+          fi
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          VER='${{ steps.version.outputs.VERSION }}'
+          awk -v ver="$VER" '
+            $0 ~ "^## \\\\[" ver "\\\\]" {flag=1; next}
+            flag && /^## \[/ {flag=0}
+            flag
+          ' ruisheng-shared/CHANGELOG.md > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "::error::Empty release notes for version $VER — CHANGELOG missing section?"
+            exit 1
+          fi
+          cat /tmp/release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/release-notes.md
+          name: ruisheng-shared ${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: false

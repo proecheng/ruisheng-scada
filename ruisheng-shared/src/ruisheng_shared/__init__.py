@@ -9,4 +9,4 @@ SHARED_SCHEMA_VERSION == REQUIRED，不匹配则拒绝启动。
 SHARED_SCHEMA_VERSION: int = 20260415
 
 __version__ = "0.1.0"
-__all__ = ["SHARED_SCHEMA_VERSION"]
+__all__ = ["SHARED_SCHEMA_VERSION", "__version__"]
