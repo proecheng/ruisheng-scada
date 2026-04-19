@@ -52,7 +52,12 @@ class BatchWriter:
         self._retry_initial_backoff = retry_initial_backoff
         self._queue: asyncio.Queue[BatchRow] = asyncio.Queue(maxsize=queue_maxsize)
         self._stop_event = asyncio.Event()
-        self.stats = {"drop_total": 0, "flush_total": 0, "wal_fallback_total": 0}
+        self.stats = {
+            "drop_total": 0,
+            "flush_total": 0,
+            "wal_fallback_total": 0,
+            "flush_error_total": 0,
+        }
 
     def submit(self, row: BatchRow) -> None:
         try:
@@ -132,6 +137,7 @@ class BatchWriter:
                 if attempt < _MAX_RETRIES - 1:
                     await self._clock.sleep(backoff)
                     backoff *= 2
+        self.stats["flush_error_total"] += 1
         if self._wal_append is not None:
             self.stats["wal_fallback_total"] += 1
             await self._wal_append(buffer)
