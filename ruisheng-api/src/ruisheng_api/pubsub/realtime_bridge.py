@@ -44,4 +44,4 @@ async def realtime_loop(
             )
     finally:
         await pubsub.punsubscribe("channel:realtime:*")
-        await pubsub.close()
+        await pubsub.aclose()  # type: ignore[attr-defined]
