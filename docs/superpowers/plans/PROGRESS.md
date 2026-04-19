@@ -5,6 +5,27 @@
 
 ---
 
+## 当前状态：**Plan 2 — Stage C 3/3 ✅**（Stage B 5/5 ✅ / Stage A 5/5 ✅）（2026-04-20 session）
+
+**Plan 2 Stage C 进度**（tag `plan-2-stage-c-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| C1 | POST /api/auth/login | `339c538` | 4 tests；schemas/auth.py all 7 classes；users_repo；bcrypt verify；login_limit |
+| C2 | sms/send + register (OTP) | `4ac6c46` | 7 tests；services/otp.py GETDEL；config.default_usr_group；FakeServer pattern |
+| C3 | refresh + logout + otp/send | `cfc8531` | 4 tests；jti blacklist rotation；logout best-effort refresh revoke |
+| C4 | tag + PROGRESS | tag pushed | `plan-2-stage-c-complete` ✅ |
+
+**测试状态**：56 unit tests pass；ruff + mypy clean
+
+**Plan 2 下一步（新 session → Stage D）**：
+1. 读本 PROGRESS.md
+2. 读 plan Stage D 全文（Task D1 开始）
+3. worktree: `D:\江苏润盛\.claude\worktrees\plan-2-api` (branch `feature/plan-2-api`)
+4. 用 `superpowers:subagent-driven-development` 执行 D1
+
+---
+
 ## 当前状态：**Plan 2 — Stage B 5/5 ✅**（Stage A 5/5 ✅）（2026-04-20 session）
 
 **Plan 2 Stage B 进度**（tag `plan-2-stage-b-complete`）：
