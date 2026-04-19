@@ -145,7 +145,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         supervisor.shutdown_sync()
         batch.stop()
         await server.shutdown()
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(Exception, asyncio.CancelledError):
             await asyncio.wait_for(batch_task, timeout=5.0)
         await engine.dispose()
         # suppress unused-var warnings from type checkers
