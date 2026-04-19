@@ -102,9 +102,9 @@ class Registry:
                     await conn.execute(
                         text(  # noqa: tenant-lint (no usr_group col; filtered via devices.usr_group join)
                             "SELECT id, dev_number, point_ratio, point_offset, "
-                            "       user_ratio, user_point_offset, min_val, max_val, "
-                            "       alarm_level "
-                            "FROM device_points WHERE deleted_at IS NULL"
+                            "       user_ratio, user_point_offset, "
+                            "       min_value AS min_val, max_value AS max_val "
+                            "FROM device_points"
                         )
                     )
                 )
