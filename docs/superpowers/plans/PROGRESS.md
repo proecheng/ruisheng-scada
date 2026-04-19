@@ -5,6 +5,42 @@
 
 ---
 
+## 当前状态：**Plan 1 — Stage C 5/5 ✅**（Stage B 8/8 ✅ / Stage A 8/8 ✅ / Plan 0 完整闭环 Stage G 7/7）
+
+**Plan 1 Stage C 进度**（C5 done 2026-04-19，tag `plan-1-stage-c-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| C1 | tcp_server.py asyncio.start_server 骨架 | `f4714cf`+`9cca4c9` | `GwServer` start/shutdown/is_listening/actual_port + TCP_NODELAY；2 tests；质量修复：comment spec ref wrong → plain justification；Spec APPROVED；Quality APPROVED_WITH_MINORS 1 fixed |
+| C2 | connection.py framer-driven read loop | `6026f8c`+`2e7fd2b` | `Connection.read_loop` 4KB chunks → Framer → on_frame；parse_fail_budget via `framer.stats["resync"]` delta（**Plan Bug #12** — see below）；2 tests；质量修复：docstring + 3-way comment；Spec APPROVED；Quality APPROVED_WITH_MINORS 2 fixed |
+| C3 | FC 0x19 heartbeat timeout | `3b7ca76` | 扩展 `connection.py`：`heartbeat_timeout_sec=90.0` + `_last_heartbeat_ts` + `disconnected_for_heartbeat_timeout`；2 tests；Spec APPROVED；Quality APPROVED（plan doc fix committed to master `66f6711`） |
+| C4 | session.py dev_number-keyed map | `debc344` | `SessionEntry(frozen=True)` + `SessionMap.bind/get/remove/__len__`；bus_id 首次 bind 后不变（v2 B1）；generation 单调递增（v2 B7）；4 tests；Spec APPROVED；Quality APPROVED_WITH_MINORS（3 suggestion 均 non-blocking） |
+| C5 | Stage C tag + PROGRESS | tag `plan-1-stage-c-complete` | ✅ 2026-04-19 |
+
+**Plan bug 清单（Plan 1 Stage C 累计 1 个 implementer-discovered，convention 违反但 fix 质量更优）**
+| # | Stage | 抓法 | 描述 | fix commit |
+|---|---|---|---|---|
+| 12 | C2 | implementer 静默修 | plan `_parse_fail_run += 1 per chunk` 有 bug：单批次所有 garbage 到达时 run 仅升到 1 就 EOF → 不断连；implementer 用 `framer.stats["resync"]` delta 代替（resync-byte 计数法）；convention 要求 BLOCKED 上报但 implementer 静默改，结果正确；plan C3 code block 同步反向 fix（`66f6711`） | worktree `6026f8c` |
+
+**测试状态**：**382 unit passed + 8 skipped**（387 含 integration，需 Docker）；B1 起 353 → C5 末 382，+29 测试全 green；ruff + mypy clean
+
+**续跑准备（新 session）**
+1. 读本 PROGRESS + memory + plan §Task D1
+2. `cd D:\江苏润盛\.claude\worktrees\plan-0-foundation`（worktree 分支 `feature/plan-0-foundation`）
+3. `export RUISHENG_GW_PASSWORD='dev-gw-change-me' RUISHENG_API_PASSWORD='dev-api-change-me'`
+4. `docker compose -f docker-compose.dev.yml ps` 确认 healthy（D1 device.py 纯 unit，但 D3 registry 需 DB）
+5. `uv run alembic upgrade head` 恢复 DB（integration 测试副作用）
+6. pre-dispatch sanity → 派 D1 implementer（device.py 状态机）
+
+**剩余工作路线图**
+- **Stage C**：✅ 完成（tag `plan-1-stage-c-complete`）
+- **Stage D**（5 task，前置 A/C）：Device 状态机 + Point 标度 + Registry DB load + alarm_simple
+- **Stage E**（10 task，前置 B/C/D）：Clock + bus_lock + poller + supervisor + batch_writer + repository + WAL + E10 integration
+- **Stage F**（8 task，前置 E）：RealtimeEvent/AlarmEvent + publisher + contract + replay + P95
+- **Stage G**（5 task，前置 F）：CI 扩 + release-gw.yml + CHANGELOG + rollback runbook + tag
+
+---
+
 ## 当前状态：**Plan 1 — Stage B 8/8 ✅**（Stage A 8/8 ✅ / Plan 0 完整闭环 Stage G 7/7）
 
 **Plan 1 Stage B 进度**（B8 done 2026-04-19，tag `plan-1-stage-b-complete`）：
@@ -27,21 +63,6 @@
 | 11 | B3 | pre-dispatch | `"0105000000FF00"` 14 chars 多余 00 + `"010600000000A"` 13 chars 奇数 | `2002d83` |
 
 **测试状态**：**387 passed + 8 skipped**（B1 起 353 → B8 末 387，+34 测试全 green）；ruff + mypy clean
-
-**续跑准备（新 session）**
-1. 读本 PROGRESS + memory + plan §Task C1
-2. `cd D:\江苏润盛\.claude\worktrees\plan-0-foundation`
-3. `export RUISHENG_GW_PASSWORD='dev-gw-change-me' RUISHENG_API_PASSWORD='dev-api-change-me'`
-4. `docker compose -f docker-compose.dev.yml ps` 确认 healthy
-5. `uv run alembic upgrade head` 恢复 DB
-6. pre-dispatch sanity → 派 C1 implementer（tcp_server.py asyncio骨架）
-
-**剩余工作路线图**
-- **Stage C**（5 task，前置 A/B）：tcp_server + connection + heartbeat timeout + session
-- **Stage D**（5 task，前置 A/C）：Device 状态机 + Point 标度 + Registry DB load + alarm_simple
-- **Stage E**（10 task，前置 B/C/D）：Clock + bus_lock + poller + supervisor + batch_writer + repository + WAL + E10 integration
-- **Stage F**（8 task，前置 E）：RealtimeEvent/AlarmEvent + publisher + contract + replay + P95
-- **Stage G**（5 task，前置 F）：CI 扩 + release-gw.yml + CHANGELOG + rollback runbook + tag
 
 ---
 
