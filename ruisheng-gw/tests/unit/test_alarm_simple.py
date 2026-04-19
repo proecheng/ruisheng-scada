@@ -44,7 +44,9 @@ def test_above_max_fires() -> None:
         now=100.0,
     )
     assert ev is not None
+    assert ev.value == 150.0
     assert ev.threshold == 100.0
+    assert ev.level == 1
 
 
 def test_in_range_returns_none() -> None:
@@ -67,3 +69,15 @@ def test_nan_value_returns_none() -> None:
         now=100.0,
     )
     assert ev is None
+
+
+def test_only_max_threshold_fires() -> None:
+    ev = check_threshold(
+        dev_number="D",
+        point_id=1,
+        value=150.0,
+        spec=_ts(min_val=None, max_val=100.0),
+        now=100.0,
+    )
+    assert ev is not None
+    assert ev.threshold == 100.0
