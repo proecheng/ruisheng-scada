@@ -8,14 +8,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ruisheng_gw.protocol.exceptions import ProtocolError
+from ruisheng_gw.protocol.exceptions import PrivateCodeNotImplemented, ProtocolError
 from ruisheng_gw.protocol.modbus_codec import (
     append_crc_to_frame,
     verify_crc16,
 )
 
 FC_READ_HOLDING_REGISTERS = 0x03
+FC_HEARTBEAT = 0x19
+FC_LOW_POWER_REGISTER = 0x16
+FC_PRIVATE_13 = 0x0D
+FC_PRIVATE_26 = 0x1A
 MIN_RESPONSE_BODY_LEN = 3
+MIN_FRAME_BODY_LEN = 2
+MIN_EXCEPTION_BODY_LEN = 3
+EXCEPTION_BIT = 0x80
+FC_MASK = 0x7F
 
 
 @dataclass(frozen=True)
@@ -152,3 +160,68 @@ def encode_write_multiple_holding(req: WriteMultipleHoldingRequest) -> bytes:
         ]
     ) + bytes(data)
     return append_crc_to_frame(body)
+
+
+@dataclass(frozen=True)
+class ExceptionResponse:
+    """Slave returned fc|0x80 + 1-byte error code (§ModBus spec)."""
+
+    slave: int
+    original_fc: int  # fc without 0x80 bit
+    error_code: int  # 01 illegal-fc / 02 illegal-addr / 03 illegal-val / 04 slave-fail / ...
+
+
+@dataclass(frozen=True)
+class HeartbeatFrame:
+    """FC 0x19 (25) heartbeat per spec §A.5. Mandatory for online detection."""
+
+    slave: int
+
+
+@dataclass(frozen=True)
+class LowPowerRegisterFrame:
+    """FC 22 (0x16) 低功耗注册（私有） per spec §A.4. NOT file records."""
+
+    slave: int
+    payload: bytes
+
+
+def encode_exception_response(resp: ExceptionResponse) -> bytes:
+    """Encode ExceptionResponse as 5-byte RTU frame."""
+    body = bytes([resp.slave & 0xFF, (resp.original_fc | 0x80) & 0xFF, resp.error_code & 0xFF])
+    return append_crc_to_frame(body)
+
+
+def encode_heartbeat(slave: int) -> bytes:
+    """Encode FC 0x19 heartbeat request (4 bytes: slave + fc + CRC)."""
+    body = bytes([slave & 0xFF, 0x19])
+    return append_crc_to_frame(body)
+
+
+def decode_frame_by_funcode(raw: bytes) -> object:
+    """Top-level dispatch by FC. ExceptionResponse check (fc & 0x80) comes first."""
+    verify_crc16(raw)
+    body = raw[:-2]
+    if len(body) < MIN_FRAME_BODY_LEN:
+        raise ProtocolError("frame too short (no slave+fc)")
+    slave = body[0]
+    fc = body[1]
+    # v2 A2 — Exception response (high bit set); check BEFORE specific FC dispatch
+    if fc & EXCEPTION_BIT:
+        if len(body) < MIN_EXCEPTION_BODY_LEN:
+            raise ProtocolError("exception response missing error code")
+        return ExceptionResponse(
+            slave=slave,
+            original_fc=fc & FC_MASK,
+            error_code=body[2],
+        )
+    if fc == FC_READ_HOLDING_REGISTERS:
+        return decode_read_holding_response(raw)
+    if fc == FC_HEARTBEAT:
+        return HeartbeatFrame(slave=slave)
+    if fc == FC_LOW_POWER_REGISTER:
+        return LowPowerRegisterFrame(slave=slave, payload=bytes(body[2:]))
+    # FC 13 (0x0D) / 26 (0x1A) — B5 task placeholder
+    if fc in (FC_PRIVATE_13, FC_PRIVATE_26):
+        raise PrivateCodeNotImplemented(f"private fc 0x{fc:02X} not yet implemented; see B5")
+    raise ProtocolError(f"unknown FC 0x{fc:02X}")
