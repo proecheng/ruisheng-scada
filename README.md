@@ -52,7 +52,7 @@ ruisheng-scada/
 
 - [x] **Plan 0**：基础设施（`ruisheng-shared` + alembic + docker compose + pcap gen）
 - [x] **Plan 1**：采集网关 `ruisheng-gw`
-- [ ] **Plan 2**：Web API `ruisheng-api`
+- [x] **Plan 2**：Web API `ruisheng-api`
 - [ ] **Plan 3**：前端 `ruisheng-web`
 - [ ] **Plan 4**：部署与运维
 
