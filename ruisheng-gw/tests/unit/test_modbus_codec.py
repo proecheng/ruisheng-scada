@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from ruisheng_gw.protocol.exceptions import CRCMismatchError
+from ruisheng_gw.protocol.exceptions import CRCMismatchError, FramingError
 from ruisheng_gw.protocol.modbus_codec import (
     append_crc_to_frame,
     compute_crc16,
@@ -41,3 +41,8 @@ def test_verify_crc_mismatch_raises() -> None:
     frame = bytes.fromhex("010300000002") + bytes([0x00, 0x00])
     with pytest.raises(CRCMismatchError):
         verify_crc16(frame)
+
+
+def test_verify_crc_frame_too_short_raises_framing_error() -> None:
+    with pytest.raises(FramingError):
+        verify_crc16(b"\x01\x03")  # 2 bytes, below MIN_FRAME_LENGTH=3

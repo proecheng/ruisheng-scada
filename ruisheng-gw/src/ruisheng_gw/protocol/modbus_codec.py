@@ -9,7 +9,7 @@ performs length-aware dispatch instead.
 
 from __future__ import annotations
 
-from ruisheng_gw.protocol.exceptions import CRCMismatchError
+from ruisheng_gw.protocol.exceptions import CRCMismatchError, FramingError
 
 MIN_FRAME_LENGTH = 3
 
@@ -36,7 +36,7 @@ def append_crc_to_frame(frame_no_crc: bytes) -> bytes:
 def verify_crc16(frame_with_crc: bytes) -> None:
     """Verify a frame including 2-byte trailing CRC (wire LO-HI). Raise on mismatch."""
     if len(frame_with_crc) < MIN_FRAME_LENGTH:
-        raise CRCMismatchError("frame too short")
+        raise FramingError("frame too short")
     body = frame_with_crc[:-2]
     wire_lo, wire_hi = frame_with_crc[-2], frame_with_crc[-1]
     expected = compute_crc16(body)
