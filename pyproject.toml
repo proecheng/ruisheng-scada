@@ -62,7 +62,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["ruisheng-shared/src", "ruisheng-gw/src", "tools/pcap_gen/src"]
+source = ["ruisheng-shared/src", "ruisheng-gw/src"]
 
 [tool.coverage.report]
 exclude_lines = [
