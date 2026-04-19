@@ -5,6 +5,35 @@
 
 ---
 
+## 当前状态：**Plan 2 — 准备中**（Plan 2 plan 文件尚未写完）
+
+**Plan 2 api 状态**（2026-04-19 session 结束时）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| — | Plan 2 plan 文件写作 | 未提交 | 本 session 开始写 Plan 2，spec 已完整阅读，plan 文件未完成 |
+
+**Plan 2 下一步**：
+1. 完成 `docs/superpowers/plans/2026-04-19-plan-2-api.md` 写作
+2. 新建 worktree `feature/plan-2-api`（从 `feature/plan-0-foundation` 分支）
+3. 用 `superpowers:subagent-driven-development` 执行 Plan 2
+
+**Plan 2 已确定的设计决策**（spec 阅读摘要）：
+- 新 worktree：`feature/plan-2-api`，从 `feature/plan-0-foundation` 分支
+- ruisheng-api 加入 uv workspace（修改根 `pyproject.toml` members）
+- FastAPI + uvicorn；SQLAlchemy 2.0 async + asyncpg；redis-py 5.x；loguru
+- JWT（python-jose）+ bcrypt（passlib）+ ULID；jti 黑名单 Redis
+- APScheduler 3.x 后台任务；slowapi 限流
+- 依赖 ruisheng-shared（ORM 26 表 + ErrCode + enums + schemas）
+- alembic 迁移已完成（plan-0），Plan 2 无需新建表
+
+**恢复步骤（新 session → Plan 2）**：
+1. 读本 PROGRESS.md + memory `project_ruisheng_scada.md`
+2. 如 Plan 2 plan 文件已存在：直接阅读 + 新建 worktree + 执行
+3. 如 Plan 2 plan 文件未完成：先完成 plan 写作（用 `superpowers:writing-plans`），再执行
+
+---
+
 ## 当前状态：**Plan 1 — 完整闭环 ✅**（tag `plan-1-complete`，`gw-v0.1.0` GitHub Release 已发布）
 
 **Plan 1 Stage G 进度**（G5 done 2026-04-19，tag `plan-1-stage-g-complete`）：
