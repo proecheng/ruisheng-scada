@@ -5,6 +5,26 @@
 
 ---
 
+## 当前状态：**Plan 2 — Stage I 3/3 ✅**（Stage H 2/2 ✅ / Stage G 2/2 ✅ ...）（2026-04-20 session）
+
+**Plan 2 Stage I 进度**（tag `plan-2-stage-i-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| I1 | Timing plans CRUD | `c03e31c` | 6 tests；TimingPlan model；update_flag bump；Company+ role |
+| I2 | Maintenance plans + complete action | `9f88375` | 5 tests；complete_maintenance CTE SELECT FOR UPDATE + ON CONFLICT；idempotent |
+| I3 | Scenes pages + views CRUD + tag | `2768901`+tag | 6 tests；ScenePage/SceneView；soft delete；2 routers mounted |
+
+**测试状态**：112 unit tests pass；ruff + mypy clean
+
+**Plan 2 下一步（新 session → Stage J）**：
+1. 读本 PROGRESS.md
+2. 读 plan Stage J 全文（J1 INotifier + wechat/email / J2 fan-out wiring / J3 tag）
+3. worktree: `D:\江苏润盛\.claude\worktrees\plan-2-api` (branch `feature/plan-2-api`)
+4. 用 `superpowers:subagent-driven-development` 执行 J1
+
+---
+
 ## 当前状态：**Plan 2 — Stage H 2/2 ✅**（Stage G 2/2 ✅ / Stage F 3/3 ✅ ...）（2026-04-20 session）
 
 **Plan 2 Stage H 进度**（tag `plan-2-stage-h-complete`）：
