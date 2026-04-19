@@ -5,24 +5,33 @@
 
 ---
 
-## 当前状态：**Plan 2 — plan 已写完，待执行**（2026-04-19 session 末）
+## 当前状态：**Plan 2 — Stage A 5/5 ✅**（2026-04-20 session）
 
-**Plan 2 plan 文件**：`docs/superpowers/plans/2026-04-19-plan-2-api.md`
-- 约 5880 行；13 Stage / 46 task（A-M）
-- Stage 导航：A Scaffold / B Security / C Auth / D Devices / E Points+Alarms / F Streams+WS / G Orgs / H Reports+Waveforms / I Plans+Scenes / J Notifications / K Scheduler / L WeChat Pay / M Admin+CI+Release
-- 含 Self-Review：spec coverage 矩阵 + placeholder scan + type consistency + 7 项风险提示
-- master commit 待打：`docs(progress): Plan 2 plan 文件写完，待执行`
+**Plan 2 worktree**：`feature/plan-2-api`（从 `feature/plan-0-foundation`）；`.claude/worktrees/plan-2-api`
 
-**Plan 2 下一步（新 session）**：
-1. `cd D:\江苏润盛`
-2. `git worktree add -b feature/plan-2-api .claude/worktrees/plan-2-api feature/plan-0-foundation`
-3. `cd .claude/worktrees/plan-2-api && uv sync --all-packages`
-4. 读 plan 文件 Stage A（Task A1 开始）
-5. 用 `superpowers:subagent-driven-development` 派 A1 implementer
+**Plan 2 Stage A 进度**（tag `plan-2-stage-a-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| A1 | 新建 ruisheng-api 包 + workspace 注册 | `61eadce`+`ced3739` | smoke test 1 pass；ruff per-file-ignores fix |
+| A2 | Config pydantic-settings | `01e7d99`+`b97675c` | 4 tests；env Literal fix；pre-commit mypy exclude fix |
+| A3 | DB async engine + session factory | `1b11844` | 3 tests；build_engine rejects sync URL |
+| A4 | core/errors.py + core/response.py | `6f752ef` | 5 tests；BizError/ValidationError/Exception handlers；pre-commit mypy deps fix |
+| A5 | FastAPI app factory + health stub | `c9869c3` | 2 tests；GET /api/health/live；uvicorn entrypoint |
+| A6 | tag + PROGRESS | tag pushed | `plan-2-stage-a-complete` ✅ |
+
+**测试状态**：15 unit tests pass（smoke + config + db + errors + main）；ruff + mypy clean
+
+**Plan 2 下一步（新 session → Stage B）**：
+1. 读本 PROGRESS.md
+2. 读 `docs/superpowers/plans/2026-04-19-plan-2-api.md` Stage B 全文
+3. worktree 已存在：`D:\江苏润盛\.claude\worktrees\plan-2-api`（branch `feature/plan-2-api`）
+4. `export RUISHENG_API_DB_URL=... RUISHENG_API_GW_DB_URL=... RUISHENG_API_REDIS_URL=... RUISHENG_API_JWT_SECRET=...`
+5. 用 `superpowers:subagent-driven-development` 执行 Task B1
 
 **Plan 2 已确定的设计决策**（plan 锁定）：
 - worktree：`feature/plan-2-api`，从 `feature/plan-0-foundation`
-- 新包 `ruisheng-api/`（workspace 第 4 成员）；根 `pyproject.toml` members/testpaths/pythonpath/coverage.source/mypy_path 全部加
+- 新包 `ruisheng-api/`（workspace 第 4 成员）；根 `pyproject.toml` members/testpaths/pythonpath/coverage.source/mypy_path 全部已加
 - FastAPI + uvicorn / SQLAlchemy 2.0 asyncio + asyncpg / redis-py 5.x[hiredis] / loguru / python-jose[cryptography] / passlib[bcrypt] / python-ulid / slowapi / APScheduler 3.x / openpyxl / aiohttp / numpy
 - JWT：access 15min / refresh 7d / typ+fp+jti，jti 黑名单 Redis
 - 多租户：`apply_tenant_context(session, usr_group, role)` 每事务 SET LOCAL
@@ -32,12 +41,6 @@
 - 微信支付回调：走 `ruisheng_gw` pool（BYPASSRLS），api 路径白名单
 - alembic 迁移已完成（plan-0），Plan 2 无需新建表
 - CI 新增 3 job：`api-unit` / `api-integration` / `api-tenant-lint`；release 走 `release-api.yml`
-
-**恢复步骤（新 session → Plan 2 执行）**：
-1. 读本 PROGRESS.md + memory `project_ruisheng_scada.md`
-2. 读 `docs/superpowers/plans/2026-04-19-plan-2-api.md`（至少 Stage 导航 + 当前 Stage 全文）
-3. 新建 worktree（命令见上）
-4. 用 `superpowers:subagent-driven-development` 执行 Task A1
 
 ---
 
