@@ -5,6 +5,46 @@
 
 ---
 
+## 当前状态：**Plan 1 — Stage B 8/8 ✅**（Stage A 8/8 ✅ / Plan 0 完整闭环 Stage G 7/7）
+
+**Plan 1 Stage B 进度**（B8 done 2026-04-19，tag `plan-1-stage-b-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| B1 | CRC16 codec + exceptions.py | `5f39a4a`+`3f0ffc7`+`3b6f39f` | `compute_crc16`/`append_crc_to_frame`/`verify_crc16`；7 tests；质量修复：`PrivateCodeNotImplemented` 名称 + 短帧 `FramingError`；Spec APPROVED；Quality APPROVED_WITH_MINORS 2 fixed |
+| B2 | frames.py FC 3 read holding | `230386a`+`92f5abc` | `ReadHoldingRequest`/`ReadHoldingResponse(registers: tuple)`；4 tests；质量修复：tuple immutability + docstrings；Spec APPROVED；Quality APPROVED_WITH_MINORS 3 fixed |
+| B3 | FC 5/6/16 write codecs | `d9226a5`+`46aca32` | 3 dataclass + 3 encode；4 tests；质量修复：`byte_count & 0xFF` mask（Hypothesis 会触发崩溃）；Spec APPROVED；Quality APPROVED_WITH_MINORS 2 fixed |
+| B4 | ExceptionResponse + FC 0x19/22 + dispatcher | `dbcdd40`+`e38e5a0` | `AnyFrame` union type + 4 error-path tests + 模块 docstring FC 号修正；Spec APPROVED；Quality APPROVED_WITH_MINORS 3 fixed |
+| B5 | private_codes.py FC 13/26 registry | `b7326e5`+`4e0c069` | 3 tests（autouse _clean_registry + parametrized FC 0x1A）；Spec APPROVED；Quality APPROVED_WITH_MINORS isolation fixed |
+| B6 | framer.py 长度感知 + heartbeat stripper | `cd6d936`+`25f7085` | **Critical fix**：`_DTU_HEARTBEAT_RE = rb"\r?\n[!-~]{3,}\r?\n"` 替换误匹配二进制字节的旧 regex；FC 0x16/0x64 BLOCKED 注释；6 tests；Spec APPROVED（NEEDS_FIXES → re-APPROVED after fix）；Quality initially NEEDS_FIXES, fixed |
+| B7 | Hypothesis property tests | `e5f0ee3`+`20d4998` | 3 tests × 100 examples；`conftest.py` CI profile `database=None`；`@settings(max_examples=100)` 统一；Spec APPROVED；Quality APPROVED_WITH_MINORS 2 fixed |
+| B8 | Stage B tag + PROGRESS | tag `plan-1-stage-b-complete` | ✅ 2026-04-19 |
+
+**Plan bug 清单（Plan 1 Stage B 累计 2 个 pre-dispatch，全 master 反向 fix）**
+| # | Stage | 抓法 | 描述 | fix commit |
+|---|---|---|---|---|
+| 10 | B1 | pre-dispatch | `bytes.fromhex("0103000000020")` 13 chars（奇数）→ ValueError | `77df441` |
+| 11 | B3 | pre-dispatch | `"0105000000FF00"` 14 chars 多余 00 + `"010600000000A"` 13 chars 奇数 | `2002d83` |
+
+**测试状态**：**387 passed + 8 skipped**（B1 起 353 → B8 末 387，+34 测试全 green）；ruff + mypy clean
+
+**续跑准备（新 session）**
+1. 读本 PROGRESS + memory + plan §Task C1
+2. `cd D:\江苏润盛\.claude\worktrees\plan-0-foundation`
+3. `export RUISHENG_GW_PASSWORD='dev-gw-change-me' RUISHENG_API_PASSWORD='dev-api-change-me'`
+4. `docker compose -f docker-compose.dev.yml ps` 确认 healthy
+5. `uv run alembic upgrade head` 恢复 DB
+6. pre-dispatch sanity → 派 C1 implementer（tcp_server.py asyncio骨架）
+
+**剩余工作路线图**
+- **Stage C**（5 task，前置 A/B）：tcp_server + connection + heartbeat timeout + session
+- **Stage D**（5 task，前置 A/C）：Device 状态机 + Point 标度 + Registry DB load + alarm_simple
+- **Stage E**（10 task，前置 B/C/D）：Clock + bus_lock + poller + supervisor + batch_writer + repository + WAL + E10 integration
+- **Stage F**（8 task，前置 E）：RealtimeEvent/AlarmEvent + publisher + contract + replay + P95
+- **Stage G**（5 task，前置 F）：CI 扩 + release-gw.yml + CHANGELOG + rollback runbook + tag
+
+---
+
 ## 当前状态：**Plan 1 — Stage A 8/8 ✅**（Plan 0 完整闭环 Stage G 7/7）
 
 **Plan 1 spec/plan 产出**（已落盘 master）：
