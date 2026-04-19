@@ -5,6 +5,26 @@
 
 ---
 
+## 当前状态：**Plan 2 — Stage J 3/3 ✅**（Stage I 3/3 ✅ / Stage H 2/2 ✅ ...）（2026-04-20 session）
+
+**Plan 2 Stage J 进度**（tag `plan-2-stage-j-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| J1 | INotifier + wechat/email | `7155b3f` | 6 tests；AlarmNotification frozen dataclass；aiohttp；asyncio.to_thread |
+| J2 | SMS + Voice + registry | `6d8baa9` | 5 tests；custom_http pattern；build_notifier factory；list_providers |
+| J3 | fanout + tag | `4d6cfb9`+tag | 4 tests；asyncio.gather return_exceptions；persist_channels_sent JSONB |
+
+**测试状态**：127 unit tests pass；ruff + mypy clean
+
+**Plan 2 下一步（新 session → Stage K）**：
+1. 读本 PROGRESS.md
+2. 读 plan Stage K 全文（K1 APScheduler + wx token refresh / K2 pay expire / K3 vacuum + tag）
+3. worktree: `D:\江苏润盛\.claude\worktrees\plan-2-api` (branch `feature/plan-2-api`)
+4. 用 `superpowers:subagent-driven-development` 执行 K1
+
+---
+
 ## 当前状态：**Plan 2 — Stage I 3/3 ✅**（Stage H 2/2 ✅ / Stage G 2/2 ✅ ...）（2026-04-20 session）
 
 **Plan 2 Stage I 进度**（tag `plan-2-stage-i-complete`）：
