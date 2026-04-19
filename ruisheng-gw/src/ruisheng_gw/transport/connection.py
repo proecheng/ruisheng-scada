@@ -3,7 +3,8 @@
 - Read raw bytes via asyncio.StreamReader
 - Feed into protocol.framer.Framer (already strips DTU heartbeats)
 - Emit complete frames to on_frame callback
-- Track parse_fail_budget: ≥10 consecutive un-parsed buffer ticks → disconnect
+- Track parse_fail_budget: accumulated framer resync-byte advances with no emitted
+  frame; ≥parse_fail_budget resync advances → disconnected_for_framing=True
 - Forward frame bytes to on_frame; session & poller wiring in C4
 """
 
@@ -58,9 +59,11 @@ class Connection:
             resync_delta = new_resync - prev_resync
             prev_resync = new_resync
             if emitted_this_round:
-                self._parse_fail_run = 0
+                self._parse_fail_run = 0  # good frame: clear the run
             elif resync_delta > 0:
+                # framer advanced past unrecognised bytes: accumulate failure count
                 self._parse_fail_run += resync_delta
                 if self._parse_fail_run >= self._parse_fail_budget:
                     self.disconnected_for_framing = True
                     return
+            # else: buffer incomplete (waiting for more bytes) — no penalty, no reset
