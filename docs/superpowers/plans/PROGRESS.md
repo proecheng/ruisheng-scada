@@ -5,6 +5,26 @@
 
 ---
 
+## 当前状态：**Plan 2 — 完整闭环 ✅**（tag `plan-2-complete`，`api-v0.1.0` GitHub Release 已发布）（2026-04-20 session）
+
+**GitHub Release**: https://github.com/proecheng/ruisheng-scada/releases/tag/api-v0.1.0
+
+**Plan 2 Stage M 进度**（tag `plan-2-stage-m-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| M1 | Admin + health/ready | `3971297` | 2 tests；GET /api/meta/version；GET /api/health/ready DB+Redis；admin log level |
+| M2 | CI jobs + release-api.yml | `f44da24` | api-unit/api-integration/api-tenant-lint；release-api.yml api-v* trigger |
+| M3 | CHANGELOG + README + tags + Release | `d10c96d`+tags | CHANGELOG [api-0.1.0]；README Plan2 [x]；RELEASE.md；3 tags + GitHub Release |
+
+**Plan 2 完整统计**：13 Stage / 46 task；139 unit tests；ruff + mypy clean；api-v0.1.0 released
+
+**下一步**：Plan 3 ruisheng-web（Vue 3 + Vite + Pinia + ECharts + vue-konva，前端 SPA）
+- 新建 worktree `feature/plan-3-web`（从 `feature/plan-0-foundation` 派生，不从 plan-2-api）
+- 需先写 Plan 3 plan 文件（`superpowers:writing-plans`）
+
+---
+
 ## 当前状态：**Plan 2 — Stage L 2/2 ✅**（Stage K 3/3 ✅ / Stage J 3/3 ✅ ...）（2026-04-20 session）
 
 **Plan 2 Stage L 进度**（tag `plan-2-stage-l-complete`）：
