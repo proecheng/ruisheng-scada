@@ -104,3 +104,41 @@ async def control(
             acted_at=datetime.now(UTC),
         ).model_dump(mode="json")
     )
+
+
+@query_router.get("/commands", response_model=ApiResponse)
+async def list_commands(
+    user_name: str | None = None,
+    dev_number: str | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    effective_user = (
+        user_name if user.role in ("Administrators", "GroupCompany", "Company") else user.user_name
+    )
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        rows = await control_repo.list_actions(
+            session,
+            user_name=effective_user,
+            dev_number=dev_number,
+            offset=offset,
+            limit=limit,
+        )
+    return ok(data={"items": rows})
+
+
+@query_router.delete("/commands/{cmd_id}", response_model=ApiResponse)
+async def cancel_command(
+    cmd_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        cancelled = await control_repo.cancel_action(session, cmd_id)
+    if not cancelled:
+        raise BizError(ErrCode.BAD_PARAM, "cmd not pending or not found")
+    return ok(data={"cmd_id": cmd_id, "status": "cancelled"})

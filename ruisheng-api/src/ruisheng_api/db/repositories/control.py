@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from sqlalchemy import text
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -61,3 +62,42 @@ async def check_recent_duplicate(
             },
         )
     ).scalar_one_or_none() is not None
+
+
+async def list_actions(
+    session: AsyncSession,
+    *,
+    user_name: str | None,
+    dev_number: str | None,
+    offset: int,
+    limit: int,
+) -> list[dict[str, object]]:
+    sql = text("""
+        SELECT id, dev_number, user_name, action, cmd_id, result,
+               acted_at, completed_at, usr_group
+        FROM user_control_actions
+        WHERE (:u IS NULL OR user_name = :u)
+          AND (:d IS NULL OR dev_number = :d)
+        ORDER BY acted_at DESC
+        OFFSET :o LIMIT :l
+    """)
+    rows = await session.execute(
+        sql,
+        {
+            "u": user_name,
+            "d": dev_number,
+            "o": offset,
+            "l": limit,
+        },
+    )
+    return [dict(r._mapping) for r in rows]
+
+
+async def cancel_action(session: AsyncSession, cmd_id: str) -> bool:
+    sql = text("""
+        UPDATE user_control_actions
+        SET result = 'cancelled', completed_at = now()
+        WHERE cmd_id = :c AND result = 'pending'
+    """)
+    res: CursorResult[tuple[()]] = await session.execute(sql, {"c": cmd_id})  # type: ignore[assignment]
+    return (res.rowcount or 0) > 0
