@@ -40,7 +40,8 @@ class Repository:
         async with self._engine.begin() as conn:
             # UPSERT realtime
             await conn.execute(
-                text("""
+                text(  # noqa: tenant-lint (table has no usr_group column)
+                    """
                 INSERT INTO point_data_realtime
                     (dev_number, point_id, org_value, rt_value, recorded_at)
                 VALUES
@@ -49,17 +50,20 @@ class Repository:
                 SET org_value = EXCLUDED.org_value,
                     rt_value = EXCLUDED.rt_value,
                     recorded_at = EXCLUDED.recorded_at
-            """),
+                    """
+                ),
                 [self._to_mapping(r) for r in rows],
             )
             # INSERT history
             await conn.execute(
-                text("""
+                text(  # noqa: tenant-lint (table has no usr_group column)
+                    """
                 INSERT INTO point_data_history
                     (dev_number, point_id, org_value, rt_value, recorded_at)
                 VALUES
                     (:dev_number, :point_id, :org_value, :rt_value, :recorded_at)
-            """),
+                    """
+                ),
                 [self._to_mapping(r) for r in rows],
             )
 
