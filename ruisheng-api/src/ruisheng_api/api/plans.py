@@ -11,7 +11,14 @@ from ..core.response import ApiResponse, ok
 from ..core.tenant import apply_tenant_context
 from ..db.repositories import plans as plans_repo
 from ..deps import get_current_user, get_session
-from .schemas.plans import TimingPlanCreateRequest, TimingPlanOut, TimingPlanUpdateRequest
+from .schemas.plans import (
+    CompleteMaintenanceRequest,
+    MaintainPlanCreateRequest,
+    MaintainPlanOut,
+    TimingPlanCreateRequest,
+    TimingPlanOut,
+    TimingPlanUpdateRequest,
+)
 
 timing_router = APIRouter(prefix="/api/plans/timing", tags=["plans"])
 maintenance_router = APIRouter(prefix="/api/plans/maintenance", tags=["plans"])
@@ -78,3 +85,75 @@ async def delete_timing_plan(
             raise BizError(ErrCode.BAD_PARAM, "plan not found")
         await plans_repo.soft_delete_timing_plan(session, p)
     return ok(data={"deleted": plan_id})
+
+
+# ---------------------------------------------------------------------------
+# Maintenance plan endpoints
+# ---------------------------------------------------------------------------
+
+
+@maintenance_router.get("", response_model=ApiResponse)
+async def list_maintain_plans(
+    dev_number: str | None = Query(None),
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        rows = await plans_repo.list_maintain_plans(session, dev_number=dev_number)
+    return ok(data={"items": [MaintainPlanOut.model_validate(p).model_dump() for p in rows]})
+
+
+@maintenance_router.post("", response_model=ApiResponse)
+async def create_maintain_plan(
+    body: MaintainPlanCreateRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        p = await plans_repo.create_maintain_plan(
+            session, **body.model_dump(exclude_none=True), usr_group=user.usr_group
+        )
+    return ok(data=MaintainPlanOut.model_validate(p).model_dump())
+
+
+@maintenance_router.delete("/{plan_id}", response_model=ApiResponse)
+async def delete_maintain_plan(
+    plan_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        p = await plans_repo.get_maintain_plan(session, plan_id)
+        if p is None:
+            raise BizError(ErrCode.BAD_PARAM, "plan not found")
+        await plans_repo.soft_delete_maintain_plan(session, p)
+    return ok(data={"deleted": plan_id})
+
+
+@maintenance_router.post("/{plan_id}/complete", response_model=ApiResponse)
+async def complete_maintenance(
+    plan_id: int,
+    body: CompleteMaintenanceRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        is_new, result = await plans_repo.complete_maintenance(
+            session,
+            plan_id=plan_id,
+            action_uuid=body.action_uuid,
+            dev_number=body.dev_number,
+            user_name=user.user_name,
+            note=body.note,
+            usr_group=user.usr_group,
+        )
+    status = "completed" if is_new else "duplicate"
+    return ok(
+        data={**result, "status": status, "next_due_at": str(result.get("next_due_at") or "")}
+    )
