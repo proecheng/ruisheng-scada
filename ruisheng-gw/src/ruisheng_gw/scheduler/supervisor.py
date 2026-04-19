@@ -50,6 +50,8 @@ class Supervisor:
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.health: dict[str, DeviceHealth] = {}
         self._factories: dict[str, CoroFactory] = {}
+        self._respawn_tasks: set[asyncio.Task[None]] = set()
+        self._shutdown = False
 
     def start_poller(self, *, dev_number: str, coro_factory: CoroFactory) -> None:
         self._factories[dev_number] = coro_factory
@@ -80,11 +82,14 @@ class Supervisor:
 
         async def _delayed_respawn() -> None:
             await self._clock.sleep(backoff)
-            if not h.quarantined:
+            if not h.quarantined and not self._shutdown:
                 self._spawn(dev_number)
 
-        asyncio.create_task(_delayed_respawn())
+        t = asyncio.create_task(_delayed_respawn())
+        self._respawn_tasks.add(t)
+        t.add_done_callback(self._respawn_tasks.discard)
 
     def shutdown_sync(self) -> None:
-        for t in self.tasks.values():
+        self._shutdown = True
+        for t in (*self.tasks.values(), *self._respawn_tasks):
             t.cancel()
