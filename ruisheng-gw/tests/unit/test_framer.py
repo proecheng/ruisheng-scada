@@ -43,6 +43,21 @@ def test_ascii_heartbeat_stripped() -> None:
     framer.feed(garbage + frame + garbage)
     frames = list(framer.pop_frames())
     assert frames == [frame]
+    assert framer.stats["heartbeat_stripped"] > 0
+
+
+def test_modbus_frame_not_corrupted_by_regex() -> None:
+    """Frames with byte values like 0x0A + 0x44 must NOT be stripped."""
+    # FC3 response: slave=0x01 fc=0x03 bytecount=0x02 data=[0x0A, 0x44] + CRC
+    # 0x0A = '\n', 0x44 = 'D' — would false-positive on old regex
+    body = bytes([0x01, 0x03, 0x02, 0x0A, 0x44])
+    frame = append_crc_to_frame(body)
+    # Sanity: confirm the frame contains the dangerous bytes
+    assert b"\x0a\x44" in frame
+    framer = Framer()
+    framer.feed(frame)
+    frames = list(framer.pop_frames())
+    assert frames == [frame]  # frame must not be corrupted
 
 
 def test_incomplete_frame_waits() -> None:

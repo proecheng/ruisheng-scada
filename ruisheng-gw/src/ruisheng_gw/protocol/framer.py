@@ -1,7 +1,9 @@
 """Length-aware ModBus RTU-on-TCP framer.
 
 Strategy:
-1. Strip ASCII garbage runs ([\\r\\n][A-Z#@!][\\w=:.,]+) BEFORE framing
+1. Strip DTU heartbeat lines (\\r?\\n[!-~]{3,}\\r?\\n) BEFORE framing.
+   Matches full printable-ASCII lines like \\r\\n###HEARTBEAT\\r\\n.
+   Does NOT match binary Modbus bytes (0x00–0x20 are outside [!-~]).
 2. Look at byte[1] (FC) in buffer to determine expected length:
    - FC 3 resp: [slave fc byte_count N data CRC_lo CRC_hi] = 3 + N + 2
    - FC 5/6 req/resp: 8 bytes total
@@ -18,7 +20,7 @@ import re
 from collections import deque
 from collections.abc import Iterator
 
-_ASCII_GARBAGE_RE = re.compile(rb"[\r\n][A-Z#@!][\w=:.,]*[\r\n]?")
+_DTU_HEARTBEAT_RE = re.compile(rb"\r?\n[!-~]{3,}\r?\n")
 
 # minimum bytes needed before we can dispatch on FC
 _MIN_DISPATCH_LEN = 4
@@ -34,6 +36,8 @@ _FC_READ_HOLDING = 0x03
 _FC_EXCEPTION_BIT = 0x80
 
 # expected frame length by FC (total bytes including slave + CRC)
+# FC 0x16 (LowPowerRegisterFrame): omitted — spec §A.4 byte count unconfirmed (Plan 1.5)
+# FC 0x64 (registration): omitted — spec §A.4 byte count unconfirmed (Plan 1.5)
 _FIXED_LEN_BY_FC: dict[int, int] = {
     0x05: 8,  # write single coil req/resp
     0x06: 8,  # write single holding req/resp
@@ -55,8 +59,8 @@ class Framer:
         self.stats: dict[str, int] = {"resync": 0, "heartbeat_stripped": 0}
 
     def feed(self, data: bytes, *, now_ms: int = 0) -> None:
-        """Feed raw bytes into the framer. Strips ASCII garbage first."""
-        stripped, n = _ASCII_GARBAGE_RE.subn(b"", data)
+        """Feed raw bytes into the framer. Strips DTU heartbeat lines first."""
+        stripped, n = _DTU_HEARTBEAT_RE.subn(b"", data)
         if n > 0:
             self.stats["heartbeat_stripped"] += n
         self._buf.extend(stripped)
