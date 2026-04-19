@@ -42,6 +42,8 @@ class Config(BaseSettings):
 
     default_usr_group: str = Field(default="default", min_length=1)
 
+    wechat_api_v3_key: str = Field(default="")
+
     env: Literal["dev", "test", "prod"] = Field(default="dev")
 
     @model_validator(mode="before")

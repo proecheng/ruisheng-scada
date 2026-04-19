@@ -9,6 +9,7 @@ from . import (
     devices,
     health,
     orgs,
+    pay,
     plans,
     points,
     reports,
@@ -35,3 +36,5 @@ def mount_routers(app: FastAPI) -> None:
     app.include_router(plans.maintenance_router)
     app.include_router(scenes.pages_router)
     app.include_router(scenes.views_router)
+    app.include_router(pay.pay_router)
+    app.include_router(pay.notify_router)
