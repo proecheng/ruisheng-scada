@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as redis_async
@@ -22,6 +23,7 @@ from ..core.login_limit import (
     is_user_locked,
     record_login_fail,
 )
+from ..core.rbac import CurrentUser
 from ..core.response import ApiResponse, ok
 from ..core.security import (
     client_fingerprint,
@@ -29,11 +31,20 @@ from ..core.security import (
     issue_access_token,
     issue_refresh_token,
     verify_password,
+    verify_token,
 )
 from ..db.repositories import users as users_repo
-from ..deps import get_config, get_redis, get_session
+from ..deps import get_config, get_current_user, get_redis, get_session
 from ..services import otp as otp_svc
-from .schemas.auth import LoginRequest, LoginResponseData, RegisterRequest, SmsSendRequest
+from .schemas.auth import (
+    LoginRequest,
+    LoginResponseData,
+    LogoutRequest,
+    OtpSendRequest,
+    RefreshRequest,
+    RegisterRequest,
+    SmsSendRequest,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -136,3 +147,91 @@ async def register(
         usr_group=cfg.default_usr_group,
     )
     return ok(data={"user_name": body.user_name})
+
+
+async def _blacklist_jti(r: _Redis, jti: str, remaining: int) -> None:
+    if remaining <= 0:
+        return
+    await r.sadd("jwt_blacklist", jti)
+    await r.setex(f"jwt_blacklist_ttl:{jti}", remaining, "1")
+
+
+@router.post("/refresh", response_model=ApiResponse)
+async def refresh(
+    body: RefreshRequest,
+    request: Request,
+    cfg: Config = Depends(get_config),
+    r: _Redis = Depends(get_redis),
+) -> ApiResponse:
+    ip = request.client.host if request.client else "unknown"
+    ua = request.headers.get("user-agent", "")
+    fp = client_fingerprint(ip, ua)
+    payload = verify_token(
+        body.refresh_token,
+        secret=cfg.jwt_secret,
+        expected_fp=fp,
+        expected_typ="refresh",
+    )
+    old_jti = str(payload["jti"])
+    if await r.sismember("jwt_blacklist", old_jti):
+        raise BizError(ErrCode.UNAUTHED, "refresh revoked")
+    remaining = int(str(payload["exp"])) - int(time.time())
+    await _blacklist_jti(r, old_jti, remaining)
+    sub = str(payload["sub"])
+    grp = str(payload["usr_group"])
+    role = str(payload["role"])
+    ca = int(str(payload.get("ca") or 0))
+    access = issue_access_token(
+        sub, grp, role, ca, fp, secret=cfg.jwt_secret, ttl_sec=cfg.jwt_access_ttl_sec
+    )
+    new_refresh = issue_refresh_token(
+        sub, grp, role, ca, fp, secret=cfg.jwt_secret, ttl_sec=cfg.jwt_refresh_ttl_sec
+    )
+    return ok(
+        data={
+            "access_token": access,
+            "refresh_token": new_refresh,
+            "access_ttl_sec": cfg.jwt_access_ttl_sec,
+        }
+    )
+
+
+@router.post("/logout", response_model=ApiResponse)
+async def logout(
+    body: LogoutRequest,
+    request: Request,
+    cfg: Config = Depends(get_config),
+    r: _Redis = Depends(get_redis),
+    user: CurrentUser = Depends(get_current_user),
+) -> ApiResponse:
+    await _blacklist_jti(r, user.jti, cfg.jwt_access_ttl_sec)
+    if body.refresh_token:
+        ip = request.client.host if request.client else "unknown"
+        ua = request.headers.get("user-agent", "")
+        fp = client_fingerprint(ip, ua)
+        try:
+            p = verify_token(
+                body.refresh_token,
+                secret=cfg.jwt_secret,
+                expected_fp=fp,
+                expected_typ="refresh",
+            )
+            await _blacklist_jti(r, str(p["jti"]), int(str(p["exp"])) - int(time.time()))
+        except BizError:
+            pass
+    return ok(data={"logout": True})
+
+
+@router.post("/otp/send", response_model=ApiResponse)
+async def otp_send(
+    body: OtpSendRequest,
+    cfg: Config = Depends(get_config),
+    r: _Redis = Depends(get_redis),
+    user: CurrentUser = Depends(get_current_user),
+) -> ApiResponse:
+    code = await otp_svc.issue_otp(
+        r, action=body.action, key=user.user_name, ttl_sec=cfg.otp_ttl_sec
+    )
+    await _send_sms(body.channel, user.user_name, code)
+    logger.bind(user_name=user.user_name, action=body.action).info("otp to user")
+    return ok(data={"sent": True, "ttl_sec": cfg.otp_ttl_sec})
