@@ -5,6 +5,28 @@
 
 ---
 
+## 当前状态：**Plan 2 — Stage D 4/4 ✅**（Stage C 3/3 ✅ / Stage B 5/5 ✅ / Stage A 5/5 ✅）（2026-04-20 session）
+
+**Plan 2 Stage D 进度**（tag `plan-2-stage-d-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| D1 | GET+CRUD /api/devices with tenant RLS | `5fb1379` | 2 tests；schemas/devices.py 4 classes；devices_repo 5 funcs；5 endpoints |
+| D2 | realtime + history endpoints | `49502b5` | 4 tests；timeseries.py pick_sample_interval/load_realtime/load_history；X-Downsampled header |
+| D3 | POST /api/devices/{d}/control | `d687ad8` | 4 tests；pubsub/publisher.py xadd；control_repo insert+dup；idempotency；OTP high-risk |
+| D4 | list commands + cancel | `80221db` | 3 tests；list_actions/cancel_action；non-admin scoped |
+| D5 | tag + PROGRESS | tag pushed | `plan-2-stage-d-complete` ✅ |
+
+**测试状态**：69 unit tests pass；ruff + mypy clean
+
+**Plan 2 下一步（新 session → Stage E）**：
+1. 读本 PROGRESS.md
+2. 读 plan Stage E 全文（Task E1 开始）
+3. worktree: `D:\江苏润盛\.claude\worktrees\plan-2-api` (branch `feature/plan-2-api`)
+4. 用 `superpowers:subagent-driven-development` 执行 E1
+
+---
+
 ## 当前状态：**Plan 2 — Stage C 3/3 ✅**（Stage B 5/5 ✅ / Stage A 5/5 ✅）（2026-04-20 session）
 
 **Plan 2 Stage C 进度**（tag `plan-2-stage-c-complete`）：
