@@ -39,7 +39,7 @@ def test_user_scaling_on_top_of_engineering() -> None:
     assert disp == pytest.approx(21.0)  # 10*2 + 1
 
 
-def test_zero_point_ratio_raises() -> None:
+def test_zero_point_ratio_yields_offset() -> None:
     """point_ratio=0 → engineering = offset only (never divides); valid."""
     p = _p(point_ratio=0.0, point_offset=5.0)
     eng, _ = apply_scaling(p, raw=42)
@@ -56,3 +56,9 @@ def test_infinity_raises_scaling_error() -> None:
     p = _p()
     with pytest.raises(ScalingError):
         apply_scaling(p, raw=float("inf"))
+
+
+def test_engineering_overflow_raises_scaling_error() -> None:
+    p = _p(point_ratio=1e308)
+    with pytest.raises(ScalingError):
+        apply_scaling(p, raw=1e308)
