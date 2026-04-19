@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Query, Response
 from ruisheng_shared.errors.codes import BizError, ErrCode
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +13,7 @@ from ..core.rbac import CurrentUser, check_ca, check_role
 from ..core.response import ApiResponse, ok
 from ..core.tenant import apply_tenant_context
 from ..db.repositories import devices as devices_repo
+from ..db.repositories import timeseries as ts_repo
 from ..deps import get_current_user, get_session
 from .schemas.devices import (
     DeviceCreateRequest,
@@ -114,3 +117,58 @@ async def delete_device(
             raise BizError(ErrCode.BAD_PARAM, "device not found")
         await devices_repo.soft_delete(session, d)
     return ok(data={"deleted": dev_number})
+
+
+@router.get("/{dev_number}/realtime", response_model=ApiResponse)
+async def realtime(
+    dev_number: str,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        d = await devices_repo.get_by_dev_number(session, dev_number)
+        if d is None:
+            raise BizError(ErrCode.BAD_PARAM, "device not found")
+        rows = await ts_repo.load_realtime(session, dev_number)
+    return ok(data={"dev_number": dev_number, "points": rows})
+
+
+@router.get("/{dev_number}/history", response_model=ApiResponse)
+async def history(
+    dev_number: str,
+    response: Response,
+    from_ts: datetime = Query(..., alias="from"),
+    to_ts: datetime = Query(..., alias="to"),
+    point_id: int | None = Query(None),
+    sample_interval_s: int | None = Query(None, ge=1, le=86_400),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(1000, ge=1, le=ts_repo.MAX_HISTORY_ROWS),
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    if to_ts <= from_ts:
+        raise BizError(ErrCode.BAD_PARAM, "to must be > from")
+    duration = int((to_ts - from_ts).total_seconds())
+    interval = sample_interval_s or ts_repo.pick_sample_interval(duration)
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        d = await devices_repo.get_by_dev_number(session, dev_number)
+        if d is None:
+            raise BizError(ErrCode.BAD_PARAM, "device not found")
+        rows = await ts_repo.load_history(
+            session,
+            dev_number=dev_number,
+            point_id=point_id,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            sample_interval_s=interval,
+            offset=offset,
+            limit=limit,
+        )
+    if interval > 1:
+        response.headers["X-Downsampled"] = "true"
+        response.headers["X-Sample-Interval-S"] = str(interval)
+    return ok(
+        data={"rows": rows, "next_offset": offset + len(rows) if len(rows) == limit else None}
+    )
