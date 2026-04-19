@@ -5,6 +5,26 @@
 
 ---
 
+## 当前状态：**Plan 2 — Stage H 2/2 ✅**（Stage G 2/2 ✅ / Stage F 3/3 ✅ ...）（2026-04-20 session）
+
+**Plan 2 Stage H 进度**（tag `plan-2-stage-h-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| H1 | Daily reports + Excel export | `9fc51ed` | 2 tests；aggregate_daily；export_daily_xlsx PK magic；POST /api/reports/daily json/xlsx |
+| H2 | Waveforms + FFT | `9e56a21` | 2 tests；waveform_history BYTEA float32 decode；np.fft.rfft；numpy>=1.26 dep |
+| H3 | tag + PROGRESS | tag pushed | `plan-2-stage-h-complete` ✅ |
+
+**测试状态**：95 unit tests pass；ruff + mypy clean
+
+**Plan 2 下一步（新 session → Stage I）**：
+1. 读本 PROGRESS.md
+2. 读 plan Stage I 全文（I1 timing plans / I2 maintenance / I3 scenes）
+3. worktree: `D:\江苏润盛\.claude\worktrees\plan-2-api` (branch `feature/plan-2-api`)
+4. 用 `superpowers:subagent-driven-development` 执行 I1
+
+---
+
 ## 当前状态：**Plan 2 — Stage G 2/2 ✅**（Stage F 3/3 ✅ / Stage E 2/2 ✅ / Stage D 4/4 ✅ ...）（2026-04-20 session）
 
 **Plan 2 Stage G 进度**（tag `plan-2-stage-g-complete`）：
