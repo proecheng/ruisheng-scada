@@ -11,7 +11,6 @@ from ruisheng_gw.protocol.frames import (
     encode_write_single_holding,
 )
 
-FC_WRITE_SINGLE_COIL = 0x05
 FC_WRITE_SINGLE_HOLDING = 0x06
 FC_WRITE_MULTIPLE_HOLDING = 0x10
 SLAVE_ID = 0x01

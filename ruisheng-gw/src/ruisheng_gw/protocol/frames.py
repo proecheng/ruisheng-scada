@@ -64,7 +64,7 @@ def decode_read_holding_response(raw: bytes) -> ReadHoldingResponse:
     byte_count = body[2]
     if len(body) != MIN_RESPONSE_BODY_LEN + byte_count:
         raise ProtocolError(
-            f"FC3 byte_count={byte_count} but body len={len(body)-MIN_RESPONSE_BODY_LEN}"
+            f"FC3 byte_count={byte_count} but body len={len(body) - MIN_RESPONSE_BODY_LEN}"
         )
     data = body[3:]
     if len(data) % 2 != 0:
@@ -148,7 +148,7 @@ def encode_write_multiple_holding(req: WriteMultipleHoldingRequest) -> bytes:
             req.start_addr & 0xFF,
             (count >> 8) & 0xFF,
             count & 0xFF,
-            byte_count,
+            byte_count & 0xFF,
         ]
     ) + bytes(data)
     return append_crc_to_frame(body)
