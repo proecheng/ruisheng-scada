@@ -5,6 +5,29 @@
 
 ---
 
+## 当前状态：**Plan 2 — Stage B 5/5 ✅**（Stage A 5/5 ✅）（2026-04-20 session）
+
+**Plan 2 Stage B 进度**（tag `plan-2-stage-b-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| B1 | logging_setup.py loguru + redaction | `aff8fb5` | 6 tests；SENSITIVE_KEYS；phone mask；idempotent |
+| B2 | core/security.py JWT + bcrypt | `dcd937d` | 6 tests；passlib→direct bcrypt（passlib/bcrypt5.x incompatible）；ULID via ulid.ULID() |
+| B3 | core/tenant.py SET LOCAL | `7867d9f` | 4 async tests；VALID_ROLES；TenantIsolationError |
+| B4 | core/rbac.py + login_limit.py | `abd69be` | 7 tests；CurrentUser frozen dataclass；redis types stubs added |
+| B5 | deps.py + main.py lifespan | `85a6a48` | 3 tests；engine+redis lifespan；B008 ruff ignore；TYPE_CHECKING guard |
+| B6 | tag + PROGRESS | tag pushed | `plan-2-stage-b-complete` ✅ |
+
+**测试状态**：41 unit tests pass；ruff + mypy clean
+
+**Plan 2 下一步（新 session → Stage C）**：
+1. 读本 PROGRESS.md
+2. 读 plan Stage C 全文（Task C1 开始）
+3. worktree: `D:\江苏润盛\.claude\worktrees\plan-2-api` (branch `feature/plan-2-api`)
+4. 用 `superpowers:subagent-driven-development` 执行 C1
+
+---
+
 ## 当前状态：**Plan 2 — Stage A 5/5 ✅**（2026-04-20 session）
 
 **Plan 2 worktree**：`feature/plan-2-api`（从 `feature/plan-0-foundation`）；`.claude/worktrees/plan-2-api`
