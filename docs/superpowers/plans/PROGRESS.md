@@ -5,6 +5,24 @@
 
 ---
 
+## 当前状态：**Plan 1 — 完整闭环 ✅**（tag `plan-1-complete`，`gw-v0.1.0` GitHub Release 已发布）
+
+**Plan 1 Stage G 进度**（G5 done 2026-04-19，tag `plan-1-stage-g-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| G1 | 扩展 CI 5 个 gw job | `5b9eadc`+`dacc12e` | gw-unit/integration/replay/tenant-lint/benchmark；`--wait` healthcheck；`--cov` gate；Spec APPROVED |
+| G2 | release-gw.yml | `bec97c5` | Python heredoc CHANGELOG 提取；YAML+py_compile 验证；Spec APPROVED |
+| G3 | CHANGELOG + RELEASE.md + rollback | `cf44f74` | CHANGELOG [0.1.0]；RELEASE.md 追加 gw 段；runbook 4 场景；Spec APPROVED |
+| G4 | README Plan 1 [x] | `d17c82c` | Spec APPROVED |
+| G5 | 3 tags + GitHub Release | tags pushed | `plan-1-stage-g-complete` + `plan-1-complete` + `gw-v0.1.0`；Release 非 draft；body from CHANGELOG ✅ |
+
+**GitHub Release**：https://github.com/proecheng/ruisheng-scada/releases/tag/gw-v0.1.0
+
+**Plan 1 完整闭环**：7 Stage / 48 task；104 unit + 1 contract + 1 benchmark；line 85.54%；branch 83.2%
+
+---
+
 ## 当前状态：**Plan 1 — Stage F 7/7 ✅**（Stage E 10/10 ✅ / Stage D 5/5 ✅ / Stage C 5/5 ✅ / Stage B 8/8 ✅ / Stage A 8/8 ✅ / Plan 0 完整闭环 Stage G 7/7）
 
 **Plan 1 Stage F 进度**（F7 done 2026-04-19，tag `plan-1-stage-f-complete`）：
