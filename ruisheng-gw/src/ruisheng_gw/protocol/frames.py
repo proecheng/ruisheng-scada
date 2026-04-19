@@ -1,12 +1,13 @@
 """ModBus RTU frames dataclasses + encode/decode.
 
-FC 支持：3/5/6/16 (标准) + 19(0x13) heartbeat (私有 §A.5) + 20/21/22
+FC 支持：3/5/6/16 (标准) + 25(0x19) heartbeat (私有 §A.5) + 20/21/22
 (低功耗/文件) + 100 (注册) + ExceptionResponse (fc|0x80).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypeAlias
 
 from ruisheng_gw.protocol.exceptions import PrivateCodeNotImplemented, ProtocolError
 from ruisheng_gw.protocol.modbus_codec import (
@@ -186,6 +187,11 @@ class LowPowerRegisterFrame:
     payload: bytes
 
 
+AnyFrame: TypeAlias = (
+    ExceptionResponse | ReadHoldingResponse | HeartbeatFrame | LowPowerRegisterFrame
+)
+
+
 def encode_exception_response(resp: ExceptionResponse) -> bytes:
     """Encode ExceptionResponse as 5-byte RTU frame."""
     body = bytes([resp.slave & 0xFF, (resp.original_fc | 0x80) & 0xFF, resp.error_code & 0xFF])
@@ -198,7 +204,9 @@ def encode_heartbeat(slave: int) -> bytes:
     return append_crc_to_frame(body)
 
 
-def decode_frame_by_funcode(raw: bytes) -> object:
+def decode_frame_by_funcode(
+    raw: bytes,
+) -> AnyFrame:
     """Top-level dispatch by FC. ExceptionResponse check (fc & 0x80) comes first."""
     verify_crc16(raw)
     body = raw[:-2]

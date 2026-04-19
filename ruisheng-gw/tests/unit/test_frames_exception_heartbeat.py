@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+from ruisheng_gw.protocol.exceptions import PrivateCodeNotImplemented, ProtocolError
 from ruisheng_gw.protocol.frames import (
     ExceptionResponse,
     HeartbeatFrame,
@@ -47,3 +49,32 @@ def test_fc_22_low_power_register_decoded() -> None:
     assert isinstance(decoded, LowPowerRegisterFrame)
     assert decoded.slave == SLAVE_ID
     assert decoded.payload == bytes(PAYLOAD_LEN)
+
+
+def test_decode_raises_on_truncated_exception_frame() -> None:
+    # fc | 0x80 set but no error code byte → ProtocolError
+    body = bytes([0x01, 0x83])  # slave + exception fc, missing error code
+    frame = append_crc_to_frame(body)
+    with pytest.raises(ProtocolError):
+        decode_frame_by_funcode(frame)
+
+
+def test_decode_raises_on_unknown_fc() -> None:
+    body = bytes([0x01, 0x42, 0x00])  # FC 0x42 unknown
+    frame = append_crc_to_frame(body)
+    with pytest.raises(ProtocolError):
+        decode_frame_by_funcode(frame)
+
+
+def test_private_fc_0x0d_raises_not_implemented() -> None:
+    body = bytes([0x01, 0x0D, 0x00])
+    frame = append_crc_to_frame(body)
+    with pytest.raises(PrivateCodeNotImplemented):
+        decode_frame_by_funcode(frame)
+
+
+def test_private_fc_0x1a_raises_not_implemented() -> None:
+    body = bytes([0x01, 0x1A, 0x00])
+    frame = append_crc_to_frame(body)
+    with pytest.raises(PrivateCodeNotImplemented):
+        decode_frame_by_funcode(frame)
