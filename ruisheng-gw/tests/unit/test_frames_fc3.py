@@ -6,6 +6,7 @@ import pytest
 from ruisheng_gw.protocol.exceptions import CRCMismatchError
 from ruisheng_gw.protocol.frames import (
     ReadHoldingRequest,
+    ReadHoldingResponse,
     decode_read_holding_response,
     encode_read_holding_request,
 )
@@ -27,10 +28,18 @@ def test_decode_read_holding_response_2_registers() -> None:
     resp = decode_read_holding_response(frame)
     assert resp.slave == 1
     assert resp.byte_count == 4  # noqa: PLR2004
-    assert resp.registers == [10, 20]
+    assert resp.registers == (10, 20)
 
 
 def test_decode_response_crc_mismatch_raises() -> None:
     bad = bytes.fromhex("010304000A0014") + bytes([0x00, 0x00])
     with pytest.raises(CRCMismatchError):
         decode_read_holding_response(bad)
+
+
+def test_read_holding_response_is_frozen() -> None:
+    """Validate ReadHoldingResponse type and frozen contract."""
+    resp: ReadHoldingResponse = ReadHoldingResponse(slave=1, byte_count=4, registers=(10, 20))
+    assert resp.slave == 1
+    assert resp.byte_count == 4  # noqa: PLR2004
+    assert resp.registers == (10, 20)

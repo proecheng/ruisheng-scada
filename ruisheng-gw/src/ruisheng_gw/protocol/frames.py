@@ -33,10 +33,11 @@ class ReadHoldingResponse:
 
     slave: int
     byte_count: int
-    registers: list[int]
+    registers: tuple[int, ...]
 
 
 def encode_read_holding_request(req: ReadHoldingRequest) -> bytes:
+    """Encode FC 3 request as 8-byte RTU frame (6 body + 2 CRC)."""
     body = bytes(
         [
             req.slave & 0xFF,
@@ -51,6 +52,7 @@ def encode_read_holding_request(req: ReadHoldingRequest) -> bytes:
 
 
 def decode_read_holding_response(raw: bytes) -> ReadHoldingResponse:
+    """Decode FC 3 response frame; raises CRCMismatchError or ProtocolError on bad input."""
     verify_crc16(raw)
     body = raw[:-2]
     if len(body) < MIN_RESPONSE_BODY_LEN:
@@ -67,5 +69,5 @@ def decode_read_holding_response(raw: bytes) -> ReadHoldingResponse:
     data = body[3:]
     if len(data) % 2 != 0:
         raise ProtocolError("FC3 data length not even")
-    registers = [(data[i] << 8) | data[i + 1] for i in range(0, len(data), 2)]
+    registers = tuple((data[i] << 8) | data[i + 1] for i in range(0, len(data), 2))
     return ReadHoldingResponse(slave=slave, byte_count=byte_count, registers=registers)
