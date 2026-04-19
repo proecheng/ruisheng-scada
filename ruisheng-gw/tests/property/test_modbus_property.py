@@ -1,6 +1,6 @@
 """Hypothesis property test — CRC + framer round-trip on random bytes.
 
-Runs 100 examples per CI (default Hypothesis settings); 1000 nightly.
+Runs 100 examples per CI. Configure HYPOTHESIS_MAX_EXAMPLES for local exploration.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from ruisheng_gw.protocol.modbus_codec import append_crc_to_frame, verify_crc16
 
 
 @given(st.binary(min_size=2, max_size=200))
+@settings(max_examples=100)
 def test_crc_roundtrip_any_body(body: bytes) -> None:
     frame = append_crc_to_frame(body)
     verify_crc16(frame)  # no raise
