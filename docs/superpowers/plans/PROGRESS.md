@@ -5,6 +5,25 @@
 
 ---
 
+## 当前状态：**Plan 2 — Stage L 2/2 ✅**（Stage K 3/3 ✅ / Stage J 3/3 ✅ ...）（2026-04-20 session）
+
+**Plan 2 Stage L 进度**（tag `plan-2-stage-l-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| L1 | WeChat pay sign + create order | `026112b` | 4 tests；wechat_pay_sign HMAC-SHA256；verify_sign；POST /api/pay/orders ULID |
+| L2 | /wechat/pay/notify callback + tag | `a9f6223`+tag | 2 tests；gw_pool BYPASSRLS；ON CONFLICT idempotent；time_end 5min window |
+
+**测试状态**：137 unit tests pass；ruff + mypy clean
+
+**Plan 2 下一步（新 session → Stage M）**：
+1. 读本 PROGRESS.md
+2. 读 plan Stage M 全文（M1 admin + health / M2 CI + release-api.yml / M3 tag + Release）
+3. worktree: `D:\江苏润盛\.claude\worktrees\plan-2-api` (branch `feature/plan-2-api`)
+4. 用 `superpowers:subagent-driven-development` 执行 M1
+
+---
+
 ## 当前状态：**Plan 2 — Stage K 3/3 ✅**（Stage J 3/3 ✅ / Stage I 3/3 ✅ ...）（2026-04-20 session）
 
 **Plan 2 Stage K 进度**（tag `plan-2-stage-k-complete`）：
