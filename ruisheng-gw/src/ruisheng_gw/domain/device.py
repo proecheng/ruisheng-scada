@@ -25,9 +25,9 @@ class Device:
     usr_group: str
     state: DeviceState = DeviceState.UNREGISTERED
     last_seen: float = 0.0
+    last_offline_reason: str = ""
 
     def register(self, *, now: float) -> None:
-        # allowed from UNREGISTERED or OFFLINE (reconnect)
         if self.state is DeviceState.ONLINE:
             # idempotent re-register while online — update timestamp only
             self.last_seen = now
@@ -44,3 +44,4 @@ class Device:
 
     def mark_offline(self, *, reason: str = "unknown") -> None:
         self.state = DeviceState.OFFLINE
+        self.last_offline_reason = reason

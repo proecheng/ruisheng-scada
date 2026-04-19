@@ -35,7 +35,7 @@ def test_timeout_transitions_online_to_offline() -> None:
 
 def test_illegal_transition_raises() -> None:
     d = Device(dev_number="DEV-001", usr_group="ug_A")
-    with pytest.raises(InvalidTransition):
+    with pytest.raises(InvalidTransition, match=r"cannot heartbeat"):
         d.heartbeat(now=100.0)  # cannot heartbeat before register
 
 
@@ -45,3 +45,4 @@ def test_re_register_from_offline_ok() -> None:
     d.mark_offline()
     d.register(now=200.0)
     assert d.state is DeviceState.ONLINE
+    assert d.last_seen == 200.0  # noqa: PLR2004
