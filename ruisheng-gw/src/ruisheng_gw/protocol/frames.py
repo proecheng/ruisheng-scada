@@ -71,3 +71,84 @@ def decode_read_holding_response(raw: bytes) -> ReadHoldingResponse:
         raise ProtocolError("FC3 data length not even")
     registers = tuple((data[i] << 8) | data[i + 1] for i in range(0, len(data), 2))
     return ReadHoldingResponse(slave=slave, byte_count=byte_count, registers=registers)
+
+
+@dataclass(frozen=True)
+class WriteSingleCoilRequest:
+    """FC 5 request: write single coil."""
+
+    slave: int
+    addr: int
+    value: bool
+
+
+@dataclass(frozen=True)
+class WriteSingleHoldingRequest:
+    """FC 6 request: write single holding register."""
+
+    slave: int
+    addr: int
+    value: int
+
+
+@dataclass(frozen=True)
+class WriteMultipleHoldingRequest:
+    """FC 16 (0x10) request: write multiple holding registers."""
+
+    slave: int
+    start_addr: int
+    values: tuple[int, ...]
+
+
+def encode_write_single_coil(req: WriteSingleCoilRequest) -> bytes:
+    """Encode FC 5 request: bool → 0xFF00 (ON) or 0x0000 (OFF)."""
+    data = bytes([0xFF, 0x00]) if req.value else bytes([0x00, 0x00])
+    body = (
+        bytes(
+            [
+                req.slave & 0xFF,
+                0x05,
+                (req.addr >> 8) & 0xFF,
+                req.addr & 0xFF,
+            ]
+        )
+        + data
+    )
+    return append_crc_to_frame(body)
+
+
+def encode_write_single_holding(req: WriteSingleHoldingRequest) -> bytes:
+    """Encode FC 6 request: single register as big-endian uint16."""
+    body = bytes(
+        [
+            req.slave & 0xFF,
+            0x06,
+            (req.addr >> 8) & 0xFF,
+            req.addr & 0xFF,
+            (req.value >> 8) & 0xFF,
+            req.value & 0xFF,
+        ]
+    )
+    return append_crc_to_frame(body)
+
+
+def encode_write_multiple_holding(req: WriteMultipleHoldingRequest) -> bytes:
+    """Encode FC 16 (0x10) request: count + byte_count + N×2B big-endian data."""
+    count = len(req.values)
+    byte_count = count * 2
+    data = bytearray()
+    for v in req.values:
+        data.append((v >> 8) & 0xFF)
+        data.append(v & 0xFF)
+    body = bytes(
+        [
+            req.slave & 0xFF,
+            0x10,
+            (req.start_addr >> 8) & 0xFF,
+            req.start_addr & 0xFF,
+            (count >> 8) & 0xFF,
+            count & 0xFF,
+            byte_count,
+        ]
+    ) + bytes(data)
+    return append_crc_to_frame(body)
