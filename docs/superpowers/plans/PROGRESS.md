@@ -5,6 +5,26 @@
 
 ---
 
+## 当前状态：**Plan 2 — Stage G 2/2 ✅**（Stage F 3/3 ✅ / Stage E 2/2 ✅ / Stage D 4/4 ✅ ...）（2026-04-20 session）
+
+**Plan 2 Stage G 进度**（tag `plan-2-stage-g-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| G1 | /api/orgs/users CRUD + role ladder | `2742764` | 2 tests；_ROLE_LEVEL；_must_not_exceed；soft_delete；list_users paginated |
+| G2 | wx_groups + phones + emails | `5d3557e` | 8 tests；UserEmail→phone FK；WxGroup from tenants model；L3+ write RBAC |
+| G3 | tag + PROGRESS | tag pushed | `plan-2-stage-g-complete` ✅ |
+
+**测试状态**：91 unit tests pass；ruff + mypy clean
+
+**Plan 2 下一步（新 session → Stage H）**：
+1. 读本 PROGRESS.md
+2. 读 plan Stage H 全文（Task H1：reports/aggregator + excel + /api/reports/daily）
+3. worktree: `D:\江苏润盛\.claude\worktrees\plan-2-api` (branch `feature/plan-2-api`)
+4. 用 `superpowers:subagent-driven-development` 执行 H1
+
+---
+
 ## 当前状态：**Plan 2 — Stage F 3/3 ✅**（Stage E 2/2 ✅ / Stage D 4/4 ✅ / Stage C 3/3 ✅ / Stage B 5/5 ✅ / Stage A 5/5 ✅）（2026-04-20 session）
 
 **Plan 2 Stage F 进度**（tag `plan-2-stage-f-complete`）：
