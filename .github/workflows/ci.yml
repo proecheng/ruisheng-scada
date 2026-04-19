@@ -99,3 +99,18 @@ jobs:
       - run: uv sync --all-packages
       - name: 检查 SHARED_SCHEMA_VERSION 是否随 models 变更同步升级
         run: uv run python tools/verify_schema_version.py
+
+  gw-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync --all-packages
+      - run: |
+          export GW_LISTEN_HOST=0.0.0.0
+          export GW_LISTEN_PORT=5020
+          export GW_DATABASE_URL=postgresql+asyncpg://u:p@h:5432/d
+          export GW_REDIS_URL=redis://h:6379/0
+          uv run python -m ruisheng_gw --check-only
