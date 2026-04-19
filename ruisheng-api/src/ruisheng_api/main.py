@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -13,6 +14,9 @@ from .config import Config
 from .core.errors import register_exception_handlers
 from .db.base import build_engine, build_session_factory
 from .logging_setup import configure_logging
+from .pubsub.alarm_consumer import AlarmConsumerConfig, consumer_loop
+from .pubsub.realtime_bridge import realtime_loop
+from .pubsub.ws_manager import WSManager
 
 
 @asynccontextmanager
@@ -23,9 +27,22 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.engine = engine
     app.state.session_factory = build_session_factory(engine)
     app.state.redis = redis_async.from_url(cfg.redis_url, decode_responses=True)
+    ws_manager = WSManager()
+    app.state.ws_manager = ws_manager
+    stop_event = asyncio.Event()
+    app.state.stop_event = stop_event
+    consumer_cfg = AlarmConsumerConfig(consumer_name=f"api-{cfg.listen_port}")
+    tasks = [
+        asyncio.create_task(consumer_loop(app.state.redis, consumer_cfg, ws_manager, stop_event)),
+        asyncio.create_task(realtime_loop(app.state.redis, ws_manager, stop_event)),
+    ]
     try:
         yield
     finally:
+        stop_event.set()
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await app.state.redis.aclose()  # type: ignore[attr-defined,unused-ignore]
         await engine.dispose()
 
