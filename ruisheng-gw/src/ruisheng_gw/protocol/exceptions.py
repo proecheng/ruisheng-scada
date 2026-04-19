@@ -15,5 +15,5 @@ class FramingError(ProtocolError):
     """Framing buffer overflow or malformed length."""
 
 
-class PrivateCodeNotImplementedError(ProtocolError):
+class PrivateCodeNotImplemented(ProtocolError):  # noqa: N818
     """Private FunCode encountered; vendor decode not yet implemented."""
