@@ -10,6 +10,7 @@ to SQL SELECT on devices + device_points. For testability, the pure
 
 from __future__ import annotations
 
+from collections.abc import ValuesView
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -79,7 +80,7 @@ class Registry:
 
     @classmethod
     async def load_from_db(cls, engine: Any) -> Registry:
-        from sqlalchemy import text  # noqa: PLC0415
+        from sqlalchemy import text  # noqa: PLC0415 — lazy import avoids hard dep at module level
 
         async with engine.begin() as conn:
             d_rows = (
@@ -118,5 +119,5 @@ class Registry:
     def get(self, dev_number: str) -> RegistryEntry | None:
         return self._entries.get(dev_number)
 
-    def entries(self) -> Any:
+    def entries(self) -> ValuesView[RegistryEntry]:
         return self._entries.values()
