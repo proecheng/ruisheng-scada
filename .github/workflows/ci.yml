@@ -122,7 +122,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with: { enable-cache: true }
       - run: uv sync --all-packages
-      - run: uv run pytest ruisheng-gw/tests/unit ruisheng-gw/tests/property -v
+      - run: uv run pytest ruisheng-gw/tests/unit ruisheng-gw/tests/property -v --cov --cov-fail-under=85
 
   gw-integration:
     runs-on: ubuntu-latest
@@ -134,7 +134,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with: { enable-cache: true }
       - run: uv sync --all-packages
-      - run: docker compose -f docker-compose.dev.yml up -d
+      - run: docker compose -f docker-compose.dev.yml up -d --wait
       - run: uv run alembic upgrade head
       - run: uv run pytest ruisheng-gw/tests/integration -v
 
@@ -148,7 +148,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with: { enable-cache: true }
       - run: uv sync --all-packages
-      - run: docker compose -f docker-compose.dev.yml up -d
+      - run: docker compose -f docker-compose.dev.yml up -d --wait
       - run: uv run alembic upgrade head
       - run: uv run python tools/pcap_gen/scripts/gen_initial_corpus.py
       - run: uv run pytest ruisheng-gw/tests/replay -v
@@ -172,6 +172,6 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with: { enable-cache: true }
       - run: uv sync --all-packages
-      - run: docker compose -f docker-compose.dev.yml up -d
+      - run: docker compose -f docker-compose.dev.yml up -d --wait
       - run: uv run alembic upgrade head
       - run: uv run pytest ruisheng-gw/tests/integration/test_p95_flush.py --benchmark-only -v
