@@ -7,7 +7,10 @@ Vendors differ (e.g., some use FC 13 for 'read with timestamp' which adds
 
 from __future__ import annotations
 
+from collections.abc import Generator
+
 import pytest
+import ruisheng_gw.protocol.private_codes as _pcc_mod
 from ruisheng_gw.protocol.exceptions import PrivateCodeNotImplemented
 from ruisheng_gw.protocol.private_codes import (
     VENDOR_ID_STANDARD,
@@ -16,9 +19,19 @@ from ruisheng_gw.protocol.private_codes import (
 )
 
 
-def test_standard_vendor_raises_not_implemented() -> None:
+@pytest.fixture(autouse=True)
+def _clean_registry() -> Generator[None, None, None]:
+    """Save and restore module-level _registry to prevent test pollution."""
+    original = dict(_pcc_mod._registry)
+    yield
+    _pcc_mod._registry.clear()
+    _pcc_mod._registry.update(original)
+
+
+@pytest.mark.parametrize("fc", [0x0D, 0x1A])
+def test_standard_vendor_raises_not_implemented(fc: int) -> None:
     # Plan 1: no standard vendor decoder exists
-    decoder = resolve_vendor_decoder(VENDOR_ID_STANDARD, fc=0x0D)
+    decoder = resolve_vendor_decoder(VENDOR_ID_STANDARD, fc=fc)
     with pytest.raises(PrivateCodeNotImplemented):
         decoder(b"\x01\x0d\x00\x00")
 
