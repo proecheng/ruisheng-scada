@@ -5,6 +5,26 @@
 
 ---
 
+## 当前状态：**Plan 2 — Stage E 2/2 ✅**（Stage D 4/4 ✅ / Stage C 3/3 ✅ / Stage B 5/5 ✅ / Stage A 5/5 ✅）（2026-04-20 session）
+
+**Plan 2 Stage E 进度**（tag `plan-2-stage-e-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| E1 | Points CRUD /api/devices/{d}/points | `bfd5fdb` | 2 tests；PointOut/Create/Update schemas；DevicePoint verified；4 endpoints |
+| E2 | Alarm configs CRUD + alarm records | `507315e` | 2 tests；DeviceWaringCfg+AlarmRecord verified；cfg_router+record_router；7 repo funcs |
+| E3 | tag + PROGRESS | tag pushed | `plan-2-stage-e-complete` ✅ |
+
+**测试状态**：73 unit tests pass；ruff + mypy clean
+
+**Plan 2 下一步（新 session → Stage F）**：
+1. 读本 PROGRESS.md
+2. 读 plan Stage F 全文（Task F1 开始：alarm_consumer + ws_manager）
+3. worktree: `D:\江苏润盛\.claude\worktrees\plan-2-api` (branch `feature/plan-2-api`)
+4. 用 `superpowers:subagent-driven-development` 执行 F1
+
+---
+
 ## 当前状态：**Plan 2 — Stage D 4/4 ✅**（Stage C 3/3 ✅ / Stage B 5/5 ✅ / Stage A 5/5 ✅）（2026-04-20 session）
 
 **Plan 2 Stage D 进度**（tag `plan-2-stage-d-complete`）：
