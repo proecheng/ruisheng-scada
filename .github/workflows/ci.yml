@@ -175,3 +175,64 @@ jobs:
       - run: docker compose -f docker-compose.dev.yml up -d --wait
       - run: uv run alembic upgrade head
       - run: uv run pytest ruisheng-gw/tests/integration/test_p95_flush.py --benchmark-only -v
+
+  api-unit:
+    name: api-unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --all-packages
+      - run: uv run pytest ruisheng-api/tests/unit -x --cov --cov-report=xml
+        env:
+          COVERAGE_PROCESS_START: pyproject.toml
+
+  api-integration:
+    name: api-integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg15
+        env:
+          POSTGRES_PASSWORD: dev
+          POSTGRES_USER: ruisheng_dev
+          POSTGRES_DB: ruisheng
+        options: >-
+          --health-cmd="pg_isready -U ruisheng_dev"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+        ports:
+          - "5432:5432"
+      redis:
+        image: redis:7
+        ports:
+          - "6379:6379"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --all-packages
+      - run: uv run alembic upgrade head
+        env:
+          DB_URL: postgresql+asyncpg://ruisheng_dev:dev@localhost:5432/ruisheng
+      - run: uv run pytest ruisheng-api/tests/integration -x
+        env:
+          API_DB_URL: postgresql+asyncpg://ruisheng_api:dev@localhost:5432/ruisheng
+          API_GW_DB_URL: postgresql+asyncpg://ruisheng_gw:dev@localhost:5432/ruisheng
+          API_REDIS_URL: redis://localhost:6379/0
+          API_JWT_SECRET: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+  api-tenant-lint:
+    name: api-tenant-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --all-packages
+      - run: uv run python -m ruisheng_gw.ci_lint.tenant_filter_lint ruisheng-api/src
