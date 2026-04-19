@@ -5,14 +5,14 @@
 
 ---
 
-## 当前状态：**Plan 1 — Stage A 5/8 ✅**（Plan 0 完整闭环 Stage G 7/7）
+## 当前状态：**Plan 1 — Stage A 8/8 ✅**（Plan 0 完整闭环 Stage G 7/7）
 
 **Plan 1 spec/plan 产出**（已落盘 master）：
 - Spec v2 `docs/superpowers/specs/2026-04-18-plan-1-gw-design.md`（644 行，`726f38b`）
-- Plan 文件 `docs/superpowers/plans/2026-04-18-plan-1-gw.md`（**v1.6**）：`d8157e8` → `2631abd`（#1）→ `7c7d7be`（#2）→ `3172925`（#3）→ `1a13317`（#4+#5 retro）→ `78764fd`（#6）→ v1.6（#7 retro 本 commit 同步）
+- Plan 文件 `docs/superpowers/plans/2026-04-18-plan-1-gw.md`（**v1.8**）：`d8157e8` → ... → v1.8（#9 retro）
 - 5-role adversarial review 回应 22 P0 + 30 P1；7 Stage / ~48 task / subagent-driven 执行
 
-**Plan 1 Stage A 进度**（A5 done 2026-04-18 晚 session 2）：
+**Plan 1 Stage A 进度**（A8 done 2026-04-19，tag `plan-1-stage-a-complete`）：
 
 | # | Task | Commit | Notes |
 |---|---|---|---|
@@ -21,7 +21,9 @@
 | A3 | config.py pydantic-settings + --print-config + exit 3 | `36bc674` | 5 files；**2 Plan bug 2 轮 reverse-fix**（#6 `extra="forbid"` 不扫 os.environ → v1.5 `@model_validator(mode="before")` 手扫；#7 `.pre-commit-config.yaml` mypy deps 加 pydantic-settings → v1.6 retro）；345 + 8 skip + 91.09%；`--print-config` JSON exit 0；`GW_UNKNOWN_FIELD` → exit 3；Spec 8/8 + Quality 3 nit |
 | A4 | logging_setup.py structlog JSON + ctx vars | `5647fe4` | 4 files；**1 Plan bug retro**（#8 mypy deps 加 structlog → v1.7）；347 + 8 skip；Spec 8/8 + Quality 8/8 零 minor |
 | A5 | /health /ready /metrics aiohttp endpoints | `02dcfe4` | 3 files（health.py 67 行 `HealthState` dataclass 4 fields + 4 methods + `is_ready` 三判合取（db_ok + redis_ok + flush_fresh<5s） / `_health_handler` 200 `{"status":"alive"}` / `_ready_handler` 200 或 503 / `_metrics_handler` Prometheus text `# HELP` + `# TYPE gauge` + `ruisheng_gw_build_info{version="0.1.0"} 1` content_type text/plain;version=0.0.4 / `create_health_app` 注 3 GET route + state store / test_health.py 51 行 4 tests / `.pre-commit-config.yaml` mypy deps 加 aiohttp）；**1 Plan bug retro**（#9 mypy deps 加 aiohttp，与 #7/#8 同源 → v1.8 retro）；implementer autonomy 5 项（drop unused `field` import / `# noqa: ARG001` on unused request / PLR2004 noqa 4 处 HTTP status 200/503 / I001 auto-fix / `.pre-commit-config.yaml` mypy deps）；**351 passed + 8 skipped**（`alembic upgrade head` 后；9 integration fail + 6 error 是 pre-existing DB downgrade 状态非 A5 regression，controller 实测确认 post-upgrade 351）；ruff + mypy clean；Spec APPROVED 6/6 + Quality APPROVED_WITH_MINORS 2 nit（fixture `-> TestClient` 技术应 `AsyncIterator[TestClient]` / aiohttp 3.9 `NotAppKeyWarning` 建议用 `web.AppKey`，均非 blocker） |
-| A6-A8 | CI / docs / tag | — | pending（A6 下一步 test_startup.py 完整 exit code 断言 + gw-smoke CI job）|
+| A6 | startup exit codes + gw-smoke CI | `9e15033` + `1d96976` | 2 tests（test_check_only_exit_0_on_success + test_print_config_exit_3_on_invalid_env），`_subprocess_env()` helper（PYTHONPATH src-layout prepend），`_EXIT_CONFIG_INVALID=3` constant；gw-smoke CI job（job-level env: block，与 integration/alembic-check 一致）；quality fix commit：monkeypatch → explicit env.update + 注释 + CI env block 统一；**353 passed + 8 skipped**（post-upgrade）；Spec APPROVED 5/5；Quality APPROVED_WITH_MINORS 3 important fixes applied |
+| A7 | gw-metrics.md 文档 | `017ae5f` | `ruisheng-gw/docs/gw-metrics.md`（50 行）：Counters 14 行 / Gauges 5 行 / Histograms 3 行 + Scrape 配置；doc only，无测试变化 |
+| A8 | Stage A tag + PROGRESS | tag `plan-1-stage-a-complete` | ✅ 2026-04-19 |
 
 ---
 
@@ -36,7 +38,7 @@
 - `5647fe4` A4 structlog JSON + correlation context vars
 - `02dcfe4` A5 /health /ready /metrics aiohttp endpoints
 
-**测试状态**：**351 passed + 8 skipped**（A1 起 324 → A5 末 351，+27 测试全 green；需 `alembic upgrade head` 续跑）；ruff + mypy clean；coverage 91.09%
+**测试状态**：**353 passed + 8 skipped**（A1 起 324 → A8 末 353，+29 测试全 green；需 `alembic upgrade head` 续跑）；ruff + mypy clean；coverage 91.09%
 
 **Plan bug 清单（Plan 1 累计 9 个，全 master 反向 fix）**
 | # | Stage | 抓法 | 描述 | fix commit |
@@ -50,10 +52,10 @@
 | 8 | A4 | implementer v1 内含 | `.pre-commit-config.yaml` mypy deps 加 structlog | `fd8fd3a` v1.7 retro |
 | 9 | A5 | implementer v1 内含 | `.pre-commit-config.yaml` mypy deps 加 aiohttp | `2c0857d` v1.8 retro |
 
-**review 统计**：A2 Spec 8/8 + Quality 5 cosmetic；A3 Spec 8/8 + Quality 3 nit；A4 Spec 8/8 + Quality 8/8 零 minor；A5 Spec 6/6 + Quality 2 nit
+**review 统计**：A2 Spec 8/8 + Quality 5 cosmetic；A3 Spec 8/8 + Quality 3 nit；A4 Spec 8/8 + Quality 8/8 零 minor；A5 Spec 6/6 + Quality 2 nit；A6 Spec 5/5 + Quality 3 important fixed；A7 doc only
 
 **剩余工作路线图**
-- **Stage A 剩**：A6 gw-smoke CI + test_startup.py exit code 全断言 / A7 gw-metrics.md doc / A8 stage tag
+- **Stage A**：✅ 完成（tag `plan-1-stage-a-complete`）
 - **Stage B**（8 task，前置 A）：CRC16 + FC 3/5/6/16/19/20/21/22/100 + ExceptionResp + framer + heartbeat stripper + Hypothesis
 - **Stage C**（5 task，前置 A/B）：tcp_server + connection + heartbeat timeout + session
 - **Stage D**（5 task，前置 A/C）：Device 状态机简化 + Point 标度 + Registry DB load + alarm_simple
@@ -62,12 +64,12 @@
 - **Stage G**（5 task，前置 F）：CI 扩 + release-gw.yml + CHANGELOG + rollback runbook + tag
 
 **续跑准备（新 session）**
-1. 读本 PROGRESS + memory + plan §Task A6
+1. 读本 PROGRESS + memory + plan §Task B1
 2. `cd D:\江苏润盛\.claude\worktrees\plan-0-foundation`
 3. `export RUISHENG_GW_PASSWORD='dev-gw-change-me' RUISHENG_API_PASSWORD='dev-api-change-me'`
 4. `docker compose -f docker-compose.dev.yml ps` 确认 healthy
-5. `uv run alembic upgrade head` 恢复 DB（A3/A5 integration 测试副作用）
-6. pre-dispatch sanity → 派 A6 implementer
+5. `uv run alembic upgrade head` 恢复 DB（integration 测试副作用）
+6. pre-dispatch sanity → 派 B1 implementer（CRC16）
 
 ---
 
