@@ -45,24 +45,31 @@ def test_alembic_head_check_signature_exists() -> None:
     assert callable(check_alembic_head)
 
 
-def test_check_only_exit_0_on_success(monkeypatch):
-    monkeypatch.setenv("GW_LISTEN_HOST", "0.0.0.0")
-    monkeypatch.setenv("GW_LISTEN_PORT", "5020")
-    monkeypatch.setenv("GW_DATABASE_URL", "postgresql+asyncpg://u:p@h:5432/d")
-    monkeypatch.setenv("GW_REDIS_URL", "redis://h:6379/0")
+def test_check_only_exit_0_on_success() -> None:
+    env = _subprocess_env()
+    env.update(
+        {
+            "GW_LISTEN_HOST": "0.0.0.0",
+            "GW_LISTEN_PORT": "5020",
+            "GW_DATABASE_URL": "postgresql+asyncpg://u:p@h:5432/d",
+            "GW_REDIS_URL": "redis://h:6379/0",
+        }
+    )
     result = subprocess.run(
         [sys.executable, "-m", "ruisheng_gw", "--check-only"],
         capture_output=True,
         text=True,
-        env=_subprocess_env(),
+        env=env,
         check=False,
     )
     assert result.returncode == 0
 
 
-def test_print_config_exit_3_on_invalid_env(monkeypatch):
+def test_print_config_exit_3_on_invalid_env() -> None:
     # 清所有 GW_* → 缺必填 → config invalid → exit 3
     env = {k: v for k, v in _subprocess_env().items() if not k.startswith("GW_")}
+    # --print-config is used (not --check-only) because --check-only exits 0
+    # before instantiating Config; only --print-config exercises the validation path.
     result = subprocess.run(
         [sys.executable, "-m", "ruisheng_gw", "--print-config"],
         capture_output=True,

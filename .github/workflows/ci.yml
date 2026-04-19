@@ -102,15 +102,15 @@ jobs:
 
   gw-smoke:
     runs-on: ubuntu-latest
+    env:
+      GW_LISTEN_HOST: "0.0.0.0"
+      GW_LISTEN_PORT: "5020"
+      GW_DATABASE_URL: postgresql+asyncpg://u:p@h:5432/d
+      GW_REDIS_URL: redis://h:6379/0
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
       - run: uv sync --all-packages
-      - run: |
-          export GW_LISTEN_HOST=0.0.0.0
-          export GW_LISTEN_PORT=5020
-          export GW_DATABASE_URL=postgresql+asyncpg://u:p@h:5432/d
-          export GW_REDIS_URL=redis://h:6379/0
-          uv run python -m ruisheng_gw --check-only
+      - run: uv run python -m ruisheng_gw --check-only
