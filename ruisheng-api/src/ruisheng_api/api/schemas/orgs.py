@@ -42,3 +42,14 @@ class WxGroupOut(BaseModel):
     usr_group: str
     company_name: str | None
     sys_title: str | None
+
+
+class PhoneAddRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    phone_number: str = Field(..., pattern=r"^1[3-9][0-9]{9}$")
+
+
+class EmailAddRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    phone_number: str = Field(..., description="Phone number the email is linked to")
+    email: str = Field(..., max_length=100)

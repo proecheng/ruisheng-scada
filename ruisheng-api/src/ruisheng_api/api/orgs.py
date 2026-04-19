@@ -12,7 +12,14 @@ from ..core.security import hash_password
 from ..core.tenant import apply_tenant_context
 from ..db.repositories import users as users_repo
 from ..deps import get_current_user, get_session
-from .schemas.orgs import UserCreateRequest, UserOut, UserUpdateRequest
+from .schemas.orgs import (
+    EmailAddRequest,
+    PhoneAddRequest,
+    UserCreateRequest,
+    UserOut,
+    UserUpdateRequest,
+    WxGroupOut,
+)
 
 router = APIRouter(prefix="/api/orgs", tags=["orgs"])
 
@@ -116,3 +123,119 @@ async def delete_user(
             raise BizError(ErrCode.BAD_PARAM, "user not found")
         await users_repo.soft_delete_user(session, u)
     return ok(data={"deleted": user_name})
+
+
+# ---------------------------------------------------------------------------
+# WxGroups
+# ---------------------------------------------------------------------------
+
+
+@router.get("/wx_groups", response_model=ApiResponse)
+async def list_wx_groups(
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    check_role(user, allowed=("GroupCompany", "Administrators"))
+    usr_group_filter = None if user.role == "Administrators" else user.usr_group
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        rows = await users_repo.list_wx_groups(session, usr_group=usr_group_filter)
+    return ok(data={"items": [WxGroupOut.model_validate(r).model_dump() for r in rows]})
+
+
+# ---------------------------------------------------------------------------
+# Phone contacts
+# ---------------------------------------------------------------------------
+
+
+@router.get("/users/{user_name}/phones", response_model=ApiResponse)
+async def list_phones(
+    user_name: str,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    if user.user_name != user_name:
+        check_role(user, allowed=("GroupCompany", "Administrators"))
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        rows = await users_repo.list_phones(session, user_name)
+    return ok(data={"items": [{"id": r.id, "phone_number": r.phone_number} for r in rows]})
+
+
+@router.post("/users/{user_name}/phones", response_model=ApiResponse)
+async def add_phone(
+    user_name: str,
+    body: PhoneAddRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    check_role(user, allowed=("GroupCompany", "Administrators"))
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        p = await users_repo.add_phone(session, user_name=user_name, phone_number=body.phone_number)
+    return ok(data={"id": p.id, "phone_number": p.phone_number})
+
+
+@router.delete("/users/{user_name}/phones/{phone_id}", response_model=ApiResponse)
+async def delete_phone(
+    user_name: str,
+    phone_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    check_role(user, allowed=("GroupCompany", "Administrators"))
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        await users_repo.delete_phone(session, phone_id)
+    return ok(data={"deleted": phone_id})
+
+
+# ---------------------------------------------------------------------------
+# Email contacts
+# ---------------------------------------------------------------------------
+
+
+@router.get("/users/{user_name}/emails", response_model=ApiResponse)
+async def list_emails(
+    user_name: str,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    if user.user_name != user_name:
+        check_role(user, allowed=("GroupCompany", "Administrators"))
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        rows = await users_repo.list_emails(session, user_name)
+    return ok(
+        data={
+            "items": [{"id": r.id, "phone_number": r.phone_number, "email": r.email} for r in rows]
+        }
+    )
+
+
+@router.post("/users/{user_name}/emails", response_model=ApiResponse)
+async def add_email(
+    user_name: str,
+    body: EmailAddRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    check_role(user, allowed=("GroupCompany", "Administrators"))
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        e = await users_repo.add_email(session, phone_number=body.phone_number, email=body.email)
+    return ok(data={"id": e.id, "phone_number": e.phone_number, "email": e.email})
+
+
+@router.delete("/users/{user_name}/emails/{email_id}", response_model=ApiResponse)
+async def delete_email(
+    user_name: str,
+    email_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    check_role(user, allowed=("GroupCompany", "Administrators"))
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        await users_repo.delete_email(session, email_id)
+    return ok(data={"deleted": email_id})
