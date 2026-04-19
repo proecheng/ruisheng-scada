@@ -1,10 +1,21 @@
-"""`python -m ruisheng_api` 入口（Stage A5 后接 uvicorn）。"""
+"""`python -m ruisheng_api` 启 uvicorn。"""
 
 from __future__ import annotations
 
+import uvicorn  # type: ignore[import-not-found]
+
+from .config import Config
+
 
 def main() -> None:
-    raise SystemExit("Stage A5 introduces FastAPI app; not ready yet")
+    cfg = Config()
+    uvicorn.run(
+        "ruisheng_api.main:create_app",
+        factory=True,
+        host=cfg.listen_host,
+        port=cfg.listen_port,
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":
