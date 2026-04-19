@@ -9,6 +9,7 @@ Format: `{wal_dir}/YYYYMMDD-HHMM.ndjson` — newline-delimited JSON.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -41,7 +42,17 @@ class Wal:
         return self._dir / f"{ts}.ndjson"
 
     def _all_files_sorted(self) -> list[Path]:
-        return sorted(self._dir.glob("*.ndjson"))
+        paths = list(self._dir.glob("*.ndjson"))
+
+        def _sort_key(p: Path) -> tuple[str, int]:
+            stem = p.stem  # e.g., "20260419-1000" or "20260419-1000-1"
+            # match base timestamp and optional numeric suffix
+            m = re.match(r"^(\d{8}-\d{4})(?:-(\d+))?$", stem)
+            if m:
+                return (m.group(1), int(m.group(2) or 0))
+            return (stem, 0)
+
+        return sorted(paths, key=_sort_key)
 
     async def append(self, rows: list[BatchRow]) -> None:
         if not rows:
