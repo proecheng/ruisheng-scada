@@ -17,6 +17,8 @@ from .logging_setup import configure_logging
 from .pubsub.alarm_consumer import AlarmConsumerConfig, consumer_loop
 from .pubsub.realtime_bridge import realtime_loop
 from .pubsub.ws_manager import WSManager
+from .tasks.scheduler import build_scheduler
+from .tasks.token_refresh import refresh_all_wechat_tokens
 
 
 @asynccontextmanager
@@ -36,6 +38,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         asyncio.create_task(consumer_loop(app.state.redis, consumer_cfg, ws_manager, stop_event)),
         asyncio.create_task(realtime_loop(app.state.redis, ws_manager, stop_event)),
     ]
+    scheduler = build_scheduler()
+    app.state.scheduler = scheduler
+    scheduler.add_job(
+        refresh_all_wechat_tokens,
+        "interval",
+        minutes=50,
+        args=[app.state.session_factory],
+        id="wx_token_refresh",
+    )
+    scheduler.start()
     try:
         yield
     finally:
@@ -43,6 +55,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        scheduler.shutdown(wait=False)
         await app.state.redis.aclose()  # type: ignore[attr-defined,unused-ignore]
         await engine.dispose()
 
