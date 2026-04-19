@@ -38,7 +38,7 @@ async def test_publish_alarm_different_channel() -> None:
     assert pub.stats["alarm_published"] == 1
 
 
-async def test_publish_failure_increments_metric(monkeypatch) -> None:
+async def test_publish_failure_increments_metric() -> None:
     class BrokenRedis:
         async def publish(self, *a, **kw):
             raise RuntimeError("redis down")
