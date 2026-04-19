@@ -36,7 +36,7 @@ class GwServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        # v2 A1 / §5.4 — disable Nagle for low-latency ModBus
+        # Disable Nagle: ModBus RTU frames are small and latency-sensitive.
         sock = writer.get_extra_info("socket")
         if sock is not None:
             with contextlib.suppress(OSError):
