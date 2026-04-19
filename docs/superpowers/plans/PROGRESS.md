@@ -5,32 +5,39 @@
 
 ---
 
-## 当前状态：**Plan 2 — 准备中**（Plan 2 plan 文件尚未写完）
+## 当前状态：**Plan 2 — plan 已写完，待执行**（2026-04-19 session 末）
 
-**Plan 2 api 状态**（2026-04-19 session 结束时）：
+**Plan 2 plan 文件**：`docs/superpowers/plans/2026-04-19-plan-2-api.md`
+- 约 5880 行；13 Stage / 46 task（A-M）
+- Stage 导航：A Scaffold / B Security / C Auth / D Devices / E Points+Alarms / F Streams+WS / G Orgs / H Reports+Waveforms / I Plans+Scenes / J Notifications / K Scheduler / L WeChat Pay / M Admin+CI+Release
+- 含 Self-Review：spec coverage 矩阵 + placeholder scan + type consistency + 7 项风险提示
+- master commit 待打：`docs(progress): Plan 2 plan 文件写完，待执行`
 
-| # | Task | Commit | Notes |
-|---|---|---|---|
-| — | Plan 2 plan 文件写作 | 未提交 | 本 session 开始写 Plan 2，spec 已完整阅读，plan 文件未完成 |
+**Plan 2 下一步（新 session）**：
+1. `cd D:\江苏润盛`
+2. `git worktree add -b feature/plan-2-api .claude/worktrees/plan-2-api feature/plan-0-foundation`
+3. `cd .claude/worktrees/plan-2-api && uv sync --all-packages`
+4. 读 plan 文件 Stage A（Task A1 开始）
+5. 用 `superpowers:subagent-driven-development` 派 A1 implementer
 
-**Plan 2 下一步**：
-1. 完成 `docs/superpowers/plans/2026-04-19-plan-2-api.md` 写作
-2. 新建 worktree `feature/plan-2-api`（从 `feature/plan-0-foundation` 分支）
-3. 用 `superpowers:subagent-driven-development` 执行 Plan 2
-
-**Plan 2 已确定的设计决策**（spec 阅读摘要）：
-- 新 worktree：`feature/plan-2-api`，从 `feature/plan-0-foundation` 分支
-- ruisheng-api 加入 uv workspace（修改根 `pyproject.toml` members）
-- FastAPI + uvicorn；SQLAlchemy 2.0 async + asyncpg；redis-py 5.x；loguru
-- JWT（python-jose）+ bcrypt（passlib）+ ULID；jti 黑名单 Redis
-- APScheduler 3.x 后台任务；slowapi 限流
-- 依赖 ruisheng-shared（ORM 26 表 + ErrCode + enums + schemas）
+**Plan 2 已确定的设计决策**（plan 锁定）：
+- worktree：`feature/plan-2-api`，从 `feature/plan-0-foundation`
+- 新包 `ruisheng-api/`（workspace 第 4 成员）；根 `pyproject.toml` members/testpaths/pythonpath/coverage.source/mypy_path 全部加
+- FastAPI + uvicorn / SQLAlchemy 2.0 asyncio + asyncpg / redis-py 5.x[hiredis] / loguru / python-jose[cryptography] / passlib[bcrypt] / python-ulid / slowapi / APScheduler 3.x / openpyxl / aiohttp / numpy
+- JWT：access 15min / refresh 7d / typ+fp+jti，jti 黑名单 Redis
+- 多租户：`apply_tenant_context(session, usr_group, role)` 每事务 SET LOCAL
+- RBAC：`CurrentUser` + `check_role` + `check_ca`；4 级 + bit 位掩码
+- WS：per-client `asyncio.Queue(500)` + drop-oldest（§3.8.4）
+- 告警消费：`XREADGROUP api-alarm-consumer` + XAUTOCLAIM + SET NX EX 幂等；5× 失败 → DLQ
+- 微信支付回调：走 `ruisheng_gw` pool（BYPASSRLS），api 路径白名单
 - alembic 迁移已完成（plan-0），Plan 2 无需新建表
+- CI 新增 3 job：`api-unit` / `api-integration` / `api-tenant-lint`；release 走 `release-api.yml`
 
-**恢复步骤（新 session → Plan 2）**：
+**恢复步骤（新 session → Plan 2 执行）**：
 1. 读本 PROGRESS.md + memory `project_ruisheng_scada.md`
-2. 如 Plan 2 plan 文件已存在：直接阅读 + 新建 worktree + 执行
-3. 如 Plan 2 plan 文件未完成：先完成 plan 写作（用 `superpowers:writing-plans`），再执行
+2. 读 `docs/superpowers/plans/2026-04-19-plan-2-api.md`（至少 Stage 导航 + 当前 Stage 全文）
+3. 新建 worktree（命令见上）
+4. 用 `superpowers:subagent-driven-development` 执行 Task A1
 
 ---
 
