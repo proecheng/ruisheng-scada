@@ -14,31 +14,32 @@ from ruisheng_gw.persistence.repository import Repository
 def test_p95_flush_under_100ms(benchmark, postgres_url: str) -> None:
     loop = asyncio.new_event_loop()
 
-    engine = loop.run_until_complete(_make_engine(postgres_url))
-    repo = Repository(engine)
-
     # Monotonic offset ensures unique (dev_number, point_id, recorded_at)
     # tuples per round — point_data_history PK prohibits duplicates.
+    # Assumes iterations=1 per round (benchmark.pedantic default).
     _round_counter = itertools.count(0)
 
-    async def _run() -> None:
-        base = next(_round_counter) * 1_000_000  # non-overlapping epoch offsets
-        rows = [
-            BatchRow(
-                dev_number="60270012",
-                point_id=i,
-                rt_value=float(i),
-                org_value=0.0,
-                recorded_at=float(base + i),
-            )
-            for i in range(500)
-        ]
-        await repo.flush(rows)
-
-    def sync_wrapper() -> None:
-        loop.run_until_complete(_run())
-
     try:
+        engine = loop.run_until_complete(_make_engine(postgres_url))
+        repo = Repository(engine)
+
+        async def _run() -> None:
+            base = next(_round_counter) * 1_000_000  # non-overlapping epoch offsets
+            rows = [
+                BatchRow(
+                    dev_number="60270012",
+                    point_id=i,
+                    rt_value=float(i),
+                    org_value=0.0,
+                    recorded_at=float(base + i),
+                )
+                for i in range(500)
+            ]
+            await repo.flush(rows)
+
+        def sync_wrapper() -> None:
+            loop.run_until_complete(_run())
+
         benchmark.pedantic(sync_wrapper, rounds=50, iterations=1)
     finally:
         loop.run_until_complete(engine.dispose())

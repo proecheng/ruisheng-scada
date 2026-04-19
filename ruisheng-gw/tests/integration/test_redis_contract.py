@@ -19,7 +19,11 @@ async def test_published_messages_validate_as_schema(redis_url: str) -> None:
 
     received: list[str] = []
 
-    async def _collect():
+    async def _collect() -> None:
+        async for msg in pubsub.listen():
+            if msg["type"] == "subscribe":
+                # subscription confirmed — safe to publish now
+                break
         async for msg in pubsub.listen():
             if msg["type"] != "message":
                 continue
@@ -28,7 +32,8 @@ async def test_published_messages_validate_as_schema(redis_url: str) -> None:
                 break
 
     collector = asyncio.create_task(_collect())
-    await asyncio.sleep(0.05)
+    # yield once so _collect enters its first listen() loop before we publish
+    await asyncio.sleep(0)
 
     for i in range(3):
         await pub.publish_realtime(
