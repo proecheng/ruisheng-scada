@@ -31,7 +31,7 @@ class FakeClock:
 
     def __init__(self, *, now: float = 0.0) -> None:
         self._now = now
-        self._waiters: list[tuple[float, asyncio.Future[None]]] = []
+        self._waiters: list[tuple[float, int, asyncio.Future[None]]] = []
         self._counter = 0
 
     def monotonic(self) -> float:
@@ -41,15 +41,15 @@ class FakeClock:
         if seconds <= 0:
             return
         deadline = self._now + seconds
-        fut: asyncio.Future[None] = asyncio.get_event_loop().create_future()
-        heapq.heappush(self._waiters, (deadline, self._counter, fut))  # type: ignore[misc]
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        heapq.heappush(self._waiters, (deadline, self._counter, fut))
         self._counter += 1
         await fut
 
     def advance(self, seconds: float) -> None:
         target = self._now + seconds
         while self._waiters and self._waiters[0][0] <= target:
-            deadline, _, fut = heapq.heappop(self._waiters)  # type: ignore[misc]
+            deadline, _, fut = heapq.heappop(self._waiters)
             self._now = deadline
             if not fut.done():
                 fut.set_result(None)
