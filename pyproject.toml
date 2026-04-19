@@ -7,7 +7,7 @@ readme = "README.md"
 license = { text = "Proprietary" }
 
 [tool.uv.workspace]
-members = ["ruisheng-shared", "tools/pcap_gen", "ruisheng-gw"]
+members = ["ruisheng-shared", "tools/pcap_gen", "ruisheng-gw", "ruisheng-api"]
 
 [dependency-groups]
 dev = [
@@ -46,14 +46,14 @@ ignore = ["E501", "PLR0913"]
 python_version = "3.11"
 strict = true
 plugins = ["pydantic.mypy"]
-exclude = ["tests/.*", "ruisheng-gw/tests/.*", "alembic/.*"]
-mypy_path = "ruisheng-shared/src:ruisheng-gw/src:tools/pcap_gen/src"
+exclude = ["tests/.*", "ruisheng-gw/tests/.*", "alembic/.*", "ruisheng-api/tests/.*"]
+mypy_path = "ruisheng-shared/src:ruisheng-gw/src:tools/pcap_gen/src:ruisheng-api/src"
 
 [tool.pytest.ini_options]
 minversion = "8.0"
 asyncio_mode = "auto"
-testpaths = ["tests", "ruisheng-gw/tests/unit", "ruisheng-gw/tests/property", "ruisheng-gw/tests/integration"]
-pythonpath = [".", "ruisheng-shared/src", "tools/pcap_gen/src", "ruisheng-gw/src"]
+testpaths = ["tests", "ruisheng-gw/tests/unit", "ruisheng-gw/tests/property", "ruisheng-gw/tests/integration", "ruisheng-api/tests/unit", "ruisheng-api/tests/integration"]
+pythonpath = [".", "ruisheng-shared/src", "tools/pcap_gen/src", "ruisheng-gw/src", "ruisheng-api/src"]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
   "integration: 需要 PG/Redis 的集成测试",
@@ -62,7 +62,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["ruisheng-shared/src", "ruisheng-gw/src"]
+source = ["ruisheng-shared/src", "ruisheng-gw/src", "ruisheng-api/src"]
 
 [tool.coverage.report]
 exclude_lines = [
