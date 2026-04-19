@@ -17,8 +17,11 @@ from .logging_setup import configure_logging
 from .pubsub.alarm_consumer import AlarmConsumerConfig, consumer_loop
 from .pubsub.realtime_bridge import realtime_loop
 from .pubsub.ws_manager import WSManager
+from .tasks.pay_expire import expire_stale_pay_orders
+from .tasks.pay_seen_cleanup import cleanup_old_pay_seen
 from .tasks.scheduler import build_scheduler
 from .tasks.token_refresh import refresh_all_wechat_tokens
+from .tasks.vacuum_hot import vacuum_hot_tables
 
 
 @asynccontextmanager
@@ -47,6 +50,34 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         args=[app.state.session_factory],
         id="wx_token_refresh",
     )
+    # Build a separate gw_session_factory for BYPASSRLS jobs
+    gw_engine = build_engine(cfg.gw_db_url, pool_size=2, max_overflow=2)
+    app.state.gw_engine = gw_engine
+    gw_session_factory = build_session_factory(gw_engine)
+    app.state.gw_session_factory = gw_session_factory
+    scheduler.add_job(
+        expire_stale_pay_orders,
+        "interval",
+        minutes=5,
+        args=[gw_session_factory],
+        id="pay_expire",
+    )
+    scheduler.add_job(
+        cleanup_old_pay_seen,
+        "cron",
+        hour=2,
+        minute=0,
+        args=[gw_session_factory],
+        id="pay_seen_cleanup",
+    )
+    scheduler.add_job(
+        vacuum_hot_tables,
+        "cron",
+        hour=3,
+        minute=0,
+        args=[gw_session_factory],
+        id="vacuum_hot",
+    )
     scheduler.start()
     try:
         yield
@@ -57,6 +88,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await asyncio.gather(*tasks, return_exceptions=True)
         scheduler.shutdown(wait=False)
         await app.state.redis.aclose()  # type: ignore[attr-defined,unused-ignore]
+        await gw_engine.dispose()
         await engine.dispose()
 
 
