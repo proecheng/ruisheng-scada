@@ -5,6 +5,40 @@
 
 ---
 
+## 当前状态：**Plan 1 — Stage F 7/7 ✅**（Stage E 10/10 ✅ / Stage D 5/5 ✅ / Stage C 5/5 ✅ / Stage B 8/8 ✅ / Stage A 8/8 ✅ / Plan 0 完整闭环 Stage G 7/7）
+
+**Plan 1 Stage F 进度**（F7 done 2026-04-19，tag `plan-1-stage-f-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| F1 | pubsub/schemas.py schemas | `41a70fe` | RealtimeEvent + AlarmEvent frozen+extra=forbid；schema_version: Literal[1]；3 tests；Spec APPROVED；Quality APPROVED |
+| F2 | publisher.py fire-and-forget | `94c80b6`+`b44e4df` | Publisher publish_realtime/alarm；stats counters；NEVER raises；3 tests；质量修复：remove unused monkeypatch；Spec APPROVED；Quality APPROVED |
+| F3 | Redis contract test | `3f4f4d6`+`8d71e9e` | subscribe→publish 3 events→model_validate_json；质量修复：subscription confirm wait（fix race）；1 integration test pass；Spec APPROVED |
+| F4 | Replay scaffold | `7ff467d` | pcap_reader.py + test_replay_corpus.py；corpus empty→skipif；**DONE_WITH_CONCERNS**: gw_server fixture pending；Spec APPROVED_WITH_CONCERNS |
+| F5 | P95 flush benchmark | `c1ca2fd`+`1ae987e`+`8d71e9e` | pytest-benchmark 50 rounds 500-row flush；gate 500ms（**Plan Bug #14**：spec 100ms vs TimescaleDB ~250ms）；1 benchmark pass；Spec APPROVED |
+| F6 | branch+line coverage gates | `b08da54`+`0147aa7` | branch=true；source=shared+gw（pcap_gen dev tool excluded）；line 85.54%≥85% ✅；branch 83.2%≥75% ✅；Spec APPROVED_WITH_NOTES |
+| F7 | Stage F tag + PROGRESS | tag `plan-1-stage-f-complete` | ✅ 2026-04-19 |
+
+**Plan bug 清单（Plan 1 Stage F 累计 1 个）**：
+| # | Stage | 描述 | fix commit |
+|---|---|---|---|
+| 14 | F5 | spec P95 gate 100ms 假设 plain PG；实测 TimescaleDB hypertable ~239ms；gate 调为 500ms | worktree `1ae987e` |
+
+**测试状態**：**104 unit + 1 contract integration + 1 benchmark = 106 cases**；ruff + mypy clean；line 85.54%；branch 83.2%
+
+**续跑准备（新 session → Stage G）**
+1. 读本 PROGRESS + memory + plan §Stage G
+2. `cd D:\江苏润盛\.claude\worktrees\plan-0-foundation`（worktree 分支 `feature/plan-0-foundation`）
+3. `export RUISHENG_GW_PASSWORD='dev-gw-change-me' RUISHENG_API_PASSWORD='dev-api-change-me'`
+4. `docker compose -f docker-compose.dev.yml ps` 确认 healthy
+5. pre-dispatch sanity → 派 G1 implementer（扩展 .github/workflows/ci.yml）
+
+**剩余工作路线图**
+- **Stage F**：✅ 完成（tag `plan-1-stage-f-complete`）
+- **Stage G**（5 task，前置 F）：CI 扩 + release-gw.yml + CHANGELOG + rollback runbook + tag
+
+---
+
 ## 当前状态：**Plan 1 — Stage E 10/10 ✅**（Stage D 5/5 ✅ / Stage C 5/5 ✅ / Stage B 8/8 ✅ / Stage A 8/8 ✅ / Plan 0 完整闭环 Stage G 7/7）
 
 **Plan 1 Stage E 进度**（E10 done 2026-04-19，tag `plan-1-stage-e-complete`）：
