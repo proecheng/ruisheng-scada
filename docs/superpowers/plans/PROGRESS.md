@@ -5,6 +5,37 @@
 
 ---
 
+## 当前状态：**Plan 1 — Stage D 5/5 ✅**（Stage C 5/5 ✅ / Stage B 8/8 ✅ / Stage A 8/8 ✅ / Plan 0 完整闭环 Stage G 7/7）
+
+**Plan 1 Stage D 进度**（D5 done 2026-04-19，tag `plan-1-stage-d-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| D1 | device.py 状态机 | `592672b`+`77c1fe1` | `Device` dataclass `DeviceState` enum UNREG/ONLINE/OFFLINE；`register/heartbeat/mark_offline`；`last_offline_reason` field（质量修复：存储 reason 而非静默丢弃）；6 tests；Spec APPROVED；Quality APPROVED_WITH_MINORS 4 fixed |
+| D2 | point.py 标度换算 | `73fdfba`+`2ddd9d8` | `apply_scaling` NaN/inf 边界；7 tests（含 overflow test，spec reviewer 发现缺失）；`pyproject.toml` ruff per-file-ignores 补 ruisheng-gw/tests 路径；Spec APPROVED（post-fix）；Quality APPROVED_WITH_MINORS 2 fixed |
+| D3 | registry.py DB load | `250835a`+`4f6606c` | `Registry.build` + `load_from_db`（无 bus_id_hint，bus_id 从 connection peer 推断）；`ThresholdSpec`/`PointEntry`/`RegistryEntry`；`entries()` → `ValuesView[RegistryEntry]`；3 tests；Spec APPROVED；Quality APPROVED_WITH_MINORS 2 fixed |
+| D4 | alarm_simple.py 阈值检查 | `5a1542b`+`df0686d` | `check_threshold` → `AlarmEvent \| None`；无状态机（每次超阈 fire）；6 tests（含单侧 threshold test）；Spec APPROVED；Quality APPROVED_WITH_MINORS 2 fixed |
+| D5 | Stage D tag + PROGRESS | tag `plan-1-stage-d-complete` | ✅ 2026-04-19 |
+
+**Plan bug 清单（Plan 1 Stage D 累计 0 个 implementer-discovered）**：无新 bug。
+
+**测试状态**：**419 unit passed + 8 skipped**（C5 末 382 → D5 末 419，+37 含全 suite；domain 22 新 unit：device 6 + point 7 + registry 3 + alarm 6）；ruff + mypy clean
+
+**续跑准备（新 session）**
+1. 读本 PROGRESS + memory + plan §Stage E
+2. `cd D:\江苏润盛\.claude\worktrees\plan-0-foundation`（worktree 分支 `feature/plan-0-foundation`）
+3. `export RUISHENG_GW_PASSWORD='dev-gw-change-me' RUISHENG_API_PASSWORD='dev-api-change-me'`
+4. `docker compose -f docker-compose.dev.yml ps` 确认 healthy（E1-E8 含 testcontainers integration）
+5. pre-dispatch sanity → 派 E1 implementer（Clock 协议注入）
+
+**剩余工作路线图**
+- **Stage D**：✅ 完成（tag `plan-1-stage-d-complete`）
+- **Stage E**（10 task，前置 B/C/D）：Clock + bus_lock + poller + supervisor + batch_writer + repository + WAL + E10 integration
+- **Stage F**（8 task，前置 E）：RealtimeEvent/AlarmEvent + publisher + contract + replay + P95
+- **Stage G**（5 task，前置 F）：CI 扩 + release-gw.yml + CHANGELOG + rollback runbook + tag
+
+---
+
 ## 当前状态：**Plan 1 — Stage C 5/5 ✅**（Stage B 8/8 ✅ / Stage A 8/8 ✅ / Plan 0 完整闭环 Stage G 7/7）
 
 **Plan 1 Stage C 进度**（C5 done 2026-04-19，tag `plan-1-stage-c-complete`）：
