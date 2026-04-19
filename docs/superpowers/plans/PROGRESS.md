@@ -5,6 +5,44 @@
 
 ---
 
+## 当前状态：**Plan 1 — Stage E 10/10 ✅**（Stage D 5/5 ✅ / Stage C 5/5 ✅ / Stage B 8/8 ✅ / Stage A 8/8 ✅ / Plan 0 完整闭环 Stage G 7/7）
+
+**Plan 1 Stage E 进度**（E10 done 2026-04-19，tag `plan-1-stage-e-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| E1 | clock.py Clock protocol | `7af6bee`+`5d3959a` | Clock Protocol + RealClock + FakeClock virtual time；3 tests；质量修复：get_running_loop + 3-tuple annotation + sleep(0)；Spec APPROVED；Quality APPROVED |
+| E2 | bus_lock.py per-bus Lock | `cfbc8b0` | BusLocks + BusLockTimeout；3 tests；Spec APPROVED；Quality APPROVED |
+| E3 | poller.py per-device 协程 | `ae2c545` | poll_once + poller_loop writer re-lookup；3 tests；**Plan Bug #13** bus_id_hint removed from RegistryEntry ctor（plan doc fixed `e33dc5b` on master）；Spec APPROVED；Quality APPROVED |
+| E4 | supervisor.py create_task + quarantine | `0b852a3`+`53b48e9` | Supervisor + DeviceHealth；2 tests；质量修复：track + cancel _respawn_tasks；Spec APPROVED；Quality APPROVED |
+| E5 | batch_writer.py drop-tail + retry | `91c9c4e`+`27389b7` | BatchWriter asyncio.wait 实现（FakeClock 兼容）；3 tests；质量修复：flush_error_total counter；Spec APPROVED；Quality APPROVED_WITH_MINORS |
+| E6 | repository.py bulk UPSERT | `3658f9d`+`d7551b6` | Repository.flush UPSERT realtime + INSERT history；2 integration tests；质量修复：noqa: tenant-lint；Spec APPROVED；Quality APPROVED |
+| E7 | wal.py ndjson rotate + replay | `3289ea3`+`badeaa7` | Wal.append/replay_and_cleanup；4 unit + 2 integration；质量修复：rotated-file sort order；Spec APPROVED；Quality APPROVED |
+| E8 | tenant_filter_lint.py CI AST | `9d194f2` | check_file + main；3 tests；lint exits 0 on src；Spec APPROVED；Quality APPROVED |
+| E9 | main.py run_server + integration | `97304e0`+`08056ba` | run_server() 全链路wiring；5 integration tests；质量修复：suppress CancelledError；Spec APPROVED；Quality APPROVED_WITH_MINORS |
+| E10 | Stage E tag + PROGRESS | tag `plan-1-stage-e-complete` | ✅ 2026-04-19 |
+
+**Plan bug 清单（Plan 1 Stage E 累计 1 个 implementer-discovered）**：
+| # | Stage | 描述 | fix commit |
+|---|---|---|---|
+| 13 | E3 | plan E3 test spec 含 `bus_id_hint="bus-1"` 传入 RegistryEntry ctor（该字段不存在）；implementer 正确移除；plan doc 反向修 | master `e33dc5b` |
+
+**测试状态**：**98 unit + 9 integration = 107 passed**（D5 末 98 unit → E10 末 98 unit + 9 integration；gw scheduler 18 新 unit：clock 3 + bus_lock 3 + poller 3 + supervisor 2 + batch_writer 3 + tenant_lint 3；persistence 新 unit：wal 4；integration 9：repository 2 + wal_replay 2 + end_to_end 5）；ruff + mypy clean
+
+**续跑准备（新 session）**
+1. 读本 PROGRESS + memory + plan §Stage F
+2. `cd D:\江苏润盛\.claude\worktrees\plan-0-foundation`（worktree 分支 `feature/plan-0-foundation`）
+3. `export RUISHENG_GW_PASSWORD='dev-gw-change-me' RUISHENG_API_PASSWORD='dev-api-change-me'`
+4. `docker compose -f docker-compose.dev.yml ps` 确认 healthy
+5. pre-dispatch sanity → 派 F1 implementer（pubsub/schemas.py RealtimeEvent + AlarmEvent）
+
+**剩余工作路线图**
+- **Stage E**：✅ 完成（tag `plan-1-stage-e-complete`）
+- **Stage F**（8 task，前置 E）：RealtimeEvent/AlarmEvent + publisher + contract + replay + P95
+- **Stage G**（5 task，前置 F）：CI 扩 + release-gw.yml + CHANGELOG + rollback runbook + tag
+
+---
+
 ## 当前状态：**Plan 1 — Stage D 5/5 ✅**（Stage C 5/5 ✅ / Stage B 8/8 ✅ / Stage A 8/8 ✅ / Plan 0 完整闭环 Stage G 7/7）
 
 **Plan 1 Stage D 进度**（D5 done 2026-04-19，tag `plan-1-stage-d-complete`）：
@@ -20,13 +58,6 @@
 **Plan bug 清单（Plan 1 Stage D 累计 0 个 implementer-discovered）**：无新 bug。
 
 **测试状态**：**419 unit passed + 8 skipped**（C5 末 382 → D5 末 419，+37 含全 suite；domain 22 新 unit：device 6 + point 7 + registry 3 + alarm 6）；ruff + mypy clean
-
-**续跑准备（新 session）**
-1. 读本 PROGRESS + memory + plan §Stage E
-2. `cd D:\江苏润盛\.claude\worktrees\plan-0-foundation`（worktree 分支 `feature/plan-0-foundation`）
-3. `export RUISHENG_GW_PASSWORD='dev-gw-change-me' RUISHENG_API_PASSWORD='dev-api-change-me'`
-4. `docker compose -f docker-compose.dev.yml ps` 确认 healthy（E1-E8 含 testcontainers integration）
-5. pre-dispatch sanity → 派 E1 implementer（Clock 协议注入）
 
 **剩余工作路线图**
 - **Stage D**：✅ 完成（tag `plan-1-stage-d-complete`）
