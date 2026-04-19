@@ -40,6 +40,8 @@ class Config(BaseSettings):
     slowapi_rate_default: str = Field(default="100/minute")
     slowapi_rate_login: str = Field(default="5/minute")
 
+    default_usr_group: str = Field(default="default", min_length=1)
+
     env: Literal["dev", "test", "prod"] = Field(default="dev")
 
     @model_validator(mode="before")

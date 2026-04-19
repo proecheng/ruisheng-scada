@@ -25,13 +25,15 @@ from ..core.login_limit import (
 from ..core.response import ApiResponse, ok
 from ..core.security import (
     client_fingerprint,
+    hash_password,
     issue_access_token,
     issue_refresh_token,
     verify_password,
 )
 from ..db.repositories import users as users_repo
 from ..deps import get_config, get_redis, get_session
-from .schemas.auth import LoginRequest, LoginResponseData
+from ..services import otp as otp_svc
+from .schemas.auth import LoginRequest, LoginResponseData, RegisterRequest, SmsSendRequest
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -95,3 +97,42 @@ async def login(
             control_authority=user.control_authority,
         ).model_dump()
     )
+
+
+async def _send_sms(channel: str, phone: str, code: str) -> None:
+    # Stage J wires real adapter
+    logger.bind(phone_number=phone, channel=channel).info("otp issued")
+
+
+@router.post("/sms/send", response_model=ApiResponse)
+async def sms_send(
+    body: SmsSendRequest,
+    cfg: Config = Depends(get_config),
+    r: _Redis = Depends(get_redis),
+) -> ApiResponse:
+    code = await otp_svc.issue_otp(
+        r, action=body.action, key=body.phone_number, ttl_sec=cfg.otp_ttl_sec
+    )
+    await _send_sms(body.channel, body.phone_number, code)
+    return ok(data={"sent": True, "ttl_sec": cfg.otp_ttl_sec})
+
+
+@router.post("/register", response_model=ApiResponse)
+async def register(
+    body: RegisterRequest,
+    cfg: Config = Depends(get_config),
+    r: _Redis = Depends(get_redis),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    if not await otp_svc.verify_otp(r, action="register", key=body.user_name, code=body.otp_code):
+        raise BizError(ErrCode.UNAUTHED, "otp invalid or expired")
+    if await users_repo.load_by_user_name(session, body.user_name):
+        raise BizError(ErrCode.BAD_PARAM, "user_name already registered")
+    await users_repo.create_user(
+        session,
+        user_name=body.user_name,
+        password_hash=hash_password(body.password),
+        authority="User",
+        usr_group=cfg.default_usr_group,
+    )
+    return ok(data={"user_name": body.user_name})
