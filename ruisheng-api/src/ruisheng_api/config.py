@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,7 +40,7 @@ class Config(BaseSettings):
     slowapi_rate_default: str = Field(default="100/minute")
     slowapi_rate_login: str = Field(default="5/minute")
 
-    env: str = Field(default="dev")  # dev / test / prod
+    env: Literal["dev", "test", "prod"] = Field(default="dev")
 
     @model_validator(mode="before")
     @classmethod
