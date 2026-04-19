@@ -114,3 +114,64 @@ jobs:
           enable-cache: true
       - run: uv sync --all-packages
       - run: uv run python -m ruisheng_gw --check-only
+
+  gw-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with: { enable-cache: true }
+      - run: uv sync --all-packages
+      - run: uv run pytest ruisheng-gw/tests/unit ruisheng-gw/tests/property -v
+
+  gw-integration:
+    runs-on: ubuntu-latest
+    env:
+      RUISHENG_GW_PASSWORD: ci-gw-change-me
+      RUISHENG_API_PASSWORD: ci-api-change-me
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with: { enable-cache: true }
+      - run: uv sync --all-packages
+      - run: docker compose -f docker-compose.dev.yml up -d
+      - run: uv run alembic upgrade head
+      - run: uv run pytest ruisheng-gw/tests/integration -v
+
+  gw-replay:
+    runs-on: ubuntu-latest
+    env:
+      RUISHENG_GW_PASSWORD: ci-gw-change-me
+      RUISHENG_API_PASSWORD: ci-api-change-me
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with: { enable-cache: true }
+      - run: uv sync --all-packages
+      - run: docker compose -f docker-compose.dev.yml up -d
+      - run: uv run alembic upgrade head
+      - run: uv run python tools/pcap_gen/scripts/gen_initial_corpus.py
+      - run: uv run pytest ruisheng-gw/tests/replay -v
+
+  gw-tenant-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with: { enable-cache: true }
+      - run: uv sync --all-packages
+      - run: uv run python -m ruisheng_gw.ci_lint.tenant_filter_lint
+
+  gw-benchmark:
+    runs-on: ubuntu-latest
+    env:
+      RUISHENG_GW_PASSWORD: ci-gw-change-me
+      RUISHENG_API_PASSWORD: ci-api-change-me
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with: { enable-cache: true }
+      - run: uv sync --all-packages
+      - run: docker compose -f docker-compose.dev.yml up -d
+      - run: uv run alembic upgrade head
+      - run: uv run pytest ruisheng-gw/tests/integration/test_p95_flush.py --benchmark-only -v
