@@ -51,8 +51,8 @@ mypy_path = "ruisheng-shared/src:ruisheng-gw/src:tools/pcap_gen/src"
 [tool.pytest.ini_options]
 minversion = "8.0"
 asyncio_mode = "auto"
-testpaths = ["tests", "ruisheng-gw/tests/unit", "ruisheng-gw/tests/property"]
-pythonpath = ["ruisheng-shared/src", "tools/pcap_gen/src", "ruisheng-gw/src"]
+testpaths = ["tests", "ruisheng-gw/tests/unit", "ruisheng-gw/tests/property", "ruisheng-gw/tests/integration"]
+pythonpath = [".", "ruisheng-shared/src", "tools/pcap_gen/src", "ruisheng-gw/src"]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
   "integration: 需要 PG/Redis 的集成测试",
