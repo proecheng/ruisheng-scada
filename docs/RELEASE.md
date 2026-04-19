@@ -23,3 +23,15 @@
 - **major**：shared 的 schema 接口（enum 值、常量、错误码、pydantic model 字段）有 **breaking** 改动
 - **minor**：新增枚举值 / 新增 schema 字段（向后兼容）
 - **patch**：文档、测试、内部实现改动
+
+## ruisheng-gw 发布流程
+
+同 ruisheng-shared 模式，tag 格式 `gw-vX.Y.Z`：
+
+1. `ruisheng-gw/pyproject.toml` version bump
+2. `ruisheng-gw/src/ruisheng_gw/__init__.py` `__version__` 同步
+3. `ruisheng-gw/CHANGELOG.md` [Unreleased] → [X.Y.Z]
+4. commit: `chore(release): ruisheng-gw vX.Y.Z`
+5. `git tag -a gw-vX.Y.Z -m "..."`
+6. `git push && git push --tags`
+7. GitHub Actions `release-gw.yml` 自动创 Release
