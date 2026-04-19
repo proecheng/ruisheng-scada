@@ -5,6 +5,27 @@
 
 ---
 
+## 当前状态：**Plan 2 — Stage F 3/3 ✅**（Stage E 2/2 ✅ / Stage D 4/4 ✅ / Stage C 3/3 ✅ / Stage B 5/5 ✅ / Stage A 5/5 ✅）（2026-04-20 session）
+
+**Plan 2 Stage F 进度**（tag `plan-2-stage-f-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| F1 | alarm_consumer + ws_manager | `6b525e5` | 4 tests；XAUTOCLAIM+XREADGROUP；SET NX idempotent；drop-oldest WS queue |
+| F2 | realtime_bridge Pub/Sub → WS | `630d6fe`+`18b210b` | 2 tests；psubscribe channel:realtime:*；tenant_filter；aclose fix |
+| F3 | WS endpoint + lifespan wiring | `fb81706` | 2 tests；/ws?token= fingerprint verify；ping/pong；consumer+bridge tasks in lifespan |
+| F4 | tag + PROGRESS | tag pushed | `plan-2-stage-f-complete` ✅ |
+
+**测试状态**：81 unit tests pass；ruff + mypy clean
+
+**Plan 2 下一步（新 session → Stage G）**：
+1. 读本 PROGRESS.md
+2. 读 plan Stage G 全文（Task G1 开始：orgs users + wx_groups）
+3. worktree: `D:\江苏润盛\.claude\worktrees\plan-2-api` (branch `feature/plan-2-api`)
+4. 用 `superpowers:subagent-driven-development` 执行 G1
+
+---
+
 ## 当前状态：**Plan 2 — Stage E 2/2 ✅**（Stage D 4/4 ✅ / Stage C 3/3 ✅ / Stage B 5/5 ✅ / Stage A 5/5 ✅）（2026-04-20 session）
 
 **Plan 2 Stage E 进度**（tag `plan-2-stage-e-complete`）：
