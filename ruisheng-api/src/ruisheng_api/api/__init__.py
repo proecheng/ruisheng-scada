@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from . import alarms, auth, control, devices, health, orgs, points, reports, waveforms, ws
+from . import alarms, auth, control, devices, health, orgs, plans, points, reports, waveforms, ws
 
 
 def mount_routers(app: FastAPI) -> None:
@@ -18,3 +18,5 @@ def mount_routers(app: FastAPI) -> None:
     app.include_router(orgs.router)
     app.include_router(reports.router)
     app.include_router(waveforms.router)
+    app.include_router(plans.timing_router)
+    app.include_router(plans.maintenance_router)
