@@ -108,6 +108,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/scenes/SceneCanvasView.vue'),
         props: true,
       },
+      {
+        path: 'settings/users',
+        name: 'user-management',
+        component: () => import('@/views/settings/UserManagementView.vue'),
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
