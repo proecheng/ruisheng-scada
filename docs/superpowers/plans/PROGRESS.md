@@ -5,43 +5,70 @@
 
 ---
 
-## 当前状态：**Plan 3 — plan 已写完，尚未开始执行**（2026-04-20 session）
+## 当前状态：**Plan 3 — 完整闭环 ✅**（tag `plan-3-complete`）（2026-04-21 session）
+
+**Plan 3 Stage K 进度**（tag `plan-3-stage-k-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| K1 | DiagView + debug panels | `c72e06d` | /__diag + RequestLogPanel + WsStatePanel；?debug=1 toggle；client.ts diag recording |
+| K2 | build-info + PWA + CI | `1cf6519` | prebuild script；NetworkFirst /api；ci-web.yml；Makefile web targets |
+| K3 | CHANGELOG + README + Release | `fc4636a`+tags | CHANGELOG [web-0.1.0]；release-web.yml；plan-3-complete tag |
+
+**Plan 3 完整统计**：11 Stage / 30 task；53 unit tests；vue-tsc clean；eslint clean
+
+**Stage A 4/4 ✅**（2026-04-21 session）
 
 **Plan 3 文件**：`D:\江苏润盛\docs\superpowers\plans\2026-04-20-plan-3-web.md`（8583 行）
 
+**Stage A 进度**（tag `plan-3-stage-a-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| A1 | Vite + Vue 3 + TS scaffold | `e22a00a` | pnpm install + pnpm build pass |
+| A2 | axios client + ULID + errors | `3a2b3c7` | 12 tests；X-Trace-Id / Idempotency-Key / Auth interceptors |
+| A3 | WebSocket client | `5fa5e4d` | 5 tests；auto-reconnect + heartbeat |
+| A4 | Pinia stores + router | `f53d91d` | 9 tests；auth/ws/devices/alarms/diag stores + router skeleton |
+
+**测试状态**：26 unit tests pass；vue-tsc clean
+
 **结构概览**：11 Stage / 30 task（Vue 3 + Vite + Pinia + ECharts + vue-konva 前端 SPA）
 
-| Stage | 任务 | 说明 |
-|---|---|---|
-| A | A1-A4 | 项目脚手架（Vite/TS/pnpm）+ axios 客户端 + WebSocket 客户端 + Pinia stores |
-| B | B1-B3 | Auth API + LoginView + AppLayout（侧栏+顶栏）+ 路由守卫 + v-permission |
-| C | C1-C3 | Toast / LoadingSkeleton / ErrorBoundary / EmptyState / ConfirmDialog / CommandPalette + useAsync/useRecent/useShortcuts |
-| D | D1-D3 | 设备列表 + DeviceTree + Dashboard（WS 实时桥接） |
-| E | E1-E3 | DeviceDetail + History（ECharts）+ Control（OTP + type-to-confirm） |
-| F | F1-F3 | 点位配置 + 告警阈值 + 告警列表（批量复位） |
-| G | G1-G2 | 日报表（Excel 导出）+ 波形 FFT/OPM |
-| H | H1-H2 | 定时计划 + 保养计划（action_uuid 幂等） |
-| I | I1-I2 | 组态列表 + vue-konva 画布（编辑/只读） |
-| J | J1-J3 | 用户管理 + 通讯录 + 微信支付（NATIVE QR） |
-| K | K1-K3 | /__diag + PWA + CI + README/CHANGELOG + GitHub Release |
+| Stage | 任务 | 说明 | 状态 |
+|---|---|---|---|
+| A | A1-A4 | 项目脚手架（Vite/TS/pnpm）+ axios 客户端 + WebSocket 客户端 + Pinia stores | ✅ |
+| B | B1-B3 | Auth API + LoginView + AppLayout（侧栏+顶栏）+ 路由守卫 + v-permission | ✅ |
+| C | C1-C3 | Toast / LoadingSkeleton / ErrorBoundary / EmptyState / ConfirmDialog / CommandPalette + useAsync/useRecent/useShortcuts | ✅ |
+| D | D1-D3 | 设备列表 + DeviceTree + Dashboard（WS 实时桥接） | ✅ |
+| E | E1-E3 | DeviceDetail + History（ECharts）+ Control（OTP + type-to-confirm） | ✅ |
+| F | F1-F3 | 点位配置 + 告警阈值 + 告警列表（批量复位） | ✅ |
+| G | G1-G2 | 日报表（Excel 导出）+ 波形 FFT/OPM | ✅ |
+| H | H1-H2 | 定时计划 + 保养计划（action_uuid 幂等） | ✅ |
+| I | I1-I2 | 组态列表 + vue-konva 画布（编辑/只读） | ✅ |
+| J | J1-J3 | 用户管理 + 通讯录 + 微信支付（NATIVE QR） | ✅ |
+| K | K1-K3 | /__diag + PWA + CI + README/CHANGELOG + GitHub Release | ✅ |
 
-**恢复步骤（新 session → 开始执行 Plan 3）**：
-1. 读本 PROGRESS.md + `2026-04-20-plan-3-web.md` 的 "## File Structure" 与 "## Stage A"
-2. 建 worktree + 分支（plan 文件 Task A1 Step 1 有完整命令）：
-   ```bash
-   cd /d/江苏润盛
-   git worktree add -b feature/plan-3-web .claude/worktrees/plan-3-web feature/plan-0-foundation
-   ```
-3. 用 `superpowers:subagent-driven-development`（推荐）从 Stage A / Task A1 开始
+**Stage B 进度**（tag `plan-3-stage-b-complete`）：
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| B1 | Auth API + LoginView | `20826f1` | 4 tests；login/refresh/logout/smsSend/otpSend/register；AuthLayout + LoginView |
+| B2 | AppLayout + DashboardView stub | `a4f577d` | 0 tests（UI only）；sidebar 10 items + alarm badge；topbar WS status |
+| B3 | Router guards + v-permission | `6772bbd` | 3 tests；beforeEach guard；hydrate auth；v-permission directive |
+
+**测试状态**：33 unit tests pass；vue-tsc clean
+
+**恢复步骤（新 session → 继续 Plan 3 Stage C）**：
+1. 读本 PROGRESS.md + `2026-04-20-plan-3-web.md` Stage C 全文
+2. Worktree 已建：`D:\江苏润盛\.claude\worktrees\plan-3-web`（branch `feature/plan-3-web`）
+3. 用 `superpowers:subagent-driven-development` 从 Stage C / Task C1 开始
 4. 每完成一个 Stage：打 tag `plan-3-stage-{x}-complete` + 更新本 PROGRESS.md
-
-**依赖前置**：本地需装 pnpm（`corepack enable` 即可），Node ≥ 20。
 
 **已有 worktrees**（`git worktree list`）：
 - `D:/江苏润盛` — master
-- `.claude/worktrees/plan-0-foundation` — `feature/plan-0-foundation`（基础 DB + shared + gw）
-- `.claude/worktrees/plan-2-api` — `feature/plan-2-api`（API 服务，已 tag `plan-2-complete`）
-- **待建**：`.claude/worktrees/plan-3-web` — `feature/plan-3-web`
+- `.claude/worktrees/plan-0-foundation` — `feature/plan-0-foundation`
+- `.claude/worktrees/plan-2-api` — `feature/plan-2-api`（API，已 tag `api-v0.1.0`）
+- `.claude/worktrees/plan-3-web` — `feature/plan-3-web`（web，Stage A done）
 
 ---
 
