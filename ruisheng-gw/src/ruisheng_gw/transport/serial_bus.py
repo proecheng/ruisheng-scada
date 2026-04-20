@@ -67,6 +67,12 @@ class SerialBus:
     ) -> None:
         """Wire streams — extracted for unit-test injection."""
         for entry in self._registry.devices_for_serial_port(self._port):
+            if entry.modbus_addr in self._addr_map:
+                raise RuntimeError(
+                    f"duplicate modbus_addr {entry.modbus_addr} on port {self._port}: "
+                    f"devices {self._addr_map[entry.modbus_addr]!r} and "
+                    f"{entry.device.dev_number!r}"
+                )
             self._addr_map[entry.modbus_addr] = entry.device.dev_number
             self._session_map.bind(
                 dev_number=entry.device.dev_number,

@@ -46,6 +46,15 @@ class Config(BaseSettings):
         description='JSON list, e.g. [{"port":"COM3","baud_rate":9600}]',
     )
 
+    @model_validator(mode="after")
+    def _reject_duplicate_serial_ports(self) -> Config:
+        seen: set[str] = set()
+        for sp in self.serial_ports:
+            if sp.port in seen:
+                raise ValueError(f"duplicate serial port in config: {sp.port}")
+            seen.add(sp.port)
+        return self
+
     wal_dir: str = Field(default="/var/log/ruisheng/gw/wal")  # Windows 由 wal.py 改写
     wal_single_file_mb: int = Field(default=1024, ge=10)
     wal_total_gb: int = Field(default=10, ge=1)
