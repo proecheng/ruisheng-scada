@@ -1,5 +1,31 @@
 # 实施进度备忘（断点续跑用）
 
+## Plan 4 — Docker 生产部署 ✅（2026-04-20，已合并 master）
+
+**目标：** Docker Compose 全栈部署，本机冒烟测试通过，客户机迁移包已生成。
+**测试：** 250 unit tests pass · 本机完整冒烟测试通过（登录 + devices API）
+**merge commit：** `feat(deploy): Docker Compose production deployment + login RLS fix`
+
+| 文件 | 内容 |
+|------|------|
+| `ruisheng-api/Dockerfile` | Python 3.11 + uv，含 alembic/seeds/scripts |
+| `ruisheng-gw/Dockerfile` | Python 3.11 + uv + pyserial-asyncio |
+| `ruisheng-web/Dockerfile` + `nginx.conf` | node:20 pnpm build → nginx:alpine |
+| `docker-compose.prod.yml` | 6 services（postgres/redis/migrate/api/gw/web） |
+| `.env.prod.example` | 生产环境变量模板 |
+| `scripts/entrypoint-migrate.sh` | alembic upgrade head + seeds |
+| `deploy/` | 客户机部署包（export-images.sh + setup-customer.md） |
+
+**修复发现的 Bug：**
+1. `alembic` 未在 ruisheng-api 运行时依赖中 → 已添加到 `ruisheng-api/pyproject.toml`
+2. login 端点使用 `ruisheng_api` 角色查询 users，但 RLS 在无 `app.tenant_id` 时阻挡全行 → 改为使用 `ruisheng_gw`（BYPASSRLS）session
+
+**已知限制：**
+- GW `main()` 有 `# TODO A4+`，仍返回 0 即退出，Docker 持续重启（不影响 API/Web）
+- RS485 串口设备需在 docker-compose.prod.yml gw 服务添加 `devices:` 挂载
+
+---
+
 ## Serial Port Support — 完整闭环 ✅（2026-04-20，已合并 master）
 
 **目标：** ruisheng-gw 同时支持 TCP/DTU 和 RS485 串口两种设备接入。
