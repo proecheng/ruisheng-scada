@@ -1,5 +1,24 @@
 # 实施进度备忘（断点续跑用）
 
+## Serial Port Support（2026-04-20）
+
+**目标：** ruisheng-gw 同时支持 TCP/DTU 和 RS485 串口两种设备接入。
+
+| Task | 内容 | 状态 | Commit |
+|------|------|------|--------|
+| A | DB migration: transport_type + serial_port 列 | ✅ | c7d28e1 |
+| B | Config: SerialPortConfig + serial_ports | ✅ | 413c7e9 |
+| C | Registry: transport 字段 + devices_for_serial_port() | ✅ | f11c8b3 |
+| D | pyproject: pyserial-asyncio optional dep | ✅ | d4482b4 |
+| E | SerialBus: transport/serial_bus.py | ✅ | 1da3025 |
+| F | main.py: 并行启动串口总线 | ✅ | a6cd23f |
+| G | 静态检查 + tag + PR | ✅ | — |
+
+**tag:** `serial-port-complete`
+**branch:** `feature/serial-port`
+
+---
+
 > 本文件用于跨会话保留执行状态。每次暂停前更新，下次启动前读。
 > **与 git 分支状态配合使用，git 是事实单一源。**
 

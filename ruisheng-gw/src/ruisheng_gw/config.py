@@ -5,8 +5,15 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class SerialPortConfig(BaseModel):
+    """Single serial port bus configuration."""
+
+    port: str
+    baud_rate: int = 9600
 
 
 class Config(BaseSettings):
@@ -33,6 +40,20 @@ class Config(BaseSettings):
 
     heartbeat_timeout_sec: int = Field(default=90, ge=1)  # 3× 30s 默认
     bus_lock_timeout_sec: int = Field(default=15, ge=1)
+
+    serial_ports: list[SerialPortConfig] = Field(
+        default_factory=list,
+        description='JSON list, e.g. [{"port":"COM3","baud_rate":9600}]',
+    )
+
+    @model_validator(mode="after")
+    def _reject_duplicate_serial_ports(self) -> Config:
+        seen: set[str] = set()
+        for sp in self.serial_ports:
+            if sp.port in seen:
+                raise ValueError(f"duplicate serial port in config: {sp.port}")
+            seen.add(sp.port)
+        return self
 
     wal_dir: str = Field(default="/var/log/ruisheng/gw/wal")  # Windows 由 wal.py 改写
     wal_single_file_mb: int = Field(default=1024, ge=10)

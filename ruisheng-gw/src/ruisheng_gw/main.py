@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 # hardcoded literal — 与 G7 #28-B 两版本字段分离一致
 # 升 shared 时 gw PR 必须同步改此常量
 REQUIRED_SHARED_SCHEMA_VERSION: int = 20260415
-EXPECTED_ALEMBIC_HEAD: str = "959079e6cae9"
+EXPECTED_ALEMBIC_HEAD: str = "0008_transport_serial"
 
 
 def check_shared_schema_version(required: int = REQUIRED_SHARED_SCHEMA_VERSION) -> None:
@@ -67,6 +67,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     from ruisheng_gw.scheduler.bus_lock import BusLocks  # noqa: PLC0415
     from ruisheng_gw.scheduler.clock import RealClock  # noqa: PLC0415
     from ruisheng_gw.scheduler.supervisor import Supervisor  # noqa: PLC0415
+    from ruisheng_gw.transport.serial_bus import SerialBus  # noqa: PLC0415
     from ruisheng_gw.transport.session import SessionMap  # noqa: PLC0415
     from ruisheng_gw.transport.tcp_server import GwServer  # noqa: PLC0415
 
@@ -115,12 +116,40 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     ) -> None:
         writer.close()
 
+    async def _noop_serial_frame(dev_number: str, frame: bytes) -> None:
+        pass
+
     server = GwServer(
         host=config.listen_host,
         port=config.listen_port,
         handler=_noop_handler,
     )
     await server.start()
+
+    # 5b. Start serial buses (if configured)
+    serial_buses: list[SerialBus] = []
+    serial_tasks: list[asyncio.Task[None]] = []
+    for sp_cfg in config.serial_ports:
+        bus = SerialBus(
+            port=sp_cfg.port,
+            baud_rate=sp_cfg.baud_rate,
+            registry=registry,
+            session_map=session_map,
+            on_frame=_noop_serial_frame,
+        )
+        serial_buses.append(bus)
+        task = asyncio.create_task(bus.start())
+        port_name = sp_cfg.port
+
+        def _on_bus_done(t: asyncio.Task[None], _port: str = port_name) -> None:
+            exc = t.exception() if not t.cancelled() else None
+            if exc is not None:
+                import logging  # noqa: PLC0415
+
+                logging.getLogger(__name__).error("serial bus %s failed: %s", _port, exc)
+
+        task.add_done_callback(_on_bus_done)
+        serial_tasks.append(task)
 
     # 6. Wait for SIGTERM/SIGINT
     stop_event = asyncio.Event()
@@ -143,6 +172,10 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     finally:
         # 7. Graceful shutdown
         supervisor.shutdown_sync()
+        for bus in serial_buses:
+            await bus.shutdown()
+        if serial_tasks:
+            await asyncio.gather(*serial_tasks, return_exceptions=True)
         batch.stop()
         await server.shutdown()
         with contextlib.suppress(Exception, asyncio.CancelledError):
