@@ -64,6 +64,13 @@ const routes: RouteRecordRaw[] = [
         props: true,
         meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
       },
+      {
+        path: 'devices/:devNumber/alarms/configs',
+        name: 'alarm-config',
+        component: () => import('@/views/alarms/AlarmConfigView.vue'),
+        props: true,
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
