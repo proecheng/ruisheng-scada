@@ -11,8 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint src tests --ext .ts,.vue",
-    "lint:fix": "eslint src tests --ext .ts,.vue --fix",
+    "lint": "eslint src tests",
+    "lint:fix": "eslint src tests --fix",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
@@ -30,6 +30,8 @@
   "devDependencies": {
     "@testing-library/vue": "^8.1.0",
     "@types/node": "^22.7.4",
+    "@typescript-eslint/eslint-plugin": "^8.58.2",
+    "@typescript-eslint/parser": "^8.58.2",
     "@vitejs/plugin-vue": "^5.1.4",
     "@vitest/coverage-v8": "^2.1.2",
     "@vue/test-utils": "^2.4.6",
@@ -44,6 +46,7 @@
     "vite": "^5.4.8",
     "vite-plugin-pwa": "^0.20.5",
     "vitest": "^2.1.2",
+    "vue-eslint-parser": "^9.4.3",
     "vue-tsc": "^2.1.6"
   }
 }
