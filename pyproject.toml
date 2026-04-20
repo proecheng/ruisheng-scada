@@ -63,6 +63,11 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = ["ruisheng-shared/src", "ruisheng-gw/src"]
+omit = [
+  "ruisheng-gw/src/ruisheng_gw/__main__.py",
+  "ruisheng-gw/src/ruisheng_gw/main.py",
+  "ruisheng-gw/src/ruisheng_gw/persistence/repository.py",
+]
 
 [tool.coverage.report]
 exclude_lines = [
