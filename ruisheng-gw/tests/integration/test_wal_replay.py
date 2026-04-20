@@ -31,7 +31,7 @@ async def test_wal_fallback_and_replay(postgres_url: str, tmp_path: Path) -> Non
     await wal.append(rows)
 
     # Verify rows went to WAL
-    wal_files = list(tmp_path.glob("*.ndjson"))
+    wal_files = list(tmp_path.glob("*.ndjson"))  # noqa: ASYNC240
     assert len(wal_files) >= 1, "Expected WAL file"
 
     # replay: DB is back up now
@@ -40,7 +40,7 @@ async def test_wal_fallback_and_replay(postgres_url: str, tmp_path: Path) -> Non
     assert len(rt) == 3
 
     # WAL files cleaned up after successful replay
-    assert not list(tmp_path.glob("*.ndjson")), "WAL files should be deleted after replay"
+    assert not list(tmp_path.glob("*.ndjson")), "WAL files should be deleted after replay"  # noqa: ASYNC240
 
     await engine.dispose()
 
@@ -84,6 +84,6 @@ async def test_wal_writer_fallback_on_persistent_failure(tmp_path: Path) -> None
     with contextlib.suppress(Exception):
         await task
 
-    wal_files = list(tmp_path.glob("*.ndjson"))
+    wal_files = list(tmp_path.glob("*.ndjson"))  # noqa: ASYNC240
     assert len(wal_files) >= 1, "Expected WAL file after persistent failure"
     assert writer.stats["wal_fallback_total"] >= 1
