@@ -6,11 +6,13 @@ import { useAlarmsStore } from '@/stores/alarms'
 import { useWsStore } from '@/stores/ws'
 import { logout as apiLogout } from '@/api/auth'
 import CommandPalette from '@/components/CommandPalette.vue'
+import { useWsConnection } from '@/composables/useWsConnection'
 
 const router = useRouter()
 const auth = useAuthStore()
 const alarms = useAlarmsStore()
 const ws = useWsStore()
+useWsConnection()
 
 const sidebarOpen = ref(true)
 
