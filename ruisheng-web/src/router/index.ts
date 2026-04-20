@@ -71,6 +71,11 @@ const routes: RouteRecordRaw[] = [
         props: true,
         meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
       },
+      {
+        path: 'alarms',
+        name: 'alarm-list',
+        component: () => import('@/views/alarms/AlarmListView.vue'),
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
