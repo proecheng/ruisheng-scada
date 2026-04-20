@@ -37,6 +37,9 @@ class PointEntry:
 class RegistryEntry:
     device: Device
     update_interval_decisec: int
+    transport_type: str = "tcp"  # 'tcp' | 'serial'
+    serial_port: str | None = None  # e.g. "COM3"; None for TCP
+    modbus_addr: int = 1  # ModBus slave address 1-247
     points: dict[int, PointEntry] = field(default_factory=dict)
 
 
@@ -57,6 +60,9 @@ class Registry:
             reg._entries[dr["dev_number"]] = RegistryEntry(
                 device=dev,
                 update_interval_decisec=dr["update_interval_decisec"],
+                transport_type=dr.get("transport_type", "tcp"),
+                serial_port=dr.get("serial_port"),
+                modbus_addr=dr.get("modbus_addr", 1),
             )
         for pr in point_rows:
             entry = reg._entries.get(pr["dev_number"])
@@ -87,7 +93,8 @@ class Registry:
                 (
                     await conn.execute(
                         text(
-                            "SELECT dev_number, usr_group, update_interval_decisec "
+                            "SELECT dev_number, usr_group, update_interval_decisec, "
+                            "       transport_type, serial_port, modbus_addr "
                             "FROM devices "
                             "WHERE usr_group IS NOT NULL "
                             "  AND deleted_at IS NULL"
@@ -121,3 +128,11 @@ class Registry:
 
     def entries(self) -> ValuesView[RegistryEntry]:
         return self._entries.values()
+
+    def devices_for_serial_port(self, port: str) -> list[RegistryEntry]:
+        """Return all entries whose transport is serial and serial_port matches."""
+        return [
+            e
+            for e in self._entries.values()
+            if e.transport_type == "serial" and e.serial_port == port
+        ]
