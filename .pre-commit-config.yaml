@@ -23,9 +23,9 @@ repos:
     rev: v1.11.1
     hooks:
       - id: mypy
-        additional_dependencies: [sqlalchemy, pydantic, pydantic-settings, types-redis, asyncpg, structlog, aiohttp]
+        additional_dependencies: [sqlalchemy, pydantic, pydantic-settings, types-redis, asyncpg, structlog, aiohttp, fastapi, loguru, bcrypt, python-ulid, "python-jose[cryptography]", numpy, apscheduler]
         args: [--strict]
-        exclude: ^(tests/|ruisheng-gw/tests/|alembic/|tools/pcap_gen/)
+        exclude: ^(tests/|ruisheng-gw/tests/|ruisheng-api/tests/|alembic/|tools/pcap_gen/)
 
   - repo: local
     hooks:

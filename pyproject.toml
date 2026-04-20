@@ -7,7 +7,7 @@ readme = "README.md"
 license = { text = "Proprietary" }
 
 [tool.uv.workspace]
-members = ["ruisheng-shared", "tools/pcap_gen", "ruisheng-gw"]
+members = ["ruisheng-shared", "tools/pcap_gen", "ruisheng-gw", "ruisheng-api"]
 
 [dependency-groups]
 dev = [
@@ -26,6 +26,7 @@ dev = [
   "fakeredis>=2.23",
   "alembic>=1.13",
   "pytest-benchmark>=5.2.3",
+  "types-redis>=4.6",
 ]
 
 [tool.ruff]
@@ -34,11 +35,13 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "ASYNC", "PL"]
-ignore = ["E501", "PLR0913"]
+ignore = ["E501", "PLR0913", "B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["PLR2004", "PLC0415"]
 "ruisheng-gw/tests/**/*.py" = ["PLR2004", "PLC0415"]
+"ruisheng-api/src/**/*.py" = ["PLC0415"]
+"ruisheng-api/tests/**/*.py" = ["PLR2004", "PLC0415"]
 # Alembic autogenerate creates large upgrade/downgrade() funcs; don't fight it.
 "alembic/versions/**/*.py" = ["PLR0915", "E501", "PLC0415"]
 
@@ -46,14 +49,18 @@ ignore = ["E501", "PLR0913"]
 python_version = "3.11"
 strict = true
 plugins = ["pydantic.mypy"]
-exclude = ["tests/.*", "ruisheng-gw/tests/.*", "alembic/.*"]
-mypy_path = "ruisheng-shared/src:ruisheng-gw/src:tools/pcap_gen/src"
+exclude = ["tests/.*", "ruisheng-gw/tests/.*", "alembic/.*", "ruisheng-api/tests/.*"]
+mypy_path = "ruisheng-shared/src:ruisheng-gw/src:tools/pcap_gen/src:ruisheng-api/src"
+
+[[tool.mypy.overrides]]
+module = ["uvicorn", "uvicorn.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"
 asyncio_mode = "auto"
-testpaths = ["tests", "ruisheng-gw/tests/unit", "ruisheng-gw/tests/property", "ruisheng-gw/tests/integration"]
-pythonpath = [".", "ruisheng-shared/src", "tools/pcap_gen/src", "ruisheng-gw/src"]
+testpaths = ["tests", "ruisheng-gw/tests/unit", "ruisheng-gw/tests/property", "ruisheng-gw/tests/integration", "ruisheng-api/tests/unit", "ruisheng-api/tests/integration"]
+pythonpath = [".", "ruisheng-shared/src", "tools/pcap_gen/src", "ruisheng-gw/src", "ruisheng-api/src"]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
   "integration: 需要 PG/Redis 的集成测试",
@@ -62,7 +69,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["ruisheng-shared/src", "ruisheng-gw/src"]
+source = ["ruisheng-shared/src", "ruisheng-gw/src", "ruisheng-api/src"]
 omit = [
   "ruisheng-gw/src/ruisheng_gw/__main__.py",
   "ruisheng-gw/src/ruisheng_gw/main.py",
