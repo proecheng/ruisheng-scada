@@ -3,7 +3,7 @@ import fakeredis.aioredis
 from fastapi.testclient import TestClient
 from ruisheng_api.core.security import hash_password
 from ruisheng_api.db.repositories import users as users_repo
-from ruisheng_api.deps import get_redis, get_session
+from ruisheng_api.deps import get_gw_session, get_redis, get_session
 from ruisheng_api.main import create_app
 
 
@@ -34,6 +34,7 @@ def _install(app, monkeypatch, user):
         yield object()
 
     app.dependency_overrides[get_session] = fake_session
+    app.dependency_overrides[get_gw_session] = fake_session
 
     async def fake_load(session, uname):
         return user if user and uname == user.user_name else None
