@@ -1,0 +1,55 @@
+name: web-ci
+
+on:
+  push:
+    branches: [master, feature/plan-3-*]
+    paths:
+      - 'ruisheng-web/**'
+      - '.github/workflows/ci-web.yml'
+  pull_request:
+    paths:
+      - 'ruisheng-web/**'
+
+jobs:
+  web-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: ruisheng-web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: ruisheng-web
+      - run: pnpm typecheck
+        working-directory: ruisheng-web
+      - run: pnpm test
+        working-directory: ruisheng-web
+      - run: pnpm lint
+        working-directory: ruisheng-web
+
+  web-build:
+    runs-on: ubuntu-latest
+    needs: web-unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: ruisheng-web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: ruisheng-web
+      - run: pnpm build
+        working-directory: ruisheng-web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: ruisheng-web/dist
