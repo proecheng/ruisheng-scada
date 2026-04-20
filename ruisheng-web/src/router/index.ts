@@ -124,6 +124,11 @@ const routes: RouteRecordRaw[] = [
         name: 'pay',
         component: () => import('@/views/pay/PayView.vue'),
       },
+      {
+        path: '__diag',
+        name: 'diag',
+        component: () => import('@/views/DiagView.vue'),
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },

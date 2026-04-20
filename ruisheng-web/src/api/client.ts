@@ -2,6 +2,7 @@ import axios, { AxiosError, type AxiosInstance, type InternalAxiosRequestConfig 
 import { generateUlid } from '@/utils/ulid'
 import { mapErrCode } from '@/utils/errors'
 import type { ApiResponse } from '@/api/types'
+import { useDiagStore } from '@/stores/diag'
 
 const BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -53,6 +54,45 @@ apiClient.interceptors.response.use(
       e.hint = err.hint
       e.traceId = body.trace_id
       return Promise.reject(e)
+    }
+    return Promise.reject(error)
+  },
+)
+
+// --- Diag recording (runs after ApiResponse interceptors) ---
+apiClient.interceptors.request.use((config) => {
+  ;(config as { __start_ts?: number }).__start_ts = Date.now()
+  return config
+})
+
+apiClient.interceptors.response.use(
+  (response) => {
+    try {
+      const diag = useDiagStore()
+      const start = (response.config as { __start_ts?: number }).__start_ts ?? Date.now()
+      diag.record({
+        at: new Date().toISOString(),
+        kind: 'api',
+        label: `${response.config.method?.toUpperCase()} ${response.config.url}`,
+        traceId: response.headers?.['x-trace-id'] as string | undefined,
+        durationMs: Date.now() - start,
+      })
+    } catch {
+      /* pinia may not be active during boot */
+    }
+    return response
+  },
+  (error) => {
+    try {
+      const diag = useDiagStore()
+      diag.record({
+        at: new Date().toISOString(),
+        kind: 'error',
+        label: `${(error as { config?: { method?: string; url?: string } }).config?.method?.toUpperCase() ?? '?'} ${(error as { config?: { method?: string; url?: string } }).config?.url ?? '?'}`,
+        detail: error instanceof Error ? error.message : String(error),
+      })
+    } catch {
+      /* */
     }
     return Promise.reject(error)
   },

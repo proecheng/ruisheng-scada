@@ -1,20 +1,28 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { RouterLink, RouterView, useRouter } from 'vue-router'
+import { RouterLink, RouterView, useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAlarmsStore } from '@/stores/alarms'
 import { useWsStore } from '@/stores/ws'
 import { logout as apiLogout } from '@/api/auth'
 import CommandPalette from '@/components/CommandPalette.vue'
 import { useWsConnection } from '@/composables/useWsConnection'
+import { useShortcuts } from '@/composables/useShortcuts'
+import RequestLogPanel from '@/debug/RequestLogPanel.vue'
+import WsStatePanel from '@/debug/WsStatePanel.vue'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 const alarms = useAlarmsStore()
 const ws = useWsStore()
 useWsConnection()
 
 const sidebarOpen = ref(true)
+const debugOn = ref(route.query.debug === '1')
+useShortcuts([
+  { key: 'd', ctrl: true, alt: true, handler: () => (debugOn.value = !debugOn.value) },
+])
 
 const navItems = computed<Array<{ to: string; label: string; icon: string; badge?: number }>>(() => [
   { to: '/dashboard', label: '概览', icon: '📊' },
@@ -83,6 +91,10 @@ function toggleSidebar(): void {
     </div>
   </div>
   <CommandPalette />
+  <div v-if="debugOn" class="debug-dock">
+    <RequestLogPanel />
+    <WsStatePanel />
+  </div>
 </template>
 
 <style scoped>
@@ -163,5 +175,17 @@ function toggleSidebar(): void {
 @media (max-width: 768px) {
   .sidebar { position: fixed; z-index: 10; height: 100vh; }
   .sidebar.collapsed { width: 0; overflow: hidden; }
+}
+.debug-dock {
+  position: fixed;
+  bottom: 0; right: 0;
+  width: min(420px, 96vw);
+  padding: 8px;
+  display: flex; flex-direction: column; gap: 8px;
+  background: rgba(255,255,255,0.95);
+  border-top-left-radius: 8px;
+  box-shadow: -2px -2px 8px rgba(0,0,0,0.1);
+  z-index: 700;
+  max-height: 50vh; overflow-y: auto;
 }
 </style>
