@@ -86,6 +86,12 @@ const routes: RouteRecordRaw[] = [
         name: 'waveforms',
         component: () => import('@/views/waveforms/WaveformView.vue'),
       },
+      {
+        path: 'plans/timing',
+        name: 'timing-plans',
+        component: () => import('@/views/plans/TimingPlanView.vue'),
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
