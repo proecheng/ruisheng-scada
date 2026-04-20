@@ -65,49 +65,60 @@
 ### 1.1 部署总图
 
 ```
-                       浏览器 / 微信公众号 / 安卓 App
-                                 │
-                          HTTPS / WSS
-                                 ▼
-        ┌──────────────────────────────────────────────────┐
-        │  Nginx (Windows 版)                              │
-        │   ├─ /                  → 静态前端 (Vue dist)    │
-        │   ├─ /api/*             → ruisheng-api           │
-        │   ├─ /ws                → ruisheng-api WebSocket │
-        │   └─ /wechat/notify     → ruisheng-api           │
-        └────────────────┬─────────────────────────────────┘
+   现场设备（RS485 直连）          远程设备（DTU/4G）
+   RS485 串口线                    互联网 TCP 连接
+         │                               │
+         ▼                               ▼
+   COM3 / ttyUSB0              TCP 端口 6000 / 6020
+         │                               │
+         └──────────────┬────────────────┘
+                        ▼
+        ┌───────────────────────────────────────┐
+        │  ruisheng-gw  (Windows Service)       │
+        │                                       │
+        │  ┌─ SerialBus ──── RS485 串口路径     │
+        │  │   静态预注册所有串口设备            │
+        │  │   slave_addr → dev_number 路由     │
+        │  │                                   │
+        │  └─ GwServer ──── TCP/DTU 路径        │
+        │      设备连接 → 心跳帧注册             │
+        │      每连接独立 Connection             │
+        │                   │                  │
+        │  asyncio + pyserial-asyncio           │
+        │  协议解析 / 告警判定 / 点值落库        │
+        └────────────┬──────────────────────────┘
+                     │  Redis pub/sub + Streams
+        ┌────────────┴────────┐
+        ▼                     ▼
+┌───────────────────┐  ┌──────────────────────┐
+│ ruisheng-api      │  │ Redis (pub/sub+缓存)  │
+│ (Windows Service) │  │  channel:realtime:*  │
+│                   │  │  stream:alarm:fired  │
+│ FastAPI + uvicorn │  │  stream:control:cmd  │
+│ 业务 REST + WS    │  └──────────┬───────────┘
+│ 微信/支付/告警    │             ▼
+│ 调度配置写库      │  ┌──────────────────────┐
+└─────────┬─────────┘  │ PostgreSQL 15        │
+          │            │ + TimescaleDB        │
+          └────────────┤  hypertable:         │
+                       │  point_data_history  │
+                       │  waveform_history    │
+                       └──────────────────────┘
+                                 ▲
+        ┌────────────────────────┘
+        │  HTTPS / WSS
+        ▼
+┌──────────────────────────────────────────────┐
+│  Nginx (Windows 版)                          │
+│   ├─ /           → 静态前端 (Vue dist)       │
+│   ├─ /api/*      → ruisheng-api              │
+│   ├─ /ws         → ruisheng-api WebSocket    │
+│   └─ /wechat/*   → ruisheng-api              │
+└──────────────────────────────────────────────┘
                          │
-                ┌────────┴────────┐
-                ▼                 ▼
-    ┌───────────────────┐  ┌───────────────────────┐
-    │ ruisheng-api      │  │ ruisheng-gw           │
-    │ (Windows Service) │  │ (Windows Service)     │
-    │                   │  │                       │
-    │ FastAPI + uvicorn │  │ asyncio + pymodbus    │
-    │ 业务 REST + WS    │  │ TCP server / 串口     │
-    │ 微信/支付/告警    │  │ 协议解析 / 告警判定   │
-    │ 调度配置写库      │  │ 实时点值入库          │
-    └─────────┬─────────┘  └─────────┬─────────────┘
-              │                      │
-              └──────────┬───────────┘
-                         ▼
-              ┌──────────────────────┐
-              │ Redis (pub/sub+缓存) │
-              │  channels:           │
-              │   channel:realtime:{dev_number} (Pub/Sub)
-              │   stream:alarm:fired   (Streams)
-              │   stream:control:cmd   (Streams)
-              │   alarm:fired        │
-              │   control:cmd        │
-              └──────────┬───────────┘
-                         ▼
-              ┌──────────────────────┐
-              │ PostgreSQL 15        │
-              │ + TimescaleDB        │
-              │  └─ hypertable:      │
-              │     point_data_history│
-              │     waveform_history │
-              └──────────────────────┘
+                  HTTPS / WSS
+                         │
+          浏览器 / 微信公众号 / 安卓 App
 ```
 
 ### 1.2 四个独立运行单元
@@ -116,7 +127,7 @@
 |---|---|---|---|
 | **Nginx** | Windows 服务 | 80/443 | TLS 终止、静态资源、反向代理、WSS 升级 |
 | **ruisheng-api** | Windows 服务 | 内网 8000 | 业务 REST、WS 推送、微信/支付回调、定时 Job |
-| **ruisheng-gw** | Windows 服务 | TCP 6000/6020（设备上行），内网 8001（admin）| RS485/DTU 接入、协议解析、告警引擎、点值落库 |
+| **ruisheng-gw** | Windows 服务 | TCP 6000/6020（DTU 上行）+ COM 口（串口直连），内网 8001（admin）| 双模式设备接入（TCP/DTU + RS485 串口）、协议解析、告警引擎、点值落库 |
 | **PostgreSQL+Redis** | Windows 服务 | 5432 / 6379 | 数据 + 实时总线 |
 
 ### 1.3 通讯总线契约
@@ -152,9 +163,25 @@ gw 订阅 channel:config:changed → SELECT 最新 config → 更新内存缓存
 
 1. **Nginx 必装**：Windows Server 上比 IIS 更轻量，更接近 Linux 经验
 2. **gw 与 api 不直接通讯**：解耦关键；gw 只面对设备和 Redis/DB，api 只面对用户和 Redis/DB
-3. **gw 进程内 asyncio 单线程**：每条 RS485 一个 asyncio task
+3. **gw 进程内 asyncio 单线程**：每条总线（TCP 连接或串口）一个 asyncio task
 4. **配置变更走 DB 标志位轮询**：gw 每 5s 扫 `update_flag`，避免 api→gw 反向 RPC
 5. **微信/支付回调只走 api**：所有外网入口归 api，gw 不暴露公网
+
+### 1.5 设备接入方式（双模式）
+
+`ruisheng-gw` 同时支持两种物理接入方式，对上层（SessionMap / poller / BatchWriter）完全透明：
+
+| 维度 | TCP/DTU 模式 | RS485 串口模式 |
+|------|-------------|--------------|
+| 物理层 | 设备通过 4G DTU → 互联网 → TCP | RS485 总线直接接服务器 COM 口 |
+| 连接发起方 | **设备**主动连服务器（端口 6000） | **服务器**在启动时打开串口 |
+| 设备注册时机 | 设备连接后发心跳帧（含序列号）→ 动态注册 SessionMap | 启动时按 DB 配置静态预注册 SessionMap |
+| 设备识别依据 | 心跳帧中的 `dev_ser_number` / `iccid` | DB `devices.modbus_addr` + `devices.serial_port` |
+| 心跳超时 | 90s 无心跳 → 断开 | 禁用（串口不发心跳） |
+| 配置方式 | 默认开启，端口由 `GW_LISTEN_PORT` 控制 | `GW_SERIAL_PORTS=[{"port":"COM3","baud_rate":9600}]` |
+| 共享逻辑 | `Connection`（帧解析）、`SessionMap`（writer 映射）、`BusLocks`（总线互斥）、`poller_loop`、`BatchWriter` |
+
+**DB 字段**：`devices.transport_type IN ('tcp','serial')`；串口设备必须填 `serial_port`（如 `"COM3"`）和 `modbus_addr`（1–247），且同一串口内 `modbus_addr` 唯一（运行时检查，迁移层约束待补）。
 
 ---
 
