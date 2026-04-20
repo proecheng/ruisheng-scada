@@ -40,3 +40,29 @@ def test_config_extra_forbid(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _iter_env_vars() -> list[str]:
     return [k for k in os.environ if k.startswith("GW_")]
+
+
+def test_serial_ports_default_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GW_LISTEN_HOST", "0.0.0.0")
+    monkeypatch.setenv("GW_LISTEN_PORT", "6000")
+    monkeypatch.setenv("GW_DATABASE_URL", "postgresql+asyncpg://u:p@h:5432/d")
+    monkeypatch.setenv("GW_REDIS_URL", "redis://h:6379/0")
+    cfg = Config()
+    assert cfg.serial_ports == []
+
+
+def test_serial_ports_parses_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    monkeypatch.setenv("GW_LISTEN_HOST", "0.0.0.0")
+    monkeypatch.setenv("GW_LISTEN_PORT", "6000")
+    monkeypatch.setenv("GW_DATABASE_URL", "postgresql+asyncpg://u:p@h:5432/d")
+    monkeypatch.setenv("GW_REDIS_URL", "redis://h:6379/0")
+    monkeypatch.setenv(
+        "GW_SERIAL_PORTS",
+        json.dumps([{"port": "COM3", "baud_rate": 9600}]),
+    )
+    cfg = Config()
+    assert len(cfg.serial_ports) == 1
+    assert cfg.serial_ports[0].port == "COM3"
+    assert cfg.serial_ports[0].baud_rate == 9600
