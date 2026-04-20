@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import uvicorn  # type: ignore[import-not-found]
+import uvicorn
 
 from .config import Config
 
