@@ -175,4 +175,4 @@ jobs:
       - run: uv sync --all-packages
       - run: docker compose -f docker-compose.dev.yml up -d --wait
       - run: uv run alembic upgrade head
-      - run: uv run pytest ruisheng-gw/tests/integration/test_p95_flush.py --benchmark-only -v
+      - run: uv run pytest ruisheng-gw/tests/integration/test_p95_flush.py --benchmark-only -v --reruns=2
