@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 from ruisheng_gw.persistence.batch_writer import BatchRow
 from ruisheng_gw.persistence.repository import Repository
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
@@ -14,6 +16,12 @@ async def engine(postgres_url: str):
     eng = create_async_engine(postgres_url)
     yield eng
     await eng.dispose()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_tables(engine) -> None:
+    async with engine.begin() as conn:
+        await conn.execute(text("TRUNCATE point_data_realtime, point_data_history"))
 
 
 async def test_bulk_insert_rows_appear(engine) -> None:
