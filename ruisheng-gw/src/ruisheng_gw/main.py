@@ -67,6 +67,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     from ruisheng_gw.scheduler.bus_lock import BusLocks  # noqa: PLC0415
     from ruisheng_gw.scheduler.clock import RealClock  # noqa: PLC0415
     from ruisheng_gw.scheduler.supervisor import Supervisor  # noqa: PLC0415
+    from ruisheng_gw.transport.serial_bus import SerialBus  # noqa: PLC0415
     from ruisheng_gw.transport.session import SessionMap  # noqa: PLC0415
     from ruisheng_gw.transport.tcp_server import GwServer  # noqa: PLC0415
 
@@ -115,12 +116,30 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     ) -> None:
         writer.close()
 
+    async def _noop_serial_frame(dev_number: str, frame: bytes) -> None:
+        pass
+
     server = GwServer(
         host=config.listen_host,
         port=config.listen_port,
         handler=_noop_handler,
     )
     await server.start()
+
+    # 5b. Start serial buses (if configured)
+    serial_buses: list[SerialBus] = []
+    serial_tasks: list[asyncio.Task[None]] = []
+    for sp_cfg in config.serial_ports:
+        bus = SerialBus(
+            port=sp_cfg.port,
+            baud_rate=sp_cfg.baud_rate,
+            registry=registry,
+            session_map=session_map,
+            on_frame=_noop_serial_frame,
+        )
+        serial_buses.append(bus)
+        task = asyncio.create_task(bus.start())
+        serial_tasks.append(task)
 
     # 6. Wait for SIGTERM/SIGINT
     stop_event = asyncio.Event()
@@ -143,6 +162,10 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     finally:
         # 7. Graceful shutdown
         supervisor.shutdown_sync()
+        for bus in serial_buses:
+            await bus.shutdown()
+        if serial_tasks:
+            await asyncio.gather(*serial_tasks, return_exceptions=True)
         batch.stop()
         await server.shutdown()
         with contextlib.suppress(Exception, asyncio.CancelledError):
