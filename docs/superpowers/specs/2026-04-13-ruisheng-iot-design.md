@@ -1,6 +1,6 @@
 # 江苏润盛 IoT 监控平台 — 重做设计文档
 
-> **版本**：v1.3.2 / 2026-04-13
+> **版本**：v1.3.6 / 2026-04-15
 > **状态**：5 角色审查合并 + 一致性轮 + 边界/数据流轮 全部完成；等待最终 ack → writing-plans
 > **关联文档**：
 > - 需求基线：`D:\江苏润盛\需求清单\功能全景清单.md` v2.2（1609 行）
@@ -274,7 +274,7 @@ ruisheng-gw/
 
 ```
 ruisheng-shared/
-├── __init__.py                  # SHARED_SCHEMA_VERSION = 20260413  ← 每次 breaking 改动 +1
+├── __init__.py                  # SHARED_SCHEMA_VERSION = 20260414  ← 每次 breaking 改动 +1
 ├── CHANGELOG.md                 # 每次改动必登：breaking / deprecation / feature / fix
 ├── models/                      # SQLAlchemy 模型（两服务共用）
 ├── schemas/                     # pydantic（两服务共用）
@@ -288,7 +288,7 @@ ruisheng-shared/
 # ruisheng-api/app/main.py  &&  ruisheng-gw/app/main.py  都加
 from ruisheng_shared import SHARED_SCHEMA_VERSION
 
-REQUIRED = 20260413
+REQUIRED = 20260414
 if SHARED_SCHEMA_VERSION != REQUIRED:
     raise RuntimeError(f"shared mismatch: expect {REQUIRED}, got {SHARED_SCHEMA_VERSION}")
 ```
@@ -597,27 +597,26 @@ async def on_wx_pay_notify(request):
         return xml_fail("invalid fee")
 
     # 6. 幂等（INSERT ON CONFLICT，事务内）+ 业务处理
-    async with db.transaction():
+    # v1.3.5：回调无 HTTP 租户上下文 → 切换到 gw_pool（BYPASSRLS），不依赖 SET LOCAL（§3.7 例外路径）
+    async with gw_pool.transaction() as db:
         ok = await db.execute(
             "INSERT INTO pay_orders_seen(out_trade_no, notified_at) VALUES ($1, NOW()) "
             "ON CONFLICT (out_trade_no) DO NOTHING", out_trade_no
         )
-        if not ok.rows_affected:
+        if ok.rows_affected == 0:
             return xml_ok()  # 已处理，幂等返回成功
 
-        await mark_paid(out_trade_no, total_fee, time_end)
+        try:
+            await mark_paid(db, out_trade_no, total_fee, time_end)
+        except BizError as e:
+            # 非法状态转移 / 金额不符：pay_orders_seen 已锁，仍返回 ok 避免微信重试风暴
+            soft_log.warn("wxpay mark_paid rejected",
+                          out_trade_no=out_trade_no, code=int(e.code), msg=e.msg)
 
     return xml_ok()
 ```
 
-新增辅助表：
-```sql
-CREATE TABLE pay_orders_seen (
-  out_trade_no VARCHAR(50) PRIMARY KEY,
-  notified_at  timestamptz NOT NULL DEFAULT now()
-);
-```
-用于微信回调幂等防护；每日凌晨清理 30 天以前记录。
+辅助表 `pay_orders_seen` DDL 见 §4.2；每日凌晨清理 30 天以前记录（§5.10.3）。
 
 ### 3.6 权限矩阵（4 角色 × 14 模块）
 
@@ -653,7 +652,7 @@ CREATE TABLE pay_orders_seen (
 | 7 告警 | 通讯录 | ✓ | ✓ | ✓ | R | — |
 | 8 设备配置 | 比例/字段 | ✓ | ✓ | ▲(CA bit1) | × | 原硬编码特权号 18264192756 已废弃（D1），走 L4 |
 | 8 设备配置 | 添加/删除 | ✓ | ✓ | ✓ | × | — |
-| 9 保养 | 查询/增删 | ✓ | ✓ | ✓ | R | — |
+| 9 保养 | 查询/增删 | ✓ | ✓ | ✓ | ▲自有 | L1 只能对"本人绑定设备"的保养计划增删 |
 | 10 定时计划 | 增删启停 | ✓ | ✓ | ✓ | × | — |
 | 11 组态 | 查看 | ✓ | ✓ | ✓ | ▲ | — |
 | 11 组态 | 编辑 | ✓ | ✓ | ✓ | × | — |
@@ -661,7 +660,7 @@ CREATE TABLE pay_orders_seen (
 | 12 用户/组织 | 跨租户 | ✓(OTP) | × | × | × | — |
 | 12 用户/组织 | 创建集团/平台角色 | ✓(OTP) | × | × | × | — |
 | 13 支付充值 | 充值 | ✓ | ✓ | ✓ | ✓ | 充值对象为自有设备 |
-| 13 支付充值 | 订单查询 | ✓ | ✓ | ▲本公司 | ▲本人 | — |
+| 13 支付充值 | 订单查询 | ✓ | ✓ | ▲本公司 | ▲本人 | L1 需额外 ORM filter by openid∈user_wx_bindings(current_user)（RLS 只到 usr_group 粒度） |
 | 14 运维/审计 | SoftLog/ControlAction | ✓ | R(本集团) | R(本公司) | × | 审计员只读 |
 | 14 运维 | WXGroup 配置 | ✓(OTP) | × | × | × | — |
 | 14 运维 | `/admin/log/*` 动态调级 | ✓(OTP) | × | × | × | — |
@@ -709,6 +708,18 @@ def inject_tenant_filter(query):
 - 每个资源 endpoint 必须有对应负向测试：UserA(tenantA) 访问 UserB(tenantB) 资源应返回 403
 
 **违规处置**：生产检测到"无 usr_group 过滤的查询" → 立刻 P0 告警 + 自动封禁该进程。
+
+**软删 + FK 语义**（v1.3.3 新增）：
+- FK 仅检查行存在性，**不检查 deleted_at**；业务查询必须 JOIN WHERE deleted_at IS NULL
+- 禁止依赖 `ON DELETE RESTRICT` 做业务级联（所有表用软删，级联永不触发）
+- UI 列表遇到引用已软删行时，降级显示 `LEFT JOIN + COALESCE(target.name, '已删除') AS display_name`
+
+**gw 服务账号**（v1.3.3 新增）：
+- `CREATE ROLE ruisheng_gw BYPASSRLS LOGIN PASSWORD '...'`（gw 是后台服务，无 HTTP 上下文）
+- 所有 gw SQL 由 CI lint 强制带 `WHERE usr_group = ?` 过滤（负向 test：构造跨租户 join，断言拒绝合并）
+- api 继续用普通角色 + `SET LOCAL app.tenant_id` 走 RLS
+- **gw 禁止访问 `scene_pages` / `scene_views`**（v1.3.4 新增）：组态是 UI 配置类数据，gw（实时/控制通路）无业务理由读写；CI lint 扫描 gw 代码库 SQL 字面量禁止出现这两张表名，违规 P0 阻塞合并
+- **例外路径 — wxpay_notify**（v1.3.5 新增）：api 服务的微信支付回调 handler 内部使用 `gw_pool`（ruisheng_gw BYPASSRLS）连接 `pay_orders_seen`，因为回调无 HTTP 租户上下文；此路径白名单登记于 §3.5；CI lint 仅扫描 gw 代码库，不扫 api 代码库的 gw_pool 引用
 
 ### 3.8 边界情况与数据流细则（v1.3.2 新增）
 
@@ -890,6 +901,52 @@ def decode_waveform(blob: bytes) -> tuple[list[float], int]:
 - 用户订阅的告警通道：从 `user_phone_numbers` / `user_emails` / `user_wx_bindings` 级联删除
 - 该用户归属的设备 → 归还给上级管理员（L2 → L3 → L4）
 - 保留 `user_control_actions` 审计记录 3 年（合规），显示为"已注销用户 XXX（脱敏）"
+- `maintain_actions` 审计记录 **同款规则**：保留 3 年 + 脱敏显示（v1.3.3 追加）
+- `pay_orders` 审计记录 **同款规则**：保留 3 年（合规）+ 脱敏显示（v1.3.5 追加）：
+  - `openid` 脱敏：保留前 4 字符 + 后 4 字符，中间 `****`（如 `oABC****wXYZ`）；< 8 字符全隐 → `****`
+  - `total_fee` 展示：L4 对账可见原值；L3/L2 订单列表整元（模 100 取元，分位 **）；L1 本人订单详情可见原值，列表见 `***.**`
+  - `body` 不脱敏（商品描述，无 PII）
+  - pydantic serializer 层执行，DDL 不约束
+
+#### 3.8.17 保养计划推进状态机（v1.3.3 新增）
+
+**场景**：师傅 App 点"完成保养"。
+
+**推进公式（并发安全）**：
+```
+next_due_at_new = max(now(), next_due_at_old) + interval_days * INTERVAL '1 day'
+```
+- **禁止累加式** `next_due_at + interval`（漏保养一周后做只推进一个周期，导致漏检永远推迟）
+- `max(now(), old)` 保证即使超期后补做，下次也从 now() 起算
+
+**事务序**：
+```
+BEGIN;
+  SELECT * FROM maintain_plans WHERE id = :plan_id FOR UPDATE;  -- 行锁防并发
+  INSERT INTO maintain_actions (action_uuid, plan_id, dev_number, user_name, usr_group)
+    VALUES (...) ON CONFLICT (action_uuid) DO NOTHING;          -- 幂等（弱网双击）
+  UPDATE maintain_plans
+    SET next_due_at = GREATEST(now(), next_due_at) + make_interval(days => interval_days),
+        updated_at = now()
+    WHERE id = :plan_id;
+COMMIT;
+```
+
+**action_uuid 约定**：前端生成 ULID（26 字符），网络失败重试时复用同一 uuid → `ON CONFLICT DO NOTHING` 幂等。
+
+**时间容差**（v1.3.3 通用约定）：所有表单时间字段允许 ≤ 60s 早于服务端 now()（应对浏览器时钟偏差）；CHECK 约束写作 `next_due_at >= created_at - INTERVAL '1 minute'`。
+
+#### 3.8.18 scene_views 展示快照规则（v1.3.4 新增）
+
+**场景**：`scene_views` 保留 `company` / `department` 冗余列（非 FK），用于组态画面展示"所属公司/部门"，避免渲染时跨 JOIN `users` 的开销。
+
+**规则**：
+- **INSERT 时**：若 API 层未传 `company` / `department`，DB 触发器 `trg_scene_views_fill_snapshot` 自动从 `users(owner_user_name).company/department` 填充（BEFORE INSERT，见 §4.1.1 (5)）
+- **允许覆盖**：API 层可显式传值（如运营期手改"某视图显示为『旧公司名』"），DB 不强制反查一致
+- **UPDATE 时**：**不自动同步**。用户调岗后 `users.company` 变化，`scene_views.company` 保持创建时值。业务需批量刷新时，由 API 提供显式"同步展示信息"操作（`UPDATE scene_views SET company = u.company FROM users u WHERE ...`）
+- **软删后**：owner 用户被软删 → `scene_views` 保留原 company/department 快照；列表页 `LEFT JOIN + COALESCE` 降级（遵循 §3.7 软删规则）
+
+**与租户一致性的关系**：`company`/`department` 不参与 RLS（`usr_group` 单独负责隔离）；租户一致性由 `trg_scene_views_enforce_tenant` 保证（§4.1.1 (4)）。
 
 ---
 
@@ -901,11 +958,101 @@ def decode_waveform(blob: bytes) -> tuple[list[float], int]:
 |---|---|
 | 表/字段 | `snake_case` |
 | 主键 | `id BIGSERIAL` + 业务键 UNIQUE |
-| 时间 | 统一 `timestamptz`，存 UTC |
-| 多租户 | 每张业务表强制 `usr_group VARCHAR(50) NOT NULL` + INDEX |
-| 软删除 | `deleted_at timestamptz NULL` |
-| 审计字段 | `created_at` / `updated_at`（触发器维护）|
+| 时间 | 统一 `timestamptz`，存 UTC；系统假定 `TZ='Asia/Shanghai'`，无 DST |
+| 多租户 | 每张业务表强制 `usr_group VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group)` + INDEX |
+| 软删除 | `deleted_at timestamptz NULL`（审计类表除外，详见 §4.1.1） |
+| 审计字段 | `created_at` / `updated_at`（触发器 `trg_<table>_updated` 维护；见 §4.1.1） |
+| 字符串归一 | VARCHAR 入库前在 API 层 `strip()` + NFC normalize；DB 不做 trim |
 | 字符集 | UTF8，collation `zh-x-icu` |
+| FK 命名 | 不在 DDL 写 `CONSTRAINT fk_...` 名，交 Alembic `naming_convention` 生成（`fk_<table>_<col>_<referred>`） |
+| CHECK 命名 | 同上，交 naming_convention（`ck_<table>_<constraint_name>`） |
+| Index 命名 | 显式 `ix_<table>_<purpose>` / `ux_<table>_<purpose>`（partial unique） |
+| RLS policy | 所有表同名 `tenant_isolation`（模板见 §3.7）|
+| Trigger 命名 | `trg_<table>_updated`（updated_at 自动维护） |
+| 时间容差 | 所有表单时间字段：CHECK `target_time >= created_at - INTERVAL '1 minute'` |
+
+### 4.1.1 通用设施（v1.3.3 新增）
+
+```sql
+-- (1) 通用 updated_at 触发器函数（被每张含 updated_at 的表的触发器复用）
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS TRIGGER AS $$
+BEGIN NEW.updated_at = now(); RETURN NEW; END $$ LANGUAGE plpgsql;
+
+-- (2) gw 服务账号（BYPASSRLS，SQL 由 CI lint 强制带 WHERE usr_group）
+CREATE ROLE ruisheng_gw BYPASSRLS LOGIN PASSWORD '<prod-secret>';
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO ruisheng_gw;
+
+-- (3) api 服务账号（走 RLS，每事务 SET LOCAL 两个变量）
+CREATE ROLE ruisheng_api LOGIN PASSWORD '<prod-secret>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ruisheng_api;
+-- api 每个请求 begin tx 后：
+--   SET LOCAL app.tenant_id = '<user.usr_group>';
+--   SET LOCAL app.role      = '<user.authority>';  -- Administrators/GroupCompany/Company/User
+
+-- (4) scene_* 租户一致性触发器（v1.3.4 新增）
+--     BEFORE INSERT/UPDATE 校验 scene_pages/scene_views 的 usr_group
+--     与 users(owner_user_name) / scene_pages(scene_page_id) / devices(dev_number) 一致；
+--     不一致 RAISE EXCEPTION 23514（补 RLS 只防读不防跨表写的盲点）
+CREATE OR REPLACE FUNCTION enforce_scene_tenant_consistency() RETURNS TRIGGER AS $$
+DECLARE
+  v_owner_ug VARCHAR(50);
+  v_page_ug  VARCHAR(50);
+  v_dev_ug   VARCHAR(50);
+BEGIN
+  SELECT usr_group INTO v_owner_ug FROM users
+    WHERE user_name = NEW.owner_user_name AND deleted_at IS NULL;
+  IF v_owner_ug IS NULL THEN
+    RAISE EXCEPTION 'scene_tenant_violation: owner_user_name=% not found or soft-deleted',
+      NEW.owner_user_name USING ERRCODE = '23514';
+  END IF;
+  IF v_owner_ug <> NEW.usr_group THEN
+    RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches users(%).usr_group=%',
+      NEW.usr_group, NEW.owner_user_name, v_owner_ug USING ERRCODE = '23514';
+  END IF;
+
+  IF TG_TABLE_NAME = 'scene_views' THEN
+    SELECT usr_group INTO v_page_ug FROM scene_pages
+      WHERE id = NEW.scene_page_id AND deleted_at IS NULL;
+    IF v_page_ug IS NULL THEN
+      RAISE EXCEPTION 'scene_tenant_violation: scene_page_id=% not found or soft-deleted',
+        NEW.scene_page_id USING ERRCODE = '23514';
+    END IF;
+    IF v_page_ug <> NEW.usr_group THEN
+      RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches scene_pages(id=%).usr_group=%',
+        NEW.usr_group, NEW.scene_page_id, v_page_ug USING ERRCODE = '23514';
+    END IF;
+
+    SELECT usr_group INTO v_dev_ug FROM devices
+      WHERE dev_number = NEW.dev_number AND deleted_at IS NULL;
+    IF v_dev_ug IS NULL THEN
+      RAISE EXCEPTION 'scene_tenant_violation: dev_number=% not found or soft-deleted',
+        NEW.dev_number USING ERRCODE = '23514';
+    END IF;
+    IF v_dev_ug <> NEW.usr_group THEN
+      RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches devices(%).usr_group=%',
+        NEW.usr_group, NEW.dev_number, v_dev_ug USING ERRCODE = '23514';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+-- (5) scene_views 展示快照自动填充触发器（v1.3.4 新增，见 §3.8.18）
+--     BEFORE INSERT 时若 company/department 为 NULL，从 users 反查填入；
+--     允许 API 显式覆盖；UPDATE 不自动同步（调岗后保留历史快照）
+CREATE OR REPLACE FUNCTION fill_scene_views_snapshot() RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.company IS NULL OR NEW.department IS NULL THEN
+    SELECT
+      COALESCE(NEW.company, u.company),
+      COALESCE(NEW.department, u.department)
+    INTO NEW.company, NEW.department
+    FROM users u
+    WHERE u.user_name = NEW.owner_user_name AND u.deleted_at IS NULL;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+```
 
 ### 4.2 核心表 DDL 节选
 
@@ -1099,42 +1246,307 @@ CREATE TABLE user_control_actions (
 CREATE INDEX ON user_control_actions (dev_number, acted_at DESC);
 CREATE INDEX ON user_control_actions (user_name, acted_at DESC);
 
+-- timing_plans（v1.3.3 扩展：补 usr_group / deleted_at / updated_at / RLS / 索引）
 CREATE TABLE timing_plans (
   id          BIGSERIAL PRIMARY KEY,
-  dev_number  VARCHAR(50) NOT NULL,
+  dev_number  VARCHAR(50) NOT NULL REFERENCES devices(dev_number) ON DELETE RESTRICT,
   action_at   timestamptz NOT NULL,
   action      INT NOT NULL,
   repetition  INT NOT NULL DEFAULT 0,
   enable      BOOLEAN NOT NULL DEFAULT true,
-  update_flag SMALLINT NOT NULL DEFAULT 0,
-  created_at  timestamptz NOT NULL DEFAULT now()
+  update_flag SMALLINT NOT NULL DEFAULT 0,                        -- gw 感知配置变更
+  usr_group   VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT,
+  deleted_at  timestamptz,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_timing_plans_dev_action ON timing_plans (dev_number, action_at);
+CREATE INDEX ix_timing_plans_due        ON timing_plans (action_at)
+  WHERE enable = true AND deleted_at IS NULL;
+CREATE INDEX ix_timing_plans_usr_group  ON timing_plans (usr_group);
+
+CREATE TRIGGER trg_timing_plans_updated BEFORE UPDATE ON timing_plans
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE timing_plans ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON timing_plans USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
 );
 
+-- maintain_plans（v1.3.3 新增：保养计划模板；不下发 gw，故无 update_flag）
+CREATE TABLE maintain_plans (
+  id             BIGSERIAL PRIMARY KEY,
+  dev_number     VARCHAR(50) NOT NULL REFERENCES devices(dev_number) ON DELETE RESTRICT,
+  plan_name      VARCHAR(100) COLLATE "zh-x-icu" NOT NULL,
+  description    VARCHAR(255),
+  interval_days  INT NOT NULL CHECK (interval_days BETWEEN 1 AND 3650),
+  next_due_at    timestamptz NOT NULL,
+  enable         BOOLEAN NOT NULL DEFAULT true,
+  usr_group      VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT,
+  deleted_at     timestamptz,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  CHECK (next_due_at >= created_at - INTERVAL '1 minute')    -- 60s 容差，见 §4.1
+);
+CREATE INDEX ix_maintain_plans_dev_number       ON maintain_plans (dev_number);
+CREATE INDEX ix_maintain_plans_usr_group        ON maintain_plans (usr_group);
+CREATE INDEX ix_maintain_plans_next_due_active  ON maintain_plans (next_due_at)
+  WHERE enable = true AND deleted_at IS NULL;
+CREATE UNIQUE INDEX ux_maintain_plans_dev_plan_name
+  ON maintain_plans (dev_number, plan_name) WHERE deleted_at IS NULL;
+
+CREATE TRIGGER trg_maintain_plans_updated BEFORE UPDATE ON maintain_plans
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE maintain_plans ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON maintain_plans USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
+);
+
+-- maintain_actions（v1.3.3 新增：保养执行审计；一次写入 + action_uuid 幂等）
+CREATE TABLE maintain_actions (
+  id           BIGSERIAL PRIMARY KEY,
+  action_uuid  VARCHAR(26) NOT NULL UNIQUE,               -- ULID，前端生成；弱网幂等
+  plan_id      BIGINT NOT NULL,                           -- 弱引用：审计永久留痕，不设 FK
+  dev_number   VARCHAR(50) NOT NULL,                      -- 冗余：设备删后仍可审计
+  acted_at     timestamptz NOT NULL DEFAULT now(),
+  user_name    VARCHAR(50) NOT NULL REFERENCES users(user_name) ON DELETE RESTRICT,
+  note         VARCHAR(1000),                             -- 保养备注（师傅文字记录）
+  usr_group    VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT
+);
+CREATE INDEX ix_maintain_actions_plan_acted ON maintain_actions (plan_id,    acted_at DESC);
+CREATE INDEX ix_maintain_actions_dev_acted  ON maintain_actions (dev_number, acted_at DESC);
+CREATE INDEX ix_maintain_actions_user_acted ON maintain_actions (user_name,  acted_at DESC);
+CREATE INDEX ix_maintain_actions_usr_group  ON maintain_actions (usr_group);
+
+ALTER TABLE maintain_actions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON maintain_actions USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
+);
+
+-- pay_orders（v1.3.5 扩展：补 usr_group / updated_at / deleted_at / refund_at / 6-值 pay_state / RLS / 索引）
+-- 审计类表：deleted_at 可软删（管理员"作废"走 deleted_at；真实 PII 脱敏见 §3.8.16，不物理删）
+-- PK 例外：out_trade_no 直接作 PK（微信协议要求；见 §4.6）
+-- 回调写入路径走 ruisheng_gw（BYPASSRLS）；api 路径走 ruisheng_api + SET LOCAL RLS
 CREATE TABLE pay_orders (
-  out_trade_no VARCHAR(50) PRIMARY KEY,
-  openid       VARCHAR(100) NOT NULL,
-  total_fee    INT NOT NULL CHECK (total_fee >= 0),
+  out_trade_no VARCHAR(50)  PRIMARY KEY,
+  openid       VARCHAR(100) NOT NULL,                        -- 与 user_wx_bindings.openid 同列宽；CHECK 交 pydantic
+  usr_group    VARCHAR(50)  NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT,
+  total_fee    INT          NOT NULL CHECK (total_fee >= 0), -- 单位：分；脱敏展示见 §3.8.16
   body         VARCHAR(255),
-  pay_state    VARCHAR(20) NOT NULL DEFAULT 'pending'
-                CHECK (pay_state IN ('pending','paid','failed','refund')),
-  created_at   timestamptz NOT NULL DEFAULT now(),
+  pay_state    VARCHAR(20)  NOT NULL DEFAULT 'pending'
+               CHECK (pay_state IN ('pending','paid','failed','refund','cancelled','expired')),
+  created_at   timestamptz  NOT NULL DEFAULT now(),
+  updated_at   timestamptz  NOT NULL DEFAULT now(),
   paid_at      timestamptz,
-  CHECK ((pay_state = 'paid') = (paid_at IS NOT NULL))
+  refund_at    timestamptz,
+  deleted_at   timestamptz,
+  -- 状态/时间戳 biconditional（类比 user_control_actions.completed_at）
+  CHECK ((pay_state = 'paid') = (paid_at IS NOT NULL)),
+  CHECK (refund_at IS NULL OR paid_at IS NOT NULL),          -- 退款必先于支付
+  CHECK (refund_at IS NULL OR refund_at >= paid_at)          -- 退款时间 ≥ 支付时间
+);
+CREATE INDEX ix_pay_orders_usr_group_created
+  ON pay_orders (usr_group, created_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX ix_pay_orders_openid_created
+  ON pay_orders (openid, created_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX ix_pay_orders_pending_created
+  ON pay_orders (created_at) WHERE pay_state = 'pending' AND deleted_at IS NULL;
+
+CREATE TRIGGER trg_pay_orders_updated BEFORE UPDATE ON pay_orders
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE pay_orders ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON pay_orders USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
 );
 
+-- pay_orders_seen（微信支付回调幂等守门表；无租户维度 → 无 RLS；30 天 TTL；见 §5.10.3）
+-- 定位：系统级幂等防护，类比 soft_logs；不参与多租户/业务查询
+-- 不加 usr_group：回调时无 tenant 上下文（类比 soft_logs）
+-- 写入：ruisheng_gw；只读审查：ruisheng_api
+CREATE TABLE pay_orders_seen (
+  out_trade_no VARCHAR(50) PRIMARY KEY,
+  notified_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_pay_orders_seen_notified_at_brin
+  ON pay_orders_seen USING BRIN (notified_at);   -- 时序追加 + 30d TTL 清理，BRIN 压缩率高
+
+REVOKE ALL ON pay_orders_seen FROM PUBLIC;
+GRANT INSERT, SELECT, DELETE ON pay_orders_seen TO ruisheng_gw;
+GRANT SELECT                  ON pay_orders_seen TO ruisheng_api;
+
+-- soft_logs（v1.3.6 增强：+source 字段 + level CHECK + 索引 + 压缩 + 权限）
+-- 无 usr_group / 无 RLS：系统级审计，类比 pay_orders_seen（§3.6 L664 L2–L4 读走 RBAC 不走 DB RLS）
+-- 无 updated_at / 无 deleted_at：INSERT-only；retention policy 负责清理
 CREATE TABLE soft_logs (
   id          BIGSERIAL PRIMARY KEY,
-  level       VARCHAR(10) NOT NULL,
+  level       VARCHAR(10) NOT NULL
+              CHECK (level IN ('WARN','ERROR','CRITICAL')),   -- §5.12: 只有这 3 级写入 DB
+  source      VARCHAR(20) NOT NULL
+              CHECK (source IN ('gw','api','worker')),        -- 来源进程（worker 预留未来调度进程）
   msg         VARCHAR(500) NOT NULL,
-  context     JSONB,
+  context     JSONB,                                          -- JSON 结构见 §5.12.2 (trace_id/span_id/dev_number 等)
   recorded_at timestamptz NOT NULL DEFAULT now()
 );
 SELECT create_hypertable('soft_logs', 'recorded_at',
   chunk_time_interval => INTERVAL '1 month');
 SELECT add_retention_policy('soft_logs', INTERVAL '1 year');
+ALTER TABLE soft_logs SET (timescaledb.compress);
+SELECT add_compression_policy('soft_logs', INTERVAL '7 days');
+
+CREATE INDEX ix_soft_logs_level_recorded_at
+  ON soft_logs (level, recorded_at DESC);
+CREATE INDEX ix_soft_logs_source_recorded_at
+  ON soft_logs (source, recorded_at DESC);
+
+REVOKE ALL ON soft_logs FROM PUBLIC;
+GRANT INSERT         ON soft_logs TO ruisheng_gw;
+GRANT INSERT, SELECT ON soft_logs TO ruisheng_api;
+
+-- user_login_records（v1.3.6 新增：Web 端登录审计；hypertable；多租户 RLS）
+-- 旧表映射：UserLoginRecord (UserName, LoginTime, IP, City, UA) → snake_case + success/usr_group
+-- 写入：ruisheng_api（POST /api/auth/login）
+-- 无 updated_at / 无 deleted_at：INSERT-only 审计；retention policy 清理
+-- user_name 弱引用（无 FK）：审计永久留痕；用户软删/注销后记录保留（类比 maintain_actions.dev_number）
+CREATE TABLE user_login_records (
+  id          BIGSERIAL PRIMARY KEY,
+  user_name   VARCHAR(50) NOT NULL,                          -- 弱引用：审计永久留痕，用户软删后仍可审计
+  logged_at   timestamptz NOT NULL DEFAULT now(),            -- hypertable 时间维度
+  ip_addr     INET NOT NULL,                                 -- 支持 IPv4/IPv6；迁移时旧 VARCHAR::INET
+  city        VARCHAR(100),                                  -- GeoIP 解析，失败时 NULL
+  user_agent  VARCHAR(500),                                  -- HTTP User-Agent，nullable
+  success     BOOLEAN NOT NULL DEFAULT true,                 -- 失败登录也记录（§5.13 限流审计）
+  usr_group   VARCHAR(50) NOT NULL
+              REFERENCES wx_groups(usr_group) ON DELETE RESTRICT  -- 多租户；冗余存（审计永久可查）
+);
+SELECT create_hypertable('user_login_records', 'logged_at',
+  chunk_time_interval => INTERVAL '1 month');
+SELECT add_retention_policy('user_login_records', INTERVAL '3 years');   -- 安全合规审计，对齐 user_control_actions
+ALTER TABLE user_login_records SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'usr_group'
+);
+SELECT add_compression_policy('user_login_records', INTERVAL '7 days');
+
+CREATE INDEX ix_user_login_records_usr_group_logged_at
+  ON user_login_records (usr_group, logged_at DESC);
+CREATE INDEX ix_user_login_records_user_name_logged_at
+  ON user_login_records (user_name, logged_at DESC);
+-- 失败 IP 安全分析（§5.13 限流；partial index 只对失败行）
+CREATE INDEX ix_user_login_records_ip_fail
+  ON user_login_records (ip_addr, logged_at DESC)
+  WHERE NOT success;
+
+ALTER TABLE user_login_records ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON user_login_records USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
+);
+
+REVOKE ALL ON user_login_records FROM PUBLIC;
+GRANT INSERT, SELECT ON user_login_records TO ruisheng_api;
+
+-- scene_pages（v1.3.4 新增：组态画面模板；旧映射 ZTPageInf 非直通）
+-- TODO(Q-B08): 待澄清
+--   (1) 子页面层级深度：当前直通旧表单层（sonpage_name / sonpage_pic）；若业务确认树形多级，
+--       需追加 parent_id BIGINT REFERENCES scene_pages(id) ON DELETE RESTRICT + CHECK 防环
+--   (2) 背景图分辨率限制：由前端 / 对象存储层控制；DDL 不约束
+--   (3) SVG 支持：sonpage_pic 存对象存储 key，MIME 由 API 层白名单验证（png/jpg/svg/webp）
+CREATE TABLE scene_pages (
+  id                BIGSERIAL PRIMARY KEY,
+  owner_user_name   VARCHAR(50) NOT NULL REFERENCES users(user_name) ON DELETE RESTRICT,
+  page_name         VARCHAR(100) COLLATE "zh-x-icu" NOT NULL,
+  sonpage_name      VARCHAR(100) COLLATE "zh-x-icu",
+  sonpage_pic       VARCHAR(500),                          -- 对象存储 key：s3://{bucket}/{usr_group}/scene/{page_id}/...
+  pos_x             NUMERIC(10, 2) NOT NULL,               -- vue-konva 世界坐标，允许负
+  pos_y             NUMERIC(10, 2) NOT NULL,
+  radius            NUMERIC(8, 2)  NOT NULL,               -- 热点半径
+  usr_group         VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT,
+  deleted_at        timestamptz,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  CHECK (radius BETWEEN 0.01 AND 100000),
+  CHECK (pos_x  BETWEEN -1000000 AND 1000000),
+  CHECK (pos_y  BETWEEN -1000000 AND 1000000)
+);
+CREATE INDEX ix_scene_pages_usr_group ON scene_pages (usr_group);
+CREATE INDEX ix_scene_pages_owner     ON scene_pages (owner_user_name);
+-- partial unique：同租户同归属人内 page_name 唯一；软删后同名可重建
+CREATE UNIQUE INDEX ux_scene_pages_owner_page_name
+  ON scene_pages (usr_group, owner_user_name, page_name) WHERE deleted_at IS NULL;
+
+CREATE TRIGGER trg_scene_pages_updated
+  BEFORE UPDATE ON scene_pages
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_scene_pages_enforce_tenant
+  BEFORE INSERT OR UPDATE OF owner_user_name, usr_group ON scene_pages
+  FOR EACH ROW EXECUTE FUNCTION enforce_scene_tenant_consistency();
+
+ALTER TABLE scene_pages ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON scene_pages USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
+);
+
+-- scene_views（v1.3.4 新增：画布上"设备热点"的绑定；旧映射 ZTViewInf 非直通）
+CREATE TABLE scene_views (
+  id                BIGSERIAL PRIMARY KEY,
+  scene_page_id     BIGINT NOT NULL REFERENCES scene_pages(id) ON DELETE RESTRICT,
+  owner_user_name   VARCHAR(50) NOT NULL REFERENCES users(user_name) ON DELETE RESTRICT,
+  company           VARCHAR(100),                          -- 展示快照，见 §3.8.18
+  department        VARCHAR(100),                          -- 展示快照，见 §3.8.18
+  dev_number        VARCHAR(50) NOT NULL REFERENCES devices(dev_number) ON DELETE RESTRICT,
+  pos_x             NUMERIC(10, 2) NOT NULL,
+  pos_y             NUMERIC(10, 2) NOT NULL,
+  radius            NUMERIC(8, 2)  NOT NULL,
+  usr_group         VARCHAR(50) NOT NULL REFERENCES wx_groups(usr_group) ON DELETE RESTRICT,
+  deleted_at        timestamptz,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  CHECK (radius BETWEEN 0.01 AND 100000),
+  CHECK (pos_x  BETWEEN -1000000 AND 1000000),
+  CHECK (pos_y  BETWEEN -1000000 AND 1000000)
+);
+CREATE INDEX ix_scene_views_usr_group  ON scene_views (usr_group);
+CREATE INDEX ix_scene_views_page_id    ON scene_views (scene_page_id);
+CREATE INDEX ix_scene_views_dev_number ON scene_views (dev_number);
+CREATE INDEX ix_scene_views_owner      ON scene_views (owner_user_name);
+-- partial unique：同页同设备只配 1 个热点；软删后同组合可重建
+CREATE UNIQUE INDEX ux_scene_views_page_dev
+  ON scene_views (scene_page_id, dev_number) WHERE deleted_at IS NULL;
+
+CREATE TRIGGER trg_scene_views_updated
+  BEFORE UPDATE ON scene_views
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- 触发器执行序（PG 按字母序）：enforce → fill → updated_at
+CREATE TRIGGER trg_scene_views_enforce_tenant
+  BEFORE INSERT OR UPDATE OF owner_user_name, usr_group, scene_page_id, dev_number ON scene_views
+  FOR EACH ROW EXECUTE FUNCTION enforce_scene_tenant_consistency();
+
+CREATE TRIGGER trg_scene_views_fill_snapshot
+  BEFORE INSERT ON scene_views
+  FOR EACH ROW EXECUTE FUNCTION fill_scene_views_snapshot();
+
+ALTER TABLE scene_views ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON scene_views USING (
+  usr_group = current_setting('app.tenant_id', true)
+  OR current_setting('app.role', true) = 'Administrators'
+);
+
+COMMENT ON COLUMN scene_views.company IS
+  '展示快照：INSERT 时从 users(owner_user_name).company 自动填充（API 可显式覆盖）；用户调岗后不自动同步，需 API 显式 UPDATE。见 §3.8.18。';
+COMMENT ON COLUMN scene_views.department IS
+  '展示快照：同 company，见 §3.8.18。';
 ```
 
-### 4.3 表清单总览（共 21 张）
+### 4.3 表清单总览（共 26 张，v1.3.3 修正计数）
 
 ```
 租户 (1):   wx_groups
@@ -1201,10 +1613,12 @@ SELECT add_retention_policy('soft_logs', INTERVAL '1 year');
 | `DevPointData_His_*` 分表 | `point_data_history` hypertable | 按月旧表 concat + INSERT ... SELECT |
 | `His<YYYYMM>` 历史 | `point_data_history` + 波形入 `waveform_history` | 按 `data_array` 是否非空分流 |
 | `PhoneAlarmRecord` + `WXAlarmRecord` | `alarm_records` 合表 | `channels_sent` JSONB 按来源填 `{sms:"ok"}` / `{wechat:"ok"}` |
-| `PayOrder` | `pay_orders` | 直通 |
-| `SoftLog` | `soft_logs` | 直通 |
-| `TimingPlan` | `timing_plans` | 直通 |
-| `ZTPageInf` / `ZTViewInf` | `scene_pages` / `scene_views` | 直通 |
+| `PayOrder` | `pay_orders` | **非直通**（v1.3.5）：`usr_group` 从 `user_wx_bindings(openid).usr_group` 反查填入（找不到 → pgloader RAISE EXCEPTION 阻塞，不接受兜底租户；运维须 T-24h dry-run 提前列出 orphan）；`updated_at = created_at`；`paid_at` 保留旧值；`refund_at / deleted_at` = NULL；旧 `pay_state='refund'` 且无 refund_at → 以 `paid_at` 填补（历史订单无精确退款时间） |
+| `SoftLog` | `soft_logs` | **直通/无历史数据**（v1.3.6）：旧 `ModBus.mdf` 中若无 `SoftLog` 表或为空表则跳过；若有历史行：`Msg → msg`；`EnterTime → recorded_at`；`level` 默认填 `'WARN'`；`source → 'api'`；`context = NULL`；写入前 DISABLE level/source CHECK，写入后 ENABLE |
+| `UserLoginRecord` | `user_login_records` | **非直通**（v1.3.6）：`UserName → user_name`；`LoginTime → logged_at`；`IP → ip_addr::INET`（格式错误 RAISE EXCEPTION 阻塞）；`City → city`；`UA → user_agent`；`success = true`（旧记录均成功登录）；`usr_group` 从 `users(UserName).usr_group` 反查，找不到 pgloader RAISE EXCEPTION 阻塞，T-24h dry-run 提前暴露 orphan |
+| `TimingPlan` | `timing_plans` | **非直通**（v1.3.3）：usr_group 从 `devices.usr_group` 按 `dev_number` 反查填入；`deleted_at = null`；`updated_at = created_at`；`DEL_xxx_ts` 前缀记录转 `deleted_at` |
+| `ZTPageInf` | `scene_pages` | **非直通**（v1.3.4）：`UserName → owner_user_name`；`usr_group` 从 `users(OwnerUserName).usr_group` 反查填入；`EnterTime → created_at`（保留旧值，不覆盖）；`deleted_at = null`；`updated_at = created_at`；`SonPagePic` 文件从旧目录上传对象存储并重写为 `s3://{bucket}/{usr_group}/scene/{page_id}/sonpage.{ext}` key；坐标若旧库为 INT 则 `::NUMERIC(10,2)` |
+| `ZTViewInf` | `scene_views` | **非直通**（v1.3.4）：`UserName → owner_user_name`；`usr_group` 反查同上；`company` / `department` 若旧库缺失则从 `users` 快照（触发器 §4.1.1 (5) 兜底）；`scene_page_id` 两步映射：`(ZTViewInf.PageName, OwnerUserName, usr_group) → scene_pages.id`（找不到记 DLQ 人工 review）；`dev_number` 按 `devices.dev_number` 校验（找不到跳过） |
 | `DEL_xxx_ts` 软删前缀 | `deleted_at` 字段 | 正则提取原 DevNumber + 时间戳 |
 
 **工具链**
@@ -1231,11 +1645,96 @@ LOAD DATABASE
 - `SELECT COUNT(*), MIN(ts), MAX(ts), SUM(value)` 各表分别对比
 - 差异 > 0.1% 邮件告警 + 暂停切流
 
+**scene_\* AFTER LOAD 扩展**（v1.3.4 新增，pgloader AFTER LOAD DO 内嵌）
+
+```sql
+-- 1. 禁用 scene_* 租户一致性触发器（迁移期批量导入）
+ALTER TABLE scene_pages DISABLE TRIGGER trg_scene_pages_enforce_tenant;
+ALTER TABLE scene_views DISABLE TRIGGER trg_scene_views_enforce_tenant;
+ALTER TABLE scene_views DISABLE TRIGGER trg_scene_views_fill_snapshot;
+
+-- 2. usr_group 反查填充（旧表无 UsrGroup 字段）
+UPDATE scene_pages sp
+   SET usr_group = u.usr_group
+  FROM users u
+ WHERE sp.owner_user_name = u.user_name AND sp.usr_group IS NULL;
+
+UPDATE scene_views sv
+   SET usr_group  = u.usr_group,
+       company    = COALESCE(sv.company, u.company),
+       department = COALESCE(sv.department, u.department)
+  FROM users u
+ WHERE sv.owner_user_name = u.user_name
+   AND (sv.usr_group IS NULL OR sv.company IS NULL OR sv.department IS NULL);
+
+-- 3. 对账断言：任何 usr_group IS NULL 直接失败（说明旧 OwnerUserName 在 users 表找不到）
+DO $$
+DECLARE n_bad INT;
+BEGIN
+  SELECT COUNT(*) INTO n_bad FROM scene_pages WHERE usr_group IS NULL;
+  IF n_bad > 0 THEN RAISE EXCEPTION 'scene_pages: % rows have NULL usr_group', n_bad; END IF;
+  SELECT COUNT(*) INTO n_bad FROM scene_views WHERE usr_group IS NULL;
+  IF n_bad > 0 THEN RAISE EXCEPTION 'scene_views: % rows have NULL usr_group', n_bad; END IF;
+END $$;
+
+-- 4. 重新启用触发器
+ALTER TABLE scene_pages ENABLE TRIGGER trg_scene_pages_enforce_tenant;
+ALTER TABLE scene_views ENABLE TRIGGER trg_scene_views_enforce_tenant;
+ALTER TABLE scene_views ENABLE TRIGGER trg_scene_views_fill_snapshot;
+
+-- 5. 事后校验：空 UPDATE 走一遍让触发器校验每一行（数据量小，耗时可控）
+UPDATE scene_pages SET usr_group = usr_group;
+UPDATE scene_views SET usr_group = usr_group;
+```
+
+**pay_orders AFTER LOAD 扩展**（v1.3.5 新增）
+
+```sql
+-- 1. 通过 openid 反查 usr_group（用旧库暂存表 _stg_pay_orders）
+UPDATE _stg_pay_orders s
+   SET usr_group = b.usr_group
+  FROM user_wx_bindings b
+ WHERE b.openid = s.openid AND s.usr_group IS NULL;
+
+-- 2. 强校验：无法反查的订单 → 阻塞迁移（拒绝兜底租户）
+--    T-24h dry-run：把 RAISE EXCEPTION 改 RAISE NOTICE 提前列出 orphan；运维清理后重跑
+DO $$
+DECLARE orphan_count BIGINT; sample TEXT;
+BEGIN
+  SELECT COUNT(*),
+         string_agg(out_trade_no, ',' ORDER BY created_at) FILTER (WHERE rn <= 10)
+    INTO orphan_count, sample
+  FROM (SELECT out_trade_no, created_at,
+               row_number() OVER (ORDER BY created_at) AS rn
+          FROM _stg_pay_orders WHERE usr_group IS NULL) t;
+  IF orphan_count > 0 THEN
+    RAISE EXCEPTION USING ERRCODE='RS001',
+      MESSAGE=format('MIGRATION BLOCKED: %s pay_orders rows without resolvable usr_group. Sample: %s',
+                     orphan_count, sample);
+  END IF;
+END $$;
+
+-- 3. 旧 pay_state='refund' 且 refund_at 缺失 → 以 paid_at 填补（历史订单容差）
+UPDATE _stg_pay_orders
+   SET refund_at = paid_at
+ WHERE pay_state = 'refund' AND refund_at IS NULL AND paid_at IS NOT NULL;
+
+-- 4. 通过校验后落入主表
+INSERT INTO pay_orders (out_trade_no, openid, usr_group, total_fee, body,
+                        pay_state, created_at, paid_at, refund_at, updated_at)
+SELECT out_trade_no, openid, usr_group, total_fee, COALESCE(body, ''),
+       COALESCE(pay_state, 'pending'), created_at, paid_at, refund_at, created_at
+  FROM _stg_pay_orders;
+
+DROP TABLE _stg_pay_orders;   -- 清理暂存表，防残留
+```
+
 ### 4.6 关键设计点
 
 | 点 | 选择 | 原因 |
 |---|---|---|
 | 业务键 vs 自增 ID | 双键：`id` PK + `dev_number` UNIQUE | FK 用 `dev_number` 易读，性能用 `id` |
+| `pay_orders` PK 例外 | `out_trade_no` 直接作 PK（无 `id BIGSERIAL`） | 微信协议全链路以 out_trade_no 为键（回调、退款 API、对账）；直接作 PK 让幂等表 FK 更自然；旧库直通最干净（v1.3.5） |
 | 时区 | 全 UTC，前端 +08 | 跨时区无歧义 |
 | 软删除 | `deleted_at` 字段 + 视图过滤 | 替代旧 `DEL_xxx_ts` 脏 hack |
 | `update_interval` | INT 单位 0.1s，[10..1000] | D6：1.0–100.0s，避 decimal 精度坑 |
@@ -1262,6 +1761,13 @@ class ErrCode(IntEnum):
     DEV_CRC_FAIL    = -202
     INTERNAL        = -300   # HTTP 500
     DB_UNAVAILABLE  = -301   # HTTP 503
+    # 支付相关（v1.3.5 新增）
+    PAY_SIGN_FAIL        = -400  # HTTP 400 / 微信回调 xml_fail
+    PAY_DUPLICATE        = -401  # HTTP 200，幂等命中（非错误，事件登记）
+    PAY_STATE_CONFLICT   = -402  # HTTP 409 / 回调 xml_ok（非法状态转移）
+    PAY_AMOUNT_MISMATCH  = -403  # HTTP 409 / 回调 xml_ok（金额不符）
+    PAY_EXPIRED          = -404  # HTTP 409（订单已过期不可付）
+    PAY_REFUND_FAIL      = -405  # HTTP 502（退款第三方返回非 0）
 
 class ApiResponse(BaseModel):
     code: int
@@ -1269,6 +1775,18 @@ class ApiResponse(BaseModel):
     data: Any = None
     transid: str | None = None
 ```
+
+**PG 错误 → 业务错误码映射（TODO Plan 2，v1.3.3 追加）**：
+
+| PG SQLSTATE | 典型触发 | 建议业务码 | 用户提示（中文）|
+|---|---|---|---|
+| `23505` unique_violation | `ux_maintain_plans_dev_plan_name` 重名 | `BAD_PARAM` | "同设备下已存在同名计划" |
+| `23503` foreign_key_violation | dev_number/user_name 引用不存在行 | `BAD_PARAM` | "关联的设备/用户不存在" |
+| `23514` check_violation | `interval_days BETWEEN 1 AND 3650` 越界 | `BAD_PARAM` | 按约束名映射（见 §4.1） |
+| `40001` serialization_failure | 并发写 `maintain_plans` 冲突 | `BIZ_FAIL` | "操作冲突，请重试" |
+| `42501` insufficient_privilege | RLS 拦下跨租户查询 | `FORBIDDEN` | "无权访问" |
+
+具体映射实现见 Plan 2 (api) `app/core/exception_handler.py`；本 plan (Plan 0) 只约定约束名规范，不实现映射。
 
 ### 5.2 协议层容错矩阵
 
@@ -1451,6 +1969,8 @@ SELECT add_compression_policy('user_control_actions', INTERVAL '30 days');
 | `bloat_check` | 每天 | 查 `pg_stat_user_tables`，bloat ratio > 3 → 告警 |
 | `archive_to_oss` | 每月 1 号 02:00 | retention policy 剔除前，先 COPY TO Parquet 上传对象存储 |
 | `redis_memory_cap` | 每 5 min | `INFO memory` > 80% → 告警，> 95% → 限流保护 |
+| `pay_orders_seen_cleanup` | 每天 02:00（ruisheng_gw 角色）| `DELETE FROM pay_orders_seen WHERE notified_at < now() - INTERVAL '30 days'`；连续 2 日 0 行删除 → P2 告警 |
+| `pay_orders_expire_scan` | 每 5 min（ruisheng_gw 角色）| `UPDATE pay_orders SET pay_state='expired' WHERE pay_state='pending' AND created_at < now() - INTERVAL '2 hours'`；失败 3 次升 P2 |
 
 **连接池扩缩规则（修复 M5）**：
 
@@ -2376,6 +2896,45 @@ T+3min+3s 设备 ACK 停机 → 成功通知用户
 - **v1.3**：**5 角色并行审查（SA / 架构师 / 通讯 / 安全 / 测试）合并修订**。27 项 Blocker 内联修订；新增 §3.6 权限矩阵、§3.7 多租户 RLS、§5.13 JWT 加固、§5.14 Windows 加固、§6.11 升级路径、§6.12 其他测试、§9.3 用户旅程、§14 审查整合清单、**§A 协议规范附录**（全章）。D8 决策入账（5 角色 Blocker 合并为单次交付）。
 - **v1.3.1**：**数据 / 函数 / 前后台变量一致性轮**。修订点：(1) Redis channel key 统一 `channel:realtime:{dev_number}`；(2) URL 参数统一 `{dev_number}` 替代 `{n}`；(3) 所有私有 API 加 `/api/` 前缀（`/api/auth/*` / `/api/admin/*`）；(4) interval_decisec 修正为 update_interval_decisec 前后端同名；(5) user_control_actions 加 cmd_id UNIQUE + result CHECK 约束；(6) 新增 §3.4.1 WS 消息合同 + §3.4.2 HTTP 标准头契约；(7) ID 统一 ULID；(8) pay_orders_seen DDL 与表清单同步；(9) 目录增补 §14 / §A 锚点；(10) 错误码引用从 §D.2 改 §5.1。
 - **v1.3.2**：**边界情况 + 数据流完整性轮**。修订 10 处 🔴 边界漏洞 + 10 处 🟡 数据流缺口 + 5 处 🟢 DDL 约束。关键新增：(1) §3.8 新章节 16 个边界规则（并发控制串行化 / 同帧多告警 / Stream 满 / WS 慢消费者 / 离线命令过期通知 / DevSerNumber 冲突退化 / JWT 长操作过期 / 历史查询大数据集降采样 / 归档与查询并发 / Outbox 事务补偿 / cmd_id 跨重启去重等）；(2) 微信支付验签顺序修正（先验签后取字段，hmac.compare_digest）；(3) DDL 加 CHECK 约束（user_name 正则 / modbus_addr 1-247 / fun_code 1-4 / pay_orders.total_fee≥0 / pay_state 与 paid_at 一致）；(4) 新增 alarm_outbox 表保证告警落库与 Stream 发布原子性。
+- **v1.3.3 / 2026-04-14**：**保养模块 DDL 完整化 + spec 全局一致性加固（Plan 0 Stage C Task C7 派发前 2 轮审查产出）**。`SHARED_SCHEMA_VERSION` bump `20260413 → 20260414`（breaking）。关键修订：
+  - (1) **§4.2 新增 `maintain_plans` / `maintain_actions` 两表完整 DDL**：保养计划模板 + 执行审计（原 spec 只在 §4.3 表清单提及名字，无 DDL）；
+  - (2) **§4.2 `timing_plans` 原地重写**：补 `usr_group` + `deleted_at` + `updated_at` + `REFERENCES devices/wx_groups` + 3 索引 + 触发器 + RLS policy（原版为 12 年前老 DDL，缺多租户基础设施）；
+  - (3) **§3.6 line 656** 保养 L1 权限 `R → ▲自有`（一线员工可对本人绑定设备的保养计划增删，符合 SCADA 现场作业语义）；
+  - (4) **§3.7 扩写**：软删 + FK 语义（FK 不检查 deleted_at，业务查询必须 JOIN + COALESCE 降级显示）+ gw 服务账号 `ruisheng_gw BYPASSRLS` + api 每事务 SET LOCAL 两变量；
+  - (5) **§3.8.17 新增**：保养计划推进状态机（`max(now(), old) + interval` 非累加公式 + `FOR UPDATE` 行锁 + `action_uuid ULID` 幂等），防漏做 + 防双击；
+  - (6) **§3.8.16 追加**：`maintain_actions` 同款脱敏保留 3 年规则；
+  - (7) **§4.1 规约表加行**：TZ='Asia/Shanghai' 无 DST / 字符串 strip+NFC 在 API 层 / FK-CHECK 命名交 naming_convention / Index 显式命名 / RLS policy 统一 `tenant_isolation` / Trigger `trg_<table>_updated` / 表单时间字段 60s 容差；
+  - (8) **§4.1.1 新增通用设施**：`set_updated_at()` 触发器函数 + `ruisheng_gw` / `ruisheng_api` 两个 DB 角色定义；
+  - (9) **§4.3 表清单数量** `21 → 26` 修正（原计数自 v1.0 就错）；
+  - (10) **§4.5 line 1341** `TimingPlan` 迁移规则从"直通"改为"非直通"：usr_group 从 devices 反查填入 + `updated_at = created_at` + `DEL_xxx_ts → deleted_at`；
+  - (11) **§5.1** 追加 PG SQLSTATE → ErrCode 中文映射表（TODO Plan 2 实现 `app/core/exception_handler.py`）；
+  - (12) 本轮审查产出含 5 BLOCKER + 8 MAJOR + 9 MINOR，全部 BLOCKER+MAJOR 已落地本次 commit，MINOR 按"延后 Plan 2/3"或 spec TODO 处理。
+- **v1.3.4 / 2026-04-14**：**组态 2 张表 DDL + 租户一致性触发器 + 展示快照语义（Plan 0 Stage C Task C8 派发前 2 轮审查产出）**。`SHARED_SCHEMA_VERSION` **保持 20260414**（仅 DB schema 扩展，未改 shared Pydantic/enum）。关键修订：
+  - (1) **§4.2 新增 `scene_pages` / `scene_views` DDL**（组态 2 张表；NUMERIC(10,2) 坐标 + sanity bounds CHECK；owner_user_name / dev_number 单 FK；RLS policy；partial unique `(scene_page_id, dev_number) WHERE deleted_at IS NULL` 业务语义："同页同设备只配 1 个热点"）
+  - (2) **§3.8.18 新增**：`scene_views` company/department 展示快照规则——INSERT 触发器自动填充、允许 API 覆盖、UPDATE 不自动同步
+  - (3) **§4.1.1 新增**：`enforce_scene_tenant_consistency()` 触发器函数（scene_pages/scene_views 的 BEFORE INSERT/UPDATE 校验 usr_group 与 users/scene_pages/devices 一致，RAISE EXCEPTION 23514，补 RLS 只防读不防跨表写盲点）+ `fill_scene_views_snapshot()` 触发器函数
+  - (4) **§3.7 追加**："gw 禁止访问 scene_pages / scene_views"（组态是 UI 配置类数据，CI lint 扫描违规 P0 阻塞）
+  - (5) **§4.5 L1342 展开**：`ZTPageInf / ZTViewInf` 从"直通"改为 2 行"非直通"迁移映射（usr_group 从 users 反查；scene_page_id 两步映射；company/department 快照兜底）+ pgloader AFTER LOAD DO 完整 SQL 块（禁用触发器 → 反查填充 → NULL 断言 → 启用触发器 → 空 UPDATE 事后校验）
+  - (6) Q-B08（子页面层级 / 背景图分辨率 / SVG 支持）保留为 §4.2 DDL 块顶部 TODO 注释，不阻塞 Plan 0；业务确认后再补 `parent_id` 列
+  - (7) 本轮审查产出 0 BLOCKER + 3 MAJOR + 5 MINOR，全部 MAJOR 已落地本次 commit（MAJOR-A 租户一致性触发器、MAJOR-B Company/Department 快照语义、MAJOR-C partial unique 字段从 (scene_page_id, dev_number, pos_x, pos_y) 收敛到 (scene_page_id, dev_number)）；MINOR 按"Alembic include_object 过滤"等 implementer 备忘处理
+  - implementer 备忘：Alembic autogenerate 对 partial unique + COLLATE "zh-x-icu" 列的幽灵 diff 处理见 C7 v1.3.3 MAJOR #1 同款 `include_object` 过滤
+- **v1.3.6 / 2026-04-15**：**日志表 DDL 补强（Plan 0 Stage C Task C10 派发前 1 轮审查产出）**。`SHARED_SCHEMA_VERSION` 在 C10 implementer fixup commit 时 bump `20260415 → 20260416`（新增 SoftLog + UserLoginRecord ORM model）。关键修订：
+  - (1) **§4.2 soft_logs 增强**：新增 `source VARCHAR(20) CHECK ('gw','api','worker')` 字段；`level` 补 CHECK `IN ('WARN','ERROR','CRITICAL')`（§5.12 规定）；添加 `ix_soft_logs_level_recorded_at` + `ix_soft_logs_source_recorded_at` 两个索引；补压缩策略（7 天后自动压缩）；补 REVOKE/GRANT 权限声明
+  - (2) **§4.2 user_login_records 新增**：旧表 `UserLoginRecord(UserName, LoginTime, IP, City, UA)` 升级到多租户标准：`ip_addr INET`（支持 IPv4/IPv6）；新增 `success BOOLEAN`（失败登录也记录，§5.13 限流）；`usr_group` FK 到 wx_groups + RLS `tenant_isolation`；`user_name` **弱引用**（无 FK，类比 maintain_actions；审计永久留痕）；3 年保留期（安全合规，对齐 user_control_actions）；按 usr_group 压缩分段；3 个索引（租户历史 / 用户历史 / 失败 IP partial）
+  - (3) **§4.5** SoftLog "直通" 改 "直通/无历史数据" + 补条件；UserLoginRecord 改"非直通" + usr_group 反查 + IP INET 转换 + success 默认 true
+  - 设计审查 1 轮，0 BLOCKER + 2 MAJOR + 4 MINOR；采纳 B2 建议（弱引用）；MAJOR M1（source 枚举扩展点）保留 CHECK 接受 ALTER 代价
+- **v1.3.5 / 2026-04-14**：**支付模块 DDL 补强轮（Plan 0 Stage C Task C9 派发前 2 轮审查产出）**。`SHARED_SCHEMA_VERSION` bump `20260414 → 20260415`（breaking：新增 pay_orders ORM + §5.1 PAY_* ErrCode 6 项）。关键修订：
+  - (1) **§4.2 pay_orders 重写**：新增 usr_group FK + RLS tenant_isolation policy（NOT FORCE；回调走 ruisheng_gw BYPASSRLS）；pay_state 扩至 6 值（+cancelled +expired）；新增 updated_at / deleted_at / refund_at；biconditional CK `(pay_state='paid')=(paid_at IS NOT NULL)` + refund_at 非空 ⇒ paid_at 非空 + refund_at ≥ paid_at；3 个 partial index（usr_group+created / openid+created / pending+created 用于 expired scan）
+  - (2) **§4.2 pay_orders_seen 搬入 §4.2**（原 §3.5 片段）：无 usr_group 无 RLS，角色授权 + BRIN(notified_at)；30 天 TTL 见 §5.10
+  - (3) **§3.5 回调代码改走 gw_pool**（ruisheng_gw BYPASSRLS）；mark_paid 签名加 db 参数 + 返回 rows_affected；非法转移抛 BizError 由 handler 捕获记 soft_log 后仍返 xml_ok 防微信重试
+  - (4) **§3.7 追加 wxpay_notify 例外路径白名单**（api 服务内 gw_pool 引用）
+  - (5) **§3.8.16 脱敏规则扩展**：pay_orders.openid 前 4+后 4 脱敏；total_fee L4 原值/L3–L2 整元/L1 列表 `***.**`
+  - (6) **§3.6 L664 备注**：L1 订单查询需 ORM 额外按 openid 过滤
+  - (7) **§4.5 pay_orders 改非直通**：openid → user_wx_bindings.usr_group 反查；找不到 pgloader RAISE EXCEPTION 阻塞（拒兜底租户）；旧 refund 无 refund_at → 以 paid_at 填补
+  - (8) **§4.6 追加 pay_orders PK 例外**（out_trade_no 直接作 PK）
+  - (9) **§5.1 新增 6 个 ErrCode**（PAY_SIGN_FAIL / PAY_DUPLICATE / PAY_STATE_CONFLICT / PAY_AMOUNT_MISMATCH / PAY_EXPIRED / PAY_REFUND_FAIL）
+  - (10) **§5.10 新增 2 个 Job**（pay_orders_seen 清理 + pay_orders expired 扫描，均走 ruisheng_gw 角色）
+  - 2 轮审查产出 0 BLOCKER + 5 MAJOR（全修）+ 4 MINOR；MINOR 按"Plan 2 api 层 pydantic + body 字段长度"延后
 
 ---
 
