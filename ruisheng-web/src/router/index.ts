@@ -50,6 +50,13 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/devices/DeviceHistoryView.vue'),
         props: true,
       },
+      {
+        path: 'devices/:devNumber/control',
+        name: 'device-control',
+        component: () => import('@/views/devices/DeviceControlView.vue'),
+        props: true,
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
