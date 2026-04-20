@@ -100,7 +100,7 @@ class Registry:
             p_rows = (
                 (
                     await conn.execute(
-                        text(  # tenant-lint: OK — no usr_group col; filtered via devices.usr_group join
+                        text(  # noqa: tenant-lint (no usr_group col; filtered via devices.usr_group join)
                             "SELECT id, dev_number, point_ratio, point_offset, "
                             "       user_ratio, user_point_offset, "
                             "       min_value AS min_val, max_value AS max_val "
