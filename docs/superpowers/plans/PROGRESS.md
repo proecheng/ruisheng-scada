@@ -1,8 +1,10 @@
 # 实施进度备忘（断点续跑用）
 
-## Serial Port Support（2026-04-20）
+## Serial Port Support — 完整闭环 ✅（2026-04-20，已合并 master）
 
 **目标：** ruisheng-gw 同时支持 TCP/DTU 和 RS485 串口两种设备接入。
+**tag：** `serial-port-complete` · **PR #4 merged → master**
+**测试：** 111 unit tests pass · ruff + mypy clean
 
 | Task | 内容 | 状态 | Commit |
 |------|------|------|--------|
@@ -12,10 +14,17 @@
 | D | pyproject: pyserial-asyncio optional dep | ✅ | d4482b4 |
 | E | SerialBus: transport/serial_bus.py | ✅ | 1da3025 |
 | F | main.py: 并行启动串口总线 | ✅ | a6cd23f |
-| G | 静态检查 + tag + PR | ✅ | — |
+| G | 静态检查 + type: ignore fix + PR | ✅ | 1871e6c |
 
-**tag:** `serial-port-complete`
-**branch:** `feature/serial-port`
+**已知后续：**
+- DB 层尚无 `UNIQUE(serial_port, modbus_addr)` 约束（SerialBus 已有运行时检查，迁移层可后续补）
+- `_noop_serial_frame` 是临时 stub，真正的帧分发逻辑待 Plan 4/5 接入
+- 手工验证（接真实 RS485 设备）待生产部署阶段
+
+**Spec 已同步更新（2026-04-20，commit 433475d）：**
+- `docs/superpowers/specs/2026-04-13-ruisheng-iot-design.md` §1.1 部署总图重绘
+- §1.2 gw 行补充双模式说明
+- 新增 §1.5 设备接入方式对比表
 
 ---
 
