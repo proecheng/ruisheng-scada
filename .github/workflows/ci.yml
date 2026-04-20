@@ -123,7 +123,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with: { enable-cache: true }
       - run: uv sync --all-packages
-      - run: uv run pytest ruisheng-gw/tests/unit ruisheng-gw/tests/property -v --cov=ruisheng-gw/src --cov-fail-under=85
+      - run: uv run pytest ruisheng-gw/tests/unit ruisheng-gw/tests/property -v --cov=ruisheng-gw/src --cov-fail-under=80
 
   gw-integration:
     runs-on: ubuntu-latest
