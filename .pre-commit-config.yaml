@@ -1,0 +1,37 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.13
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.1
+    hooks:
+      - id: mypy
+        additional_dependencies: [sqlalchemy, pydantic, pydantic-settings, types-redis, asyncpg, structlog, aiohttp, fastapi, loguru, bcrypt, python-ulid, "python-jose[cryptography]", numpy, apscheduler]
+        args: [--strict]
+        exclude: ^(tests/|ruisheng-gw/tests/|ruisheng-api/tests/|alembic/|tools/pcap_gen/)
+
+  - repo: local
+    hooks:
+      - id: shared-schema-version-bump
+        name: 检查 SHARED_SCHEMA_VERSION 是否需要升级
+        entry: python tools/verify_schema_version.py
+        language: system
+        files: ^ruisheng-shared/src/ruisheng_shared/(models|schemas)/
+        pass_filenames: false

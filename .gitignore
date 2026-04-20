@@ -81,3 +81,22 @@ secrets/
 .claude/projects/
 .claude/tasks/
 .claude/worktrees/
+
+# ===== Plan 0 新增（Python / 工具链） =====
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.hypothesis/
+.env
+!.env.example
+alembic/__pycache__/
+.embedded_pg/
+corpus/generated/
