@@ -56,7 +56,6 @@ services:
         condition: service_healthy
     environment:
       API_LISTEN_HOST: "0.0.0.0"
-      API_LISTEN_PORT: "8000"
       API_DB_URL: postgresql+asyncpg://ruisheng_api:${RUISHENG_API_PASSWORD}@postgres:5432/ruisheng
       API_GW_DB_URL: postgresql+asyncpg://ruisheng_gw:${RUISHENG_GW_PASSWORD}@postgres:5432/ruisheng
       API_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
