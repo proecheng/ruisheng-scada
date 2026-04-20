@@ -1,5 +1,58 @@
 # 实施进度备忘（断点续跑用）
 
+## 当前状态快照（2026-04-20 session 结束）
+
+### 已完成
+| 里程碑 | 状态 | 备注 |
+|--------|------|------|
+| Plan 0 基础设施 | ✅ | shared + alembic + docker + 工具链 |
+| Plan 1 采集网关 | ✅ | Modbus TCP/RTU + WAL + Redis pub/sub |
+| Plan 2 Web API | ✅ | FastAPI + JWT + RLS + WebSocket |
+| Plan 3 前端 | ✅ | Vue 3 SPA + ECharts + vue-konva + PWA |
+| Serial Port Support | ✅ | RS485 串口双模式接入 |
+| Plan 4 Docker 部署 | ✅ | 本机冒烟测试通过，deploy/ 包已生成 |
+| CI setup-uv v3→v4 | ✅ | CI 恢复全绿 |
+
+**master HEAD**：`d37a75d`（ci: upgrade setup-uv v3→v4）
+**测试**：250 unit tests ✅ · CI 全绿 ✅
+**GitHub Releases**：shared / gw / api / web / deploy 均已发布
+
+### 后续工作（按优先级）
+
+#### 🔴 必须做（影响真实部署）
+
+**P1 — GW run_server 实现**
+- `ruisheng-gw/src/ruisheng_gw/main.py` 第 254 行有 `# TODO A4+`
+- 现状：`main()` 打印一行消息后 return 0，Docker 持续重启
+- 需要：把已有的 TCP 服务器（`run_server`）和 SerialBus 正式接入 main 循环
+- 影响：不做则部署后设备无法连接，网关形同虚设
+
+**P2 — 客户机实际部署验证**
+- 将 `deploy/` 文件夹传至客户电脑
+- 按 `deploy/setup-customer.md` 执行：加载镜像 → 配置 .env.prod → docker compose up
+- 验证登录、设备数据展示
+
+#### 🟡 已有代码但未验证
+
+**P3 — RS485 串口真机测试**
+- `SerialBus` 代码已写，`_noop_serial_frame` 是空实现（stub）
+- 需接真实 RS485 设备，在 docker-compose.prod.yml gw 服务添加 `devices:` 挂载
+- 设置 `GW_SERIAL_PORTS=[{"port":"/dev/ttyUSB0","baud_rate":9600}]`
+
+**P4 — DB UNIQUE 约束补全**
+- `(serial_port, modbus_addr)` 目前只有 SerialBus 运行时检查
+- 需新建 alembic migration 加数据库级约束
+
+#### 🟢 可选增强
+
+**P5 — E2E 集成测试**（Playwright 端到端，前端操作流程）
+
+**P6 — 国际化 i18n**（中英切换，视客户需求）
+
+**P7 — Node.js 24 Actions 升级**（2026-06-02 前需将 actions/checkout、setup-uv 升至支持 Node 24 的版本）
+
+---
+
 ## Plan 4 — Docker 生产部署 ✅（2026-04-20，已合并 master）
 
 **目标：** Docker Compose 全栈部署，本机冒烟测试通过，客户机迁移包已生成。
