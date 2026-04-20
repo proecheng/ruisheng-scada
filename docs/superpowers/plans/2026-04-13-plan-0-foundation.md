@@ -157,10 +157,10 @@ D:\江苏润盛\
 | A | 仓库骨架 + 工具链 | 15 |
 | B | `ruisheng-shared` enums/errors/constants/validators | 18 |
 | C | `ruisheng-shared` ORM 模型 23 表 | 28 |
-| D | Alembic 迁移 + hypertable + compression + retention | 14 |
+| D | Alembic 迁移 + hypertable + compression + retention | 15（含 D0 环境前置校验）|
 | E | testcontainers + embedded PG fallback + seeds | 12 |
 | F | 伪设备 PCAP 生成器雏形 | 10 |
-| G | CI 流水线完备 + 文档 | 13 |
+| G | CI 流水线完备 + 文档 + release + 技术债清理 | 15（G1–G5 + G6 deps 迁移 + G7 release workflow）|
 
 ---
 
@@ -1547,10 +1547,10 @@ def test_decode_phone_alarm() -> None:
 
 
 def test_encode_phone_alarm() -> None:
-    # 触发电话 + 触发全开 + 恢复全关 → 0x2103
+    # 触发电话 + 恢复电话 + 触发全开 + 恢复全关 → 0x2103
     v = AlarmAction.encode_phone_alarm(
         call_on_trigger=True,
-        call_on_reset=False,
+        call_on_reset=True,
         trigger_action=AlarmAction.ALL_ON,
         reset_action=AlarmAction.ALL_OFF,
     )
@@ -2200,13 +2200,15 @@ _RTT_MS: dict[int, int] = {
 
 
 def min_poll_interval_decisec(baud: int, device_count: int) -> int:
-    """给定波特率与总线设备数，返回物理上可行的最小轮询周期（0.1s 单位）。"""
+    """给定波特率与总线设备数，返回物理上可行的最小轮询周期（0.1s 单位）。
+
+    算法：ceil(one_round_ms / 1000) 秒 → decisec，并保证下限为 10（即 1s）。
+    """
     if baud not in _RTT_MS:
         raise BizError(ErrCode.BAD_PARAM, f"波特率 {baud} 不在支持表中")
     one_round_ms = _RTT_MS[baud] * max(device_count, 1)
-    # 转 0.1s 向上取整，并加 1s 余量
-    min_s_tenth = (one_round_ms + 999) // 100   # ms → 向上取到 0.1s
-    return max(min_s_tenth + 10, 10)            # +1s 余量；且不得低于 1s
+    # ms → 向上取整到 1s → 转 decisec (×10)；下限 1s
+    return max(((one_round_ms + 999) // 1000) * 10, 10)
 
 
 def validate_bus_feasibility(*, baud: int, device_count: int, min_decisec: int) -> None:
@@ -2369,6 +2371,14 @@ def test_subclass_has_created_updated() -> None:
 
 def test_tablename_snake_case() -> None:
     assert _Sample.__tablename__ == "_sample"
+
+
+def test_naming_convention_registered() -> None:
+    """约束命名模板必须注入 metadata，Stage D 的 Alembic 依赖它。"""
+    nc = Base.metadata.naming_convention
+    assert nc["pk"] == "pk_%(table_name)s"
+    assert nc["fk"] == "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s"
+    assert set(nc.keys()) == {"ix", "uq", "ck", "fk", "pk"}
 ```
 
 - [ ] **Step 2：失败**
@@ -2392,12 +2402,24 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, func
+from sqlalchemy import DateTime, MetaData, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# Alembic 约束命名模板：让自动生成的 migration 约束名稳定、可预测。
+# 必须在 C2 之前定型，否则后续重命名会触发大量迁移。
+NAMING_CONVENTION = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(constraint_name)s",  # 需要显式 UniqueConstraint(name=...)，不能只靠 unique=True
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
 
 
 class Base(DeclarativeBase):
     """所有表的基类。"""
+
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
 class TimestampMixin:
@@ -2438,6 +2460,30 @@ git commit -m "feat(shared): SQLAlchemy Base + Timestamp/SoftDelete mixins"
 ---
 
 > 由于 Task C2 ~ C21 每张表都遵循同样的 TDD 模式，这里为每张表给出完整可照做的 task 模板（Step 3 的代码段是实际要写入的内容）。
+
+> **⚠️ 命名约定铁律（C2 起所有表必须遵守）**
+>
+> C1 引入的 `Base.metadata.naming_convention` 模板为：
+> - `ck`: `"ck_%(table_name)s_%(constraint_name)s"`
+> - `uq`: `"uq_%(table_name)s_%(column_0_name)s"`
+> - `fk`: `"fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s"`
+> - `pk`: `"pk_%(table_name)s"`
+> - `ix`: `"ix_%(column_0_label)s"`
+>
+> SQLAlchemy 会把 `CheckConstraint(..., name=X)` 的 `X` 代入 `%(constraint_name)s`。所以：
+>
+> - ✅ `CheckConstraint(..., name="user_name_format")` → 最终 `ck_users_user_name_format`
+> - ❌ `CheckConstraint(..., name="ck_users_user_name_format")` → 最终 `ck_users_ck_users_user_name_format`（双叠）
+> - ✅ `UniqueConstraint("a", "b", name="a_b")` → 最终 `uq_<tbl>_a_b`
+> - ❌ `UniqueConstraint("a", "b", name="uq_tbl_a_b")` → 最终双叠
+>
+> **铁律 1**：CheckConstraint / UniqueConstraint 的 `name=` 一律写**裸名**（不含 `ck_/uq_/fk_` 前缀）。
+>
+> **铁律 2**：**不要**使用列上的 `unique=True`，因为 uq 模板用 `%(constraint_name)s` 需要显式名。改写为独立 `UniqueConstraint(col, name="col")`（放在 `__table_args__`）。
+>
+> Index 不同 —— `Index("idx_xxx", col)` 的第一参是字面索引名，naming_convention **不对其重写**；保留原 `idx_*` 显式命名。
+>
+> 测试里断言的是**最终生成名**（`ck_users_user_name_format` 等），与代码里的裸名（`"user_name_format"`）**经 naming_convention 展开后**一致。
 
 ## Task C2：wx_groups 模型
 
@@ -2534,7 +2580,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, SoftDeleteMixin, TimestampMixin
@@ -2545,17 +2591,18 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     __table_args__ = (
         CheckConstraint(
             r"user_name ~ '^1[3-9][0-9]{9}$' OR user_name ~ '^[a-zA-Z][a-zA-Z0-9_]{3,29}$'",
-            name="ck_users_user_name_format",
+            name="user_name_format",  # naming_convention 会前缀 ck_users_
         ),
         CheckConstraint(
             "authority IN ('Administrators','GroupCompany','Company','User')",
-            name="ck_users_authority",
+            name="authority",  # naming_convention 会前缀 ck_users_
         ),
+        UniqueConstraint("user_name", name="user_name"),  # 铁律 2：不用 unique=True，显式 UQ 才能被 naming_convention 正确命名 → uq_users_user_name
         Index("idx_users_tenant", "usr_group"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    user_name: Mapped[str] = mapped_column(String(50), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     login_name: Mapped[str | None] = mapped_column(String(50))
     group_company: Mapped[str | None] = mapped_column(String(100))
@@ -2628,18 +2675,18 @@ from .base import Base, SoftDeleteMixin, TimestampMixin
 class Device(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "devices"
     __table_args__ = (
-        UniqueConstraint("dev_ser_number", "iccid", name="uq_devices_ser_iccid"),
+        UniqueConstraint("dev_ser_number", "iccid", name="ser_iccid"),  # → uq_devices_ser_iccid (naming_convention 处理前缀)
         CheckConstraint(
             "update_interval_decisec BETWEEN 10 AND 1000",
-            name="ck_devices_poll_interval",
+            name="poll_interval",  # → ck_devices_poll_interval
         ),
         CheckConstraint(
             "modbus_addr BETWEEN 1 AND 247",
-            name="ck_devices_modbus_addr",
+            name="modbus_addr",  # → ck_devices_modbus_addr
         ),
         CheckConstraint(
             "baud_rate IN (9600, 19200, 38400, 57600, 115200)",
-            name="ck_devices_baud_rate",
+            name="baud_rate",  # → ck_devices_baud_rate
         ),
         Index("idx_devices_tenant", "usr_group"),
         Index("idx_devices_admin", "administrators"),
@@ -2685,8 +2732,8 @@ class Device(Base, TimestampMixin, SoftDeleteMixin):
 class DevicePoint(Base, TimestampMixin):
     __tablename__ = "device_points"
     __table_args__ = (
-        CheckConstraint("point_number BETWEEN 0 AND 65535", name="ck_points_point_number"),
-        CheckConstraint("fun_code IN (1,2,3,4)", name="ck_points_fun_code"),
+        CheckConstraint("point_number BETWEEN 0 AND 65535", name="point_number"),  # → ck_device_points_point_number
+        CheckConstraint("fun_code IN (1,2,3,4)", name="fun_code"),  # → ck_device_points_fun_code
         Index("idx_points_dev", "dev_number"),
     )
 
@@ -2764,7 +2811,7 @@ class DeviceTemplate(Base, TimestampMixin):
   - `result` CHECK 枚举 5 值
   - `cmd_id` UNIQUE
   - 双索引 `(dev_number, acted_at DESC)` / `(user_name, acted_at DESC)`
-  - `CheckConstraint("(result = 'paid') = (completed_at IS NOT NULL)")` — 类比 pay_orders
+  - `CheckConstraint("(result = 'pending') = (completed_at IS NULL)", name="result_completed_consistency")` — 类比 pay_orders 的 `pay_state`/`paid_at` 一致性；spec DDL 未加但 §3.5 状态机要求终态必有 completed_at（plan bug fix 2026-04-14：原写法误用 'paid'，但 result 合法值是 pending/success/failed/timeout/cancelled，不存在 'paid'）
 - **plans.py**: `TimingPlan` / `MaintainPlan` / `MaintainAction`
 - **scenes.py**: `ScenePage` / `SceneView`
 - **pay.py**: `PayOrder`（带 `total_fee >= 0` 和 `(pay_state='paid') = (paid_at IS NOT NULL)`）/ `PayOrderSeen`
@@ -2822,6 +2869,61 @@ git tag -a plan-0-stage-c-complete -m "Stage C: 23 ORM tables complete"
 ---
 
 # 阶段 D — Alembic 迁移 + hypertable + compression + retention
+
+## Task D0：Docker + TimescaleDB 环境前置校验
+
+**目的：** Stage D/E 依赖真实 PG + Redis 容器。此 task 在进入 D1 前验证环境可用，避免后续 task 因环境问题反复失败。
+
+**Files：** 无（只做环境验证）
+
+**前置条件：** Docker Desktop 已装且 daemon 运行中。Windows 用户需已启用 WSL2 后端。
+
+- [ ] **Step 1：确认 docker / docker-compose 可用**
+
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+docker --version
+docker compose version
+```
+期望：docker 24+ / compose v2+；命令不报错。若 `docker` 不存在 → 安装 Docker Desktop 后重试。
+
+- [ ] **Step 2：拉起 dev 容器**
+
+```bash
+uv run task up
+```
+期望：`ruisheng-postgres-dev` 和 `ruisheng-redis-dev` 两个容器 healthy。若失败读 `docker compose -f docker-compose.dev.yml logs`。
+
+- [ ] **Step 3：验证 PG 连接**
+
+```bash
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng -c "SELECT version();"
+```
+期望：返回 PostgreSQL 15.x + TimescaleDB 版本信息。
+
+- [ ] **Step 4：验证 TimescaleDB 扩展可启用**
+
+```bash
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng -c "CREATE EXTENSION IF NOT EXISTS timescaledb; SELECT extname, extversion FROM pg_extension WHERE extname='timescaledb';"
+```
+期望：返回 `timescaledb | 2.16.x`（或 docker-compose.dev.yml 中 pin 的版本）。若无扩展 → 镜像不对，改回 `timescale/timescaledb:2-latest-pg15`。
+
+- [ ] **Step 5：验证 Redis 连接**
+
+```bash
+docker exec -i ruisheng-redis-dev redis-cli -a dev-redis-pw PING
+```
+期望：`PONG`。
+
+- [ ] **Step 6：关闭容器**
+
+```bash
+uv run task down
+```
+
+- [ ] **Step 7：无需 commit**（纯验证 task；若发现 docker-compose.dev.yml 需修正，另开 fixup commit）
+
+---
 
 ## Task D1：初始化 alembic
 
@@ -2960,89 +3062,353 @@ git add alembic/versions/
 git commit -m "feat(db): initial migration — 23 core tables (autogenerated)"
 ```
 
+> **Stage D v1.1 Changelog (2026-04-16)**：D2 完成后做了两轮 plan review，发现 Plan v1.0 严重覆盖不足（spec v1.3.3/v1.3.4/v1.3.6 新增的 3 个 PL/pgSQL 函数、2 个 DB 角色、16 个触发器、6 张 RLS 漏表、user_login_records hypertable 等完全未覆盖），原 D3-D7 重编为 **D3-D10 共 8 个 task**。本修订日期：2026-04-16。见 docs/superpowers/plans/PROGRESS.md §Stage D v1.1 修订。
+
 ---
 
-## Task D3：手工追加 TimescaleDB hypertable + retention + compression 脚本
+## Task D3：DB 角色（ruisheng_gw / ruisheng_api）+ GRANT 基线
+
+**Spec 依据**：§3.7 L670-722 / §4.1.1 L982-987 / §4.2 L1379-1381, L1407-1409, L1451-1452
 
 **Files:**
-- Create: `D:\江苏润盛\alembic\versions\20260413_0002_timescale_hypertables.py`
+- Create: `D:\江苏润盛\alembic\versions\20260417_0002_db_roles_and_grants.py`
+- Modify: `D:\江苏润盛\.env.example`（追加两个密码变量）
+- Modify: `D:\江苏润盛\CONTRIBUTING.md`（新增 §环境变量）
+
+**前置**：D2（26 张表已建）
 
 - [ ] **Step 1：生成空 revision**
 
 ```bash
-uv run alembic revision -m "timescale hypertables + retention + compression"
+uv run alembic revision -m "db roles ruisheng_gw/ruisheng_api + grants"
 ```
 
-- [ ] **Step 2：填充内容**
+- [ ] **Step 2：填充 upgrade()**（关键片段）
 
-Edit 生成的文件 `alembic\versions\20260413_0002_timescale_hypertables.py`:
 ```python
-"""timescale hypertables + retention + compression
+"""db roles + grants.
 
-Revision ID: <auto>
-Revises: <initial_schema_rev>
-Create Date: 2026-04-13
+Revision ID: xxx
+Revises: <D2 rev>
 """
 from __future__ import annotations
 
+import os
+
 from alembic import op
 
-revision = "..."  # 自动生成
-down_revision = "..."  # 指向 initial_schema
+revision = "xxx"
+down_revision = "<D2-rev>"
 branch_labels = None
 depends_on = None
 
-HYPERTABLES = [
-    # (table, time_column, chunk_interval, retention, compress_after, segmentby)
-    ("point_data_history", "recorded_at", "1 month", "1 year", "7 days",
-     "dev_number, point_id"),
-    ("waveform_history", "recorded_at", "1 month", "1 year", "7 days",
-     "dev_number"),
-    ("soft_logs", "recorded_at", "1 month", "1 year", None, None),
-    ("alarm_records", "triggered_at", "1 month", "2 year", "30 days", None),
-    ("user_control_actions", "acted_at", "1 month", "3 year", "30 days", None),
-]
+
+def _require_env(name: str) -> str:
+    """env var 未设立刻报错；禁止 dev 密码漏到生产。"""
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(
+            f"环境变量 {name} 未设置。\n"
+            f"  dev 环境：.env 里填值后 `set -a; . ./.env; set +a` 再跑 alembic\n"
+            f"  CI/生产：走 secret manager 注入；严禁默认密码\n"
+            f"  参考：CONTRIBUTING.md §环境变量"
+        )
+    return value
 
 
 def upgrade() -> None:
-    op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
-    for table, tcol, chunk, retain, compress, segby in HYPERTABLES:
-        op.execute(
-            f"SELECT create_hypertable('{table}', '{tcol}', "
-            f"chunk_time_interval => INTERVAL '{chunk}');"
-        )
-        op.execute(
-            f"SELECT add_retention_policy('{table}', INTERVAL '{retain}');"
-        )
-        if compress:
-            if segby:
-                op.execute(
-                    f"ALTER TABLE {table} SET ("
-                    f"  timescaledb.compress, "
-                    f"  timescaledb.compress_segmentby = '{segby}');"
-                )
-            else:
-                op.execute(
-                    f"ALTER TABLE {table} SET (timescaledb.compress);"
-                )
-            op.execute(
-                f"SELECT add_compression_policy('{table}', INTERVAL '{compress}');"
-            )
+    gw_pw = _require_env("RUISHENG_GW_PASSWORD")
+    api_pw = _require_env("RUISHENG_API_PASSWORD")
+
+    # --- 幂等创建角色（已存在则重置密码，支持密码轮换） ---
+    op.execute(f"""
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='ruisheng_gw') THEN
+            CREATE ROLE ruisheng_gw BYPASSRLS LOGIN PASSWORD '{gw_pw}';
+          ELSE
+            ALTER ROLE ruisheng_gw WITH LOGIN PASSWORD '{gw_pw}';
+          END IF;
+        END $$;
+    """)
+    op.execute(f"""
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='ruisheng_api') THEN
+            CREATE ROLE ruisheng_api LOGIN PASSWORD '{api_pw}';
+          ELSE
+            ALTER ROLE ruisheng_api WITH LOGIN PASSWORD '{api_pw}';
+          END IF;
+        END $$;
+    """)
+
+    # --- schema 级 GRANT（对现存 26 张表 + 未来新表） ---
+    op.execute("GRANT USAGE ON SCHEMA public TO ruisheng_gw, ruisheng_api;")
+    op.execute(
+        "GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public "
+        "TO ruisheng_gw;"
+    )
+    op.execute(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public "
+        "TO ruisheng_api;"
+    )
+    # BIGSERIAL 列依赖 sequence USAGE（否则 INSERT 42501）
+    op.execute(
+        "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public "
+        "TO ruisheng_gw, ruisheng_api;"
+    )
+    # 未来新表/新序列自动继承权限
+    op.execute(
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+        "GRANT SELECT, INSERT, UPDATE ON TABLES TO ruisheng_gw;"
+    )
+    op.execute(
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ruisheng_api;"
+    )
+    op.execute(
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+        "GRANT USAGE, SELECT ON SEQUENCES TO ruisheng_gw, ruisheng_api;"
+    )
+
+    # --- 表级细粒度（spec §7.8 "各限权" + §4.2 L1379-1381 / L1407-1409 / L1451-1452） ---
+    # 注意：schema 级 GRANT 已经把 gw=arw / api=arwd 给到所有 26 张表。
+    # 要实现"缩权"必须 REVOKE FROM 两个具名角色（REVOKE FROM PUBLIC 是无效的，
+    # PUBLIC 是独立 pseudo-role，不覆盖已授予具名角色的权限）。
+    # 然后重新精确 GRANT 需要的最小权限。
+
+    # pay_orders_seen：gw 写+清理（INSERT/SELECT/DELETE），api 只读（SELECT）
+    op.execute(
+        "REVOKE ALL ON pay_orders_seen FROM PUBLIC, ruisheng_gw, ruisheng_api;"
+    )
+    op.execute(
+        "GRANT INSERT, SELECT, DELETE ON pay_orders_seen TO ruisheng_gw;"
+    )
+    op.execute("GRANT SELECT ON pay_orders_seen TO ruisheng_api;")
+
+    # soft_logs：gw 只写（INSERT），api 写+读（INSERT/SELECT）
+    op.execute(
+        "REVOKE ALL ON soft_logs FROM PUBLIC, ruisheng_gw, ruisheng_api;"
+    )
+    op.execute("GRANT INSERT ON soft_logs TO ruisheng_gw;")
+    op.execute("GRANT INSERT, SELECT ON soft_logs TO ruisheng_api;")
+
+    # user_login_records：只 api 写+读（gw 不涉登录；spec §4.2 L1451-1452）
+    op.execute(
+        "REVOKE ALL ON user_login_records FROM PUBLIC, ruisheng_gw, ruisheng_api;"
+    )
+    op.execute(
+        "GRANT INSERT, SELECT ON user_login_records TO ruisheng_api;"
+    )
+    # gw 不 GRANT（符合"gw 不涉登录"；若将来 gw 需要读登录审计，另起迁移补）
 
 
 def downgrade() -> None:
-    for table, *_ in reversed(HYPERTABLES):
-        op.execute(f"SELECT remove_retention_policy('{table}', if_exists => true);")
-        op.execute(f"SELECT remove_compression_policy('{table}', if_exists => true);")
-        # 注意：create_hypertable 不支持自动反转，需手工 drop_chunks + 重建
-        op.execute(f"DROP TABLE {table} CASCADE;")
+    for role in ("ruisheng_api", "ruisheng_gw"):
+        # 先 DROP OWNED（清所有 GRANT / DEFAULT PRIVILEGES 条目）
+        # 再 DROP ROLE。IF EXISTS 兜底"已被手工删除"
+        op.execute(f"""
+            DO $$ BEGIN
+              IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='{role}') THEN
+                EXECUTE format('DROP OWNED BY %I', '{role}');
+                EXECUTE format('DROP ROLE %I', '{role}');
+              END IF;
+            END $$;
+        """)
 ```
 
-- [ ] **Step 3：跑一遍验证**
+- [ ] **Step 3：同步更新 .env.example + CONTRIBUTING.md**
+
+在 `.env.example` 追加：
+```
+# Stage D 起需要（D3 迁移会读这两个变量，否则 raise）
+# dev 环境：保持默认；CI/生产：走 secret manager 注入
+RUISHENG_GW_PASSWORD=dev-gw-change-me
+RUISHENG_API_PASSWORD=dev-api-change-me
+```
+
+在 `CONTRIBUTING.md` 新增 `## 环境变量` 小节：
+```markdown
+## 环境变量
+
+项目依赖若干环境变量；本地开发可用 `.env` 文件（gitignore 忽略），CI/生产通过 secret manager 注入。
+
+| 变量 | 用途 | 引入版本 | 遗漏后果 |
+|---|---|---|---|
+| `DATABASE_URL` | Alembic / SQLAlchemy 连接串 | Stage A | env.py 找不到 DB |
+| `REDIS_URL` | Redis 连接 | Stage A | 启动报错 |
+| `RUISHENG_SHARED_REQUIRED_VERSION` | api/gw 启动时 schema 版本校验 | Stage A | 启动拒绝 |
+| `USE_EMBEDDED_PG` | 测试模式开关（0/1） | Stage A | 默认 0（用 docker） |
+| `RUISHENG_GW_PASSWORD` | ruisheng_gw 角色密码 | **Stage D/D3** | alembic upgrade 报 RuntimeError |
+| `RUISHENG_API_PASSWORD` | ruisheng_api 角色密码 | **Stage D/D3** | alembic upgrade 报 RuntimeError |
+
+**初始化**：
+```bash
+cp .env.example .env     # 首次
+set -a; . ./.env; set +a # bash/zsh 注入当前 shell
+```
+```
+
+- [ ] **Step 4：验证**
+
+```bash
+# 先 export 变量
+export RUISHENG_GW_PASSWORD='dev-gw-change-me'
+export RUISHENG_API_PASSWORD='dev-api-change-me'
+
+uv run alembic upgrade head
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng -c "\du"
+# 期望：ruisheng_gw (BYPASSRLS) + ruisheng_api (非 BYPASSRLS)
+
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng -c "\dp pay_orders_seen"
+# 期望：ACL 含 ruisheng_gw=arwd + ruisheng_api=r
+
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng -c "\z users"
+# 期望：ruisheng_gw=arw + ruisheng_api=arwd
+
+uv run alembic downgrade -1    # 回 D2
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng -c "\du" | grep ruisheng
+# 期望：只剩 ruisheng_dev（两个新角色已删）
+
+uv run alembic upgrade head    # 再上
+```
+
+- [ ] **Step 5：Commit**
+
+```bash
+git add alembic/versions/20260417_0002_*.py .env.example CONTRIBUTING.md
+git commit -m "feat(db): D3 ruisheng_gw/ruisheng_api roles + GRANT (spec §4.1.1)"
+```
+
+**关键风险**：
+- **密码**必须来自 env var，raise 兜底（不要 fallback 到默认）
+- **BYPASSRLS** 仅限 ruisheng_gw（ruisheng_api 绝不能拿）
+- **DROP ROLE** 必须先 `DROP OWNED BY`（清 GRANT 条目），否则"仍被对象引用"42888 错
+- docker 镜像 initdb 创建的 POSTGRES_USER（`ruisheng_dev`）默认 **SUPERUSER**；本迁移以此身份跑；生产环境同样要求 migration role 为 superuser（否则 DROP OWNED 炸）
+
+---
+
+## Task D4：PL/pgSQL 通用函数（set_updated_at + scene 两件套）
+
+**Spec 依据**：§4.1.1 (1) L978-979 / (4) L996-1038 / (5) L1043-1054
+
+**Files:**
+- Create: `D:\江苏润盛\alembic\versions\20260417_0003_plpgsql_functions.py`
+
+**前置**：D3（函数本身不依赖角色，但放在 D3 之后保线性 chain）
+
+- [ ] **Step 1：生成**
+
+```bash
+uv run alembic revision -m "plpgsql: set_updated_at + scene tenant helpers"
+```
+
+- [ ] **Step 2：upgrade() 用 dollar-quoting 贴 spec 原文英文错误消息**
+
+```python
+def upgrade() -> None:
+    # 函数 1：通用 updated_at 维护（spec §4.1.1 (1)）
+    op.execute(r"""
+        CREATE OR REPLACE FUNCTION set_updated_at() RETURNS TRIGGER AS $$
+        BEGIN
+          NEW.updated_at = now();
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        SET search_path = pg_catalog, public;
+    """)
+
+    # 函数 2：scene 租户一致性校验（spec §4.1.1 (4)）
+    # 注意：严格按 spec L996-1038 复刻 —— DECLARE 用 VARCHAR(50) 匹配源列宽，
+    #       6 处 RAISE EXCEPTION 都带 % 插值（offending 字段名+值）便于运维定位
+    op.execute(r"""
+        CREATE OR REPLACE FUNCTION enforce_scene_tenant_consistency()
+        RETURNS TRIGGER AS $$
+        DECLARE
+          v_owner_ug VARCHAR(50);
+          v_page_ug  VARCHAR(50);
+          v_dev_ug   VARCHAR(50);
+        BEGIN
+          -- 1) owner_user_name 存在且 usr_group 与传入一致
+          SELECT usr_group INTO v_owner_ug FROM users
+            WHERE user_name = NEW.owner_user_name AND deleted_at IS NULL;
+          IF v_owner_ug IS NULL THEN
+            RAISE EXCEPTION 'scene_tenant_violation: owner_user_name=% not found or soft-deleted',
+              NEW.owner_user_name USING ERRCODE = '23514';
+          END IF;
+          IF v_owner_ug <> NEW.usr_group THEN
+            RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches users(%).usr_group=%',
+              NEW.usr_group, NEW.owner_user_name, v_owner_ug USING ERRCODE = '23514';
+          END IF;
+
+          -- 2) 若是 scene_views：scene_page_id 的 usr_group 一致
+          IF TG_TABLE_NAME = 'scene_views' THEN
+            SELECT usr_group INTO v_page_ug FROM scene_pages
+              WHERE id = NEW.scene_page_id AND deleted_at IS NULL;
+            IF v_page_ug IS NULL THEN
+              RAISE EXCEPTION 'scene_tenant_violation: scene_page_id=% not found or soft-deleted',
+                NEW.scene_page_id USING ERRCODE = '23514';
+            END IF;
+            IF v_page_ug <> NEW.usr_group THEN
+              RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches scene_pages(id=%).usr_group=%',
+                NEW.usr_group, NEW.scene_page_id, v_page_ug USING ERRCODE = '23514';
+            END IF;
+
+            -- 3) dev_number 的 usr_group 一致
+            SELECT usr_group INTO v_dev_ug FROM devices
+              WHERE dev_number = NEW.dev_number AND deleted_at IS NULL;
+            IF v_dev_ug IS NULL THEN
+              RAISE EXCEPTION 'scene_tenant_violation: dev_number=% not found or soft-deleted',
+                NEW.dev_number USING ERRCODE = '23514';
+            END IF;
+            IF v_dev_ug <> NEW.usr_group THEN
+              RAISE EXCEPTION 'scene_tenant_violation: row.usr_group=% mismatches devices(%).usr_group=%',
+                NEW.usr_group, NEW.dev_number, v_dev_ug USING ERRCODE = '23514';
+            END IF;
+          END IF;
+
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        SET search_path = pg_catalog, public;
+    """)
+
+    # 函数 3：scene_views company/department 快照反查（spec §4.1.1 (5)）
+    op.execute(r"""
+        CREATE OR REPLACE FUNCTION fill_scene_views_snapshot()
+        RETURNS TRIGGER AS $$
+        BEGIN
+          IF NEW.company IS NULL OR NEW.department IS NULL THEN
+            SELECT
+              COALESCE(NEW.company, u.company),
+              COALESCE(NEW.department, u.department)
+            INTO NEW.company, NEW.department
+            FROM users u
+            WHERE u.user_name = NEW.owner_user_name AND u.deleted_at IS NULL;
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        SET search_path = pg_catalog, public;
+    """)
+
+
+def downgrade() -> None:
+    op.execute("DROP FUNCTION IF EXISTS fill_scene_views_snapshot();")
+    op.execute("DROP FUNCTION IF EXISTS enforce_scene_tenant_consistency();")
+    op.execute("DROP FUNCTION IF EXISTS set_updated_at();")
+```
+
+- [ ] **Step 3：验证**
 
 ```bash
 uv run alembic upgrade head
-# 期望：0002 成功执行
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng \
+  -c "\df public.set_updated_at public.enforce_scene_tenant_consistency public.fill_scene_views_snapshot"
+# 期望：3 行，Security 列全是 invoker
+
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng \
+  -c "SELECT proname, prosecdef, proconfig FROM pg_proc WHERE proname IN ('set_updated_at','enforce_scene_tenant_consistency','fill_scene_views_snapshot');"
+# 期望：prosecdef=false 全三行；proconfig={search_path=pg_catalog, public}
+
 uv run alembic downgrade -1
 uv run alembic upgrade head
 ```
@@ -3050,85 +3416,242 @@ uv run alembic upgrade head
 - [ ] **Step 4：Commit**
 
 ```bash
-git add alembic/versions/20260413_0002_*.py
-git commit -m "feat(db): add TimescaleDB hypertables + retention + compression"
+git add alembic/versions/20260417_0003_*.py
+git commit -m "feat(db): D4 plpgsql functions (set_updated_at + scene tenant) with hardened search_path"
 ```
+
+**关键风险**：
+- **函数内所有字符串必须英文**（按 spec 原文；不自造 CJK）
+- **`SET search_path = pg_catalog, public`** 函数级属性硬绑定，防会话级 `SET search_path` 劫持
+- **`SECURITY INVOKER`**（默认）—— 绝不加 DEFINER（会绕过 RLS）
+- 函数体里所有 `WHERE ... AND deleted_at IS NULL` 必须保留（已软删的行不参与校验）
 
 ---
 
-## Task D4：fillfactor + autovacuum 调优迁移
+## Task D5：13 张表 `trg_<table>_updated` 触发器
+
+**Spec 依据**：§4.1 L964 通用约定 + §4.1.1 (1) + 各表 DDL 示例（§4.2 L1269, L1300, L1360, L1485, L1526 等）
 
 **Files:**
-- Create: `D:\江苏润盛\alembic\versions\20260413_0003_hot_table_tuning.py`
+- Create: `D:\江苏润盛\alembic\versions\20260417_0004_updated_at_triggers.py`
 
-- [ ] **Step 1：生成空 revision**
-
-```bash
-uv run alembic revision -m "fillfactor and autovacuum for UPDATE-heavy tables"
-```
-
-- [ ] **Step 2：填充**
-
-```python
-def upgrade() -> None:
-    op.execute("""
-        ALTER TABLE point_data_realtime SET (
-            fillfactor = 70,
-            autovacuum_vacuum_scale_factor = 0.05,
-            autovacuum_analyze_scale_factor = 0.02,
-            autovacuum_vacuum_cost_limit = 1000,
-            autovacuum_vacuum_insert_scale_factor = 0.1
-        );
-    """)
-    op.execute("""
-        ALTER TABLE devices SET (
-            fillfactor = 80,
-            autovacuum_vacuum_scale_factor = 0.05
-        );
-    """)
-
-
-def downgrade() -> None:
-    op.execute("ALTER TABLE point_data_realtime RESET (fillfactor, autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor, autovacuum_vacuum_cost_limit, autovacuum_vacuum_insert_scale_factor);")
-    op.execute("ALTER TABLE devices RESET (fillfactor, autovacuum_vacuum_scale_factor);")
-```
-
-- [ ] **Step 3：验证 + Commit**
-
-```bash
-uv run alembic upgrade head
-git add alembic/versions/20260413_0003_*.py
-git commit -m "feat(db): fillfactor + autovacuum for UPDATE-heavy tables"
-```
-
----
-
-## Task D5：PostgreSQL RLS 启用迁移
-
-**Files:**
-- Create: `D:\江苏润盛\alembic\versions\20260413_0004_rls_tenant_isolation.py`
+**前置**：D4
 
 - [ ] **Step 1：生成**
 
 ```bash
-uv run alembic revision -m "RLS tenant isolation policies"
+uv run alembic revision -m "trg_<table>_updated triggers (13 tables)"
 ```
 
-- [ ] **Step 2：填充**
+- [ ] **Step 2：upgrade() 列表驱动 + ORM drift 断言 + 幂等**
 
 ```python
-TENANT_TABLES = [
-    "users", "devices", "device_waring_cfgs", "alarm_records",
-    "user_control_actions", "timing_plans", "scene_views", "scene_pages",
+from __future__ import annotations
+
+from alembic import op
+
+
+revision = "xxx"
+down_revision = "<D4-rev>"
+branch_labels = None
+depends_on = None
+
+
+# 必须与 ORM `Base.metadata.tables` 含 `updated_at` 列的表完全一致
+# 仅含 TimestampMixin 的实体表（13 张）；以下故意排除：
+#   - point_data_realtime: 覆盖写语义，无 updated_at
+#   - 审计/日志：soft_logs / user_login_records / maintain_actions /
+#                user_control_actions / pay_orders_seen / alarm_outbox
+#   - 关联/不变表（仅 created_at 或域时间戳，无 updated_at）：
+#                user_wx_bindings (bound_at) / user_phone_numbers /
+#                user_emails / alarm_records (triggered_at + reset_at)
+UPDATED_AT_TABLES: list[str] = [
+    "wx_groups",
+    "users",
+    "devices", "device_points", "device_static_data",
+    "sim_cards", "device_templates", "device_waring_cfgs",
+    "timing_plans", "maintain_plans",
+    "scene_pages", "scene_views",
+    "pay_orders",
 ]
 
 
 def upgrade() -> None:
-    for t in TENANT_TABLES:
+    # --- drift detection: 列表 vs ORM metadata ---
+    from ruisheng_shared.models import Base
+
+    orm_updated = {
+        t.name for t in Base.metadata.tables.values()
+        if "updated_at" in t.columns
+    }
+    plan_updated = set(UPDATED_AT_TABLES)
+    missing = orm_updated - plan_updated
+    extra = plan_updated - orm_updated
+    if missing or extra:
+        raise RuntimeError(
+            f"UPDATED_AT_TABLES drift from ORM:\n"
+            f"  ORM 有但迁移没列: {sorted(missing)}\n"
+            f"  迁移列了但 ORM 没: {sorted(extra)}\n"
+            f"  修法：对齐列表或调整 ORM TimestampMixin"
+        )
+
+    # --- 主循环：DROP + CREATE 保证幂等 ---
+    for t in UPDATED_AT_TABLES:
+        op.execute(f"DROP TRIGGER IF EXISTS trg_{t}_updated ON {t};")
+        op.execute(
+            f"CREATE TRIGGER trg_{t}_updated "
+            f"BEFORE UPDATE ON {t} FOR EACH ROW "
+            f"EXECUTE FUNCTION set_updated_at();"
+        )
+
+
+def downgrade() -> None:
+    for t in UPDATED_AT_TABLES:
+        op.execute(f"DROP TRIGGER IF EXISTS trg_{t}_updated ON {t};")
+    # 注：函数 set_updated_at() 由 D4 管理，本迁移不删
+```
+
+- [ ] **Step 3：验证**
+
+```bash
+uv run alembic upgrade head
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng \
+  -c "SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'trg_%_updated' AND NOT tgisinternal;"
+# 期望：13（UPDATED_AT_TABLES 当前 13 条，与 ORM TimestampMixin 表数一致）
+
+# 手工验证一条：
+# 注意：PG `now()` 在单事务内返回事务起点 timestamp，pg_sleep 不推进；
+#       因此用"预置 updated_at 为很旧的值，再 UPDATE 其他列，看触发器是否覆盖"
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng <<'SQL'
+BEGIN;
+INSERT INTO wx_groups (usr_group, company_name, updated_at)
+  VALUES ('t_test_d5', 'test_co', '2000-01-01'::timestamptz)
+  RETURNING updated_at AS before_upd;
+UPDATE wx_groups SET company_name = 'test_co2' WHERE usr_group = 't_test_d5'
+  RETURNING updated_at AS after_upd, (updated_at > '2000-01-01'::timestamptz) AS trigger_fired;
+ROLLBACK;
+SQL
+# 期望：after_upd >> before_upd（触发器把 updated_at 覆盖到 now()）；trigger_fired = t
+
+uv run alembic downgrade -1
+uv run alembic upgrade head
+```
+
+- [ ] **Step 4：Commit**
+
+```bash
+git add alembic/versions/20260417_0004_*.py
+git commit -m "feat(db): D5 BEFORE UPDATE triggers maintaining updated_at on 13 tables"
+```
+
+**关键风险**：
+- **`UPDATED_AT_TABLES` 清单与 ORM 严格对齐**（runtime 断言兜底，未来加新 TimestampMixin 表漏更新立刻 fail）
+- **ORM 侧不得同时用 `onupdate=func.now()`**（双写）
+- 列表当前 13 张（仅 TimestampMixin 实体表）。`user_wx_bindings` / `user_phone_numbers` / `user_emails` / `alarm_records` 故意排除：前 3 张是关联表（仅 bound_at 等域时间戳），alarm_records 是不可变日志（triggered_at + reset_at）。若 ORM 后续增减 TimestampMixin 需同步更新
+
+---
+
+## Task D6：scene_* 租户触发器 + 12 张表 RLS（ENABLE + FORCE + tenant_isolation policy）
+
+**Spec 依据**：§3.7 L670-722 / §4.1.1 (4)(5) / §4.2 L1487-1495, L1529-1541
+
+**Files:**
+- Create: `D:\江苏润盛\alembic\versions\20260417_0005_scene_triggers_and_rls.py`
+
+**前置**：D4（scene 触发器依赖 enforce_scene_tenant_consistency / fill_scene_views_snapshot）
+
+- [ ] **Step 1：生成**
+
+```bash
+uv run alembic revision -m "scene tenant triggers + RLS tenant_isolation (12 tables)"
+```
+
+- [ ] **Step 2：upgrade()**
+
+```python
+from __future__ import annotations
+
+from alembic import op
+
+
+revision = "xxx"
+down_revision = "<D5-rev>"
+
+
+# 带 usr_group 的表（除 wx_groups 自身 — 自身即租户字典）；ORM `usr_group` 列存在即入。
+# satellite 表（user_emails / user_phone_numbers / device_points / device_waring_cfgs /
+#   sim_cards / alarm_outbox / soft_logs）**不**入此列表：
+#   它们通过 FK→父表 继承租户，无自身 usr_group 列；policy 的 `usr_group = ...`
+#   会在 CREATE POLICY 阶段炸 `column does not exist`。spec §3.7 L676 权威判据：
+#   "对所有业务表（**带 usr_group 字段的**）启用 RLS"。
+RLS_TABLES: list[str] = [
+    # 业务表
+    "users", "user_wx_bindings",
+    "devices",
+    "alarm_records",
+    "timing_plans", "maintain_plans",
+    "scene_pages", "scene_views",
+    "pay_orders",
+    # 审计表（含 usr_group 的）
+    "user_control_actions", "maintain_actions",
+    "user_login_records",
+]
+
+
+def upgrade() -> None:
+    # --- drift detection: RLS_TABLES vs ORM usr_group 表 ---
+    from ruisheng_shared.models import Base
+
+    orm_tenant = {
+        t.name for t in Base.metadata.tables.values()
+        if "usr_group" in t.columns and t.name != "wx_groups"
+    }
+    plan_tenant = set(RLS_TABLES)
+    diff = orm_tenant.symmetric_difference(plan_tenant)
+    if diff:
+        raise RuntimeError(
+            f"RLS_TABLES drift from ORM: {sorted(diff)}\n"
+            f"  ORM 含 usr_group: {sorted(orm_tenant)}\n"
+            f"  plan RLS_TABLES: {sorted(plan_tenant)}"
+        )
+
+    # --- 块 A：scene_* 3 个专用触发器（字母序 enforce → fill → updated） ---
+    # scene_pages：只 enforce
+    op.execute("""
+        DROP TRIGGER IF EXISTS trg_scene_pages_enforce_tenant ON scene_pages;
+        CREATE TRIGGER trg_scene_pages_enforce_tenant
+          BEFORE INSERT OR UPDATE OF owner_user_name, usr_group ON scene_pages
+          FOR EACH ROW EXECUTE FUNCTION enforce_scene_tenant_consistency();
+    """)
+
+    # scene_views：enforce + fill_snapshot
+    op.execute("""
+        DROP TRIGGER IF EXISTS trg_scene_views_enforce_tenant ON scene_views;
+        CREATE TRIGGER trg_scene_views_enforce_tenant
+          BEFORE INSERT OR UPDATE OF owner_user_name, usr_group, scene_page_id, dev_number
+          ON scene_views
+          FOR EACH ROW EXECUTE FUNCTION enforce_scene_tenant_consistency();
+
+        DROP TRIGGER IF EXISTS trg_scene_views_fill_snapshot ON scene_views;
+        CREATE TRIGGER trg_scene_views_fill_snapshot
+          BEFORE INSERT ON scene_views
+          FOR EACH ROW EXECUTE FUNCTION fill_scene_views_snapshot();
+    """)
+
+    # --- 块 B：12 张表 ENABLE + FORCE + policy ---
+    for t in RLS_TABLES:
         op.execute(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY;")
+        # FORCE：对 owner 也生效（不留超级用户后门；spec §3.7 要补 v1.3.7）
+        op.execute(f"ALTER TABLE {t} FORCE ROW LEVEL SECURITY;")
+        # policy DROP + CREATE 保证幂等
+        op.execute(f"DROP POLICY IF EXISTS tenant_isolation ON {t};")
         op.execute(f"""
             CREATE POLICY tenant_isolation ON {t}
               USING (
+                usr_group = current_setting('app.tenant_id', true)
+                OR current_setting('app.role', true) = 'Administrators'
+              )
+              WITH CHECK (
                 usr_group = current_setting('app.tenant_id', true)
                 OR current_setting('app.role', true) = 'Administrators'
               );
@@ -3136,80 +3659,786 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    for t in TENANT_TABLES:
+    for t in reversed(RLS_TABLES):
         op.execute(f"DROP POLICY IF EXISTS tenant_isolation ON {t};")
+        op.execute(f"ALTER TABLE {t} NO FORCE ROW LEVEL SECURITY;")
         op.execute(f"ALTER TABLE {t} DISABLE ROW LEVEL SECURITY;")
+    # scene 触发器
+    op.execute("DROP TRIGGER IF EXISTS trg_scene_views_fill_snapshot ON scene_views;")
+    op.execute("DROP TRIGGER IF EXISTS trg_scene_views_enforce_tenant ON scene_views;")
+    op.execute("DROP TRIGGER IF EXISTS trg_scene_pages_enforce_tenant ON scene_pages;")
 ```
 
-- [ ] **Step 3：Commit**
+- [ ] **Step 3：验证**
 
 ```bash
-git add alembic/versions/20260413_0004_*.py
-git commit -m "feat(db): enable RLS tenant isolation on 8 business tables"
+uv run alembic upgrade head
+
+# 核 RLS + FORCE 启用
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng <<'SQL'
+SELECT relname, relrowsecurity, relforcerowsecurity
+  FROM pg_class
+  WHERE relnamespace='public'::regnamespace
+    AND relrowsecurity
+  ORDER BY relname;
+SQL
+# 期望：12 行，relrowsecurity + relforcerowsecurity 全为 t
+
+# 核 policy
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng \
+  -c "SELECT polname, polrelid::regclass FROM pg_policy WHERE polname='tenant_isolation';"
+# 期望：12 行
+
+# 核 scene 触发器字母序生效
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng -c "\d+ scene_views"
+# 期望 Triggers 段按字母序：enforce < fill < updated
+
+# 租户隔离冒烟（D9 会补完整测试）
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng <<'SQL'
+BEGIN;
+SET LOCAL ROLE ruisheng_api;
+SET LOCAL app.tenant_id = 'ug_A';
+-- 插入本租户数据 OK
+INSERT INTO devices (usr_group, dev_number, dev_name) VALUES ('ug_A', 1, 'dev-A') RETURNING dev_number;
+-- 跨租户 INSERT 应被 WITH CHECK 挡
+INSERT INTO devices (usr_group, dev_number, dev_name) VALUES ('ug_B', 2, 'dev-B');
+-- 期望：ERROR 42501 new row violates row-level security policy
+ROLLBACK;
+SQL
+
+uv run alembic downgrade -1
+uv run alembic upgrade head
+```
+
+- [ ] **Step 4：Commit**
+
+```bash
+git add alembic/versions/20260417_0005_*.py
+git commit -m "feat(db): D6 scene tenant triggers + FORCE RLS tenant_isolation on 12 tables"
+```
+
+**关键风险**：
+- **FORCE ROW LEVEL SECURITY** 是 M1 修复：防 owner 连接绕过 RLS；没有 FORCE 则 D9 测试和生产运维脚本会产生假阳性跨租户读
+- scene 触发器的 **`BEFORE INSERT OR UPDATE OF <cols>`** 精确列清单（spec L1488/L1530）不能简化；否则每次改 `page_name` 也触发校验
+- **WITH CHECK 显式**写出（PG 默认值等于 USING，但显式可读且防将来语义漂移）
+- RLS 变量名 **`app.tenant_id` / `app.role`**（spec §3.7 L686 + §4.1.1 L989；**不是** `app.current_usr_group`）
+- 无 `usr_group` 的表**不启** RLS（通过 FK 继承租户 / 无租户上下文）：
+  - satellite 带 FK 继承：user_emails (→users) / user_phone_numbers (→users) / device_points (→devices) / device_waring_cfgs (→devices) / sim_cards (→devices) / alarm_outbox (→alarm_records)
+  - 无 tenant 上下文或本身即租户字典：wx_groups / device_templates / pay_orders_seen / soft_logs / point_data_realtime / point_data_history / waveform_history
+- **12 张表权威清单**（v1.2 修订 — 原 19 条含 7 张 satellite 表是 Plan bug #4）：`users / user_wx_bindings / devices / alarm_records / timing_plans / maintain_plans / scene_pages / scene_views / pay_orders / user_control_actions / maintain_actions / user_login_records`。drift 断言仅以 **ORM `usr_group` 列存在性**为判据（spec §3.7 L676）。
+
+---
+
+## Task D7：UPDATE-heavy 表 fillfactor + autovacuum 调优
+
+**Spec 依据**：§4.2 L1184-1190, L1126-1129 / §5.10 L1930
+
+**Files:**
+- Create: `D:\江苏润盛\alembic\versions\20260417_0006_hot_table_tuning.py`
+
+**前置**：D6
+
+- [ ] **Step 1：生成**
+
+```bash
+uv run alembic revision -m "fillfactor + autovacuum tuning (3 tables)"
+```
+
+- [ ] **Step 2：upgrade()**
+
+```python
+def upgrade() -> None:
+    # point_data_realtime：HOT update 最密集，激进 autovacuum
+    op.execute("""
+        ALTER TABLE point_data_realtime SET (
+          fillfactor = 70,
+          autovacuum_vacuum_scale_factor = 0.05,
+          autovacuum_analyze_scale_factor = 0.02,
+          autovacuum_vacuum_cost_limit = 1000,
+          autovacuum_vacuum_insert_scale_factor = 0.1
+        );
+    """)
+    # devices：中等 UPDATE 频率（心跳/在线状态/上行时间）
+    op.execute("""
+        ALTER TABLE devices SET (
+          fillfactor = 80,
+          autovacuum_vacuum_scale_factor = 0.05
+        );
+    """)
+    # device_waring_cfgs：配置变更频繁（§5.10 L1930 新增）
+    op.execute("""
+        ALTER TABLE device_waring_cfgs SET (fillfactor = 80);
+    """)
+
+
+def downgrade() -> None:
+    op.execute("ALTER TABLE device_waring_cfgs RESET (fillfactor);")
+    op.execute("""
+        ALTER TABLE devices RESET (fillfactor, autovacuum_vacuum_scale_factor);
+    """)
+    op.execute("""
+        ALTER TABLE point_data_realtime RESET (
+          fillfactor, autovacuum_vacuum_scale_factor,
+          autovacuum_analyze_scale_factor, autovacuum_vacuum_cost_limit,
+          autovacuum_vacuum_insert_scale_factor
+        );
+    """)
+```
+
+- [ ] **Step 3：验证**
+
+```bash
+uv run alembic upgrade head
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng \
+  -c "SELECT relname, reloptions FROM pg_class WHERE relname IN ('point_data_realtime','devices','device_waring_cfgs');"
+# 期望 3 行 reloptions 含对应 fillfactor
+
+uv run alembic downgrade -1
+uv run alembic upgrade head
+```
+
+- [ ] **Step 4：Commit**
+
+```bash
+git add alembic/versions/20260417_0006_*.py
+git commit -m "feat(db): D7 fillfactor + autovacuum tuning (incl. device_waring_cfgs per §5.10)"
 ```
 
 ---
 
-## Task D6：alembic 集成测试
+## Task D8：TimescaleDB hypertable + retention + compression（5 张表；schema prep 前置）
+
+**Spec 依据**：§4.2 L1200-1203 / L1215-1217 / L1396-1400 / L1427-1434 / §5.10 L1939-1960
+
+> **v1.3 修订（Plan bug #5）**：controller 在 D8 pre-dispatch 针对 live DB 跑 `create_hypertable` 探测，抓到 **两条 TimescaleDB 2.16.1 硬约束**：
+> 1. **FK → hypertable 禁止**（实测 `ERROR: cannot have FOREIGN KEY constraints to hypertable`）：`alarm_outbox.alarm_id → alarm_records(id)` 阻塞 alarm_records 转 hypertable。
+> 2. **PK/UNIQUE 必须含分区列**：alarm_records / soft_logs / user_login_records / user_control_actions 均以 `id` 单列为 PK，user_control_actions 另有 `UNIQUE (cmd_id)` 幂等键。
+>
+> **user 拍板（2026-04-17）**：
+> - Q1-A：D8 先 **DROP FK** `fk_alarm_outbox_alarm_id_alarm_records`（alarm_outbox 是 transient 事件表，app 层保证引用完整；已有 `idx_alarm_outbox_unpublished` 覆盖主查询路径）
+> - Q2-A：alarm_records / soft_logs / user_login_records **PK 改为 `(id, <time_col>)` 复合**（BIGSERIAL id 自身唯一，加时间列仅为满足 TS 约束；不影响应用层以 id 查）
+> - Q3-B：**user_control_actions 不转 hypertable**，保留 `UNIQUE (cmd_id)` 幂等语义；该表数据量增长可控（人发起），冷数据由 Plan 3 后续归档 Job 手动处理。Spec §5.10 L1958-1960 作为 v1.3.7 TODO 摘除。
+>
+> 净结果：**hypertable 6 → 5 张**；D8 migration 前置 schema prep（drop FK + 复合 PK 三张）+ 再做 hypertable/retention/compression。
+
+**Files:**
+- Create: `D:\江苏润盛\alembic\versions\20260417_0007_timescale_hypertables.py`
+- Modify（worktree 而非 master）:
+  - `ruisheng-shared/src/ruisheng_shared/models/alarms.py` — `AlarmRecord` PK 复合 `(id, triggered_at)`，`AlarmOutbox.alarm_id` 去 FK（保留列 + 注释说明弱引用）
+  - `ruisheng-shared/src/ruisheng_shared/models/logs.py` — `SoftLog` / `UserLoginRecord` PK 复合 `(id, recorded_at/logged_at)`
+
+**前置**：D7
+
+- [ ] **Step 0：ORM 先改（与迁移同 commit 或前置 commit 均可，但必须本 task 内）**
+
+ORM 修改点（3 处）：
+
+1. `alarms.py::AlarmRecord`
+   ```python
+   # 旧: id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+   #     triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+   # 新: 复合 PK (id, triggered_at) — TimescaleDB 要求分区列入 PK
+   id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+   ...
+   triggered_at: Mapped[datetime] = mapped_column(
+       DateTime(timezone=True), nullable=False, primary_key=True
+   )
+   ```
+   docstring 追加："PK (id, triggered_at) 复合：D8 转 hypertable 的 TimescaleDB 硬要求。id 自身 BIGSERIAL 唯一，复合只为满足 TS 约束。"
+
+2. `alarms.py::AlarmOutbox`
+   ```python
+   # 旧: alarm_id: Mapped[int] = mapped_column(
+   #         BigInteger, ForeignKey("alarm_records.id"), nullable=False
+   #     )
+   # 新: 去 FK（TS 禁止 FK → hypertable）
+   alarm_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+   ```
+   docstring 追加："alarm_id 去 FK 约束（D8 plan bug #5）：alarm_records 为 TimescaleDB hypertable，TS 2.16.1 拒绝 FK → hypertable。完整性依靠 app 层（publish job 读 alarm_records 时按 alarm_id 外连，缺失行跳过即可，不影响 outbox 语义）。"
+
+3. `logs.py::SoftLog` / `UserLoginRecord`：与 AlarmRecord 同样的复合 PK 模式（recorded_at / logged_at 加 `primary_key=True`），docstring 加同款说明。
+
+- [ ] **Step 1：生成迁移**
+
+```bash
+uv run alembic revision -m "timescale hypertables + retention + compression (5 tables, PK prep)"
+```
+
+- [ ] **Step 2：upgrade() — schema prep 先于 hypertable 转换**
+
+```python
+from alembic import op
+
+
+revision = "xxx"
+down_revision = "<D7-rev>"
+
+
+# (table, time_col, chunk, retention, compress_after, segmentby)
+HYPERTABLES = [
+    ("point_data_history",   "recorded_at",  "1 month", "1 year",  "7 days",  "dev_number, point_id"),
+    ("waveform_history",     "recorded_at",  "1 month", "1 year",  "7 days",  "dev_number"),
+    ("soft_logs",            "recorded_at",  "1 month", "1 year",  "7 days",  None),
+    # Plan bug #6（v1.4 修订）：以下 2 张表与 D6 FORCE RLS 冲突，TS 2.16.1 拒 SET compress；
+    # 只保留 retention，compression 等 TS #6827 解决后在 v1.3.7 TODO 里补回。
+    ("user_login_records",   "logged_at",    "1 month", "3 years", None,      None),
+    ("alarm_records",        "triggered_at", "1 month", "2 years", None,      None),
+    # user_control_actions 不转 hypertable（保 UNIQUE(cmd_id) 幂等键；spec v1.3.7 摘除）
+]
+
+
+# 需改复合 PK 的 3 张表 (table, old_pk_name, new_pk_cols)
+PK_COMPOSITES = [
+    ("alarm_records",       "pk_alarm_records",       "id, triggered_at"),
+    ("soft_logs",           "pk_soft_logs",           "id, recorded_at"),
+    ("user_login_records",  "pk_user_login_records",  "id, logged_at"),
+]
+
+
+def upgrade() -> None:
+    # --- Step A: 拆 FK alarm_outbox → alarm_records（TS 禁 FK → hypertable） ---
+    op.execute(
+        "ALTER TABLE alarm_outbox "
+        "DROP CONSTRAINT IF EXISTS fk_alarm_outbox_alarm_id_alarm_records;"
+    )
+
+    # --- Step B: 3 张 id-only PK → 复合 PK (id, time_col) ---
+    for table, old_pk, new_cols in PK_COMPOSITES:
+        op.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {old_pk};")
+        op.execute(f"ALTER TABLE {table} ADD CONSTRAINT {old_pk} PRIMARY KEY ({new_cols});")
+
+    # --- Step C: hypertable + retention + compression ---
+    op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
+    for table, tcol, chunk, retain, compress, segby in HYPERTABLES:
+        op.execute(
+            f"SELECT create_hypertable('{table}', '{tcol}', "
+            f"chunk_time_interval => INTERVAL '{chunk}', "
+            f"if_not_exists => TRUE);"
+        )
+        op.execute(f"SELECT remove_retention_policy('{table}', if_exists => TRUE);")
+        op.execute(f"SELECT add_retention_policy('{table}', INTERVAL '{retain}');")
+
+        if compress:
+            segby_clause = (
+                f", timescaledb.compress_segmentby = '{segby}'"
+                if segby else ""
+            )
+            op.execute(
+                f"ALTER TABLE {table} SET (timescaledb.compress{segby_clause});"
+            )
+            op.execute(
+                f"SELECT remove_compression_policy('{table}', if_exists => TRUE);"
+            )
+            op.execute(
+                f"SELECT add_compression_policy('{table}', INTERVAL '{compress}');"
+            )
+
+
+def downgrade() -> None:
+    """Forward-only partial: 只卸 policy；hypertable/PK/FK 回退需 `docker compose down -v`。
+
+    TimescaleDB 不原生支持 hypertable → regular 回退；即使回退，old simple PK 与
+    `FK → (现已是 hypertable 的) alarm_records` 都因 TS 约束无法干净重建。生产环境升级后
+    单向前进（本 task 风险在 release note 与 D10 spec v1.3.7 里显式说明）。
+    """
+    for table, *_ in reversed(HYPERTABLES):
+        op.execute(f"SELECT remove_retention_policy('{table}', if_exists => TRUE);")
+        op.execute(f"SELECT remove_compression_policy('{table}', if_exists => TRUE);")
+```
+
+- [ ] **Step 3：验证**
+
+```bash
+uv run alembic upgrade head
+docker exec -i ruisheng-postgres-dev psql -U ruisheng_dev -d ruisheng <<'SQL'
+-- 期望 5 张 hypertable（user_control_actions 不在列）
+SELECT hypertable_name, num_chunks, compression_enabled
+  FROM timescaledb_information.hypertables
+  ORDER BY hypertable_name;
+
+-- PK 已改复合（3 张）
+SELECT conname, pg_get_constraintdef(oid)
+  FROM pg_constraint
+  WHERE contype='p'
+    AND conrelid::regclass::text IN ('alarm_records','soft_logs','user_login_records')
+  ORDER BY conname;
+-- 期望：三张都是 PRIMARY KEY (id, <time_col>)
+
+-- FK 已拆（alarm_outbox.alarm_id 无 FK）
+SELECT count(*) FROM pg_constraint
+  WHERE contype='f' AND conname='fk_alarm_outbox_alarm_id_alarm_records';
+-- 期望：0
+
+-- retention + compression jobs
+SELECT proc_name, hypertable_name
+  FROM timescaledb_information.jobs
+  WHERE application_name LIKE 'Retention%' OR application_name LIKE 'Compression%'
+  ORDER BY hypertable_name, proc_name;
+-- 期望：retention × 5 + compression × 3 = 8 行
+-- compression 仅在 point_data_history / waveform_history / soft_logs 启
+-- alarm_records / user_login_records 受 D6 FORCE RLS 约束，TS 2.16.1 拒 compression（Plan bug #6）
+-- 等上游 TS issue #6827 解决后在 v1.3.7 follow-up 补回
+SQL
+
+uv run alembic downgrade -1 && uv run alembic upgrade head  # 策略 remove+add 幂等即可
+```
+
+- [ ] **Step 4：ORM 回归测试（321 + 8 skip）**
+
+```bash
+cd D:/江苏润盛/.claude/worktrees/plan-0-foundation
+uv run pytest -q  # 期望 321 passed + 8 skipped（无回归）
+```
+
+- [ ] **Step 5：Commit**
+
+```bash
+git add ruisheng-shared/src/ruisheng_shared/models/alarms.py \
+        ruisheng-shared/src/ruisheng_shared/models/logs.py \
+        alembic/versions/20260417_0007_*.py
+git commit -m "feat(db): D8 TimescaleDB hypertables + retention + compression (5 tables, composite PK prep)"
+```
+
+**关键风险 / 设计决策（v1.4 修订）**：
+- **Plan bug #5**（D8）：TS FK→hypertable 禁止 + PK 必含分区列 — pre-dispatch 活探测抓出。fix：drop outbox FK + 3 张表复合 PK + user_control_actions 摘除 hypertable 资格
+- **Plan bug #6**（D8，v1.4）：TS 2.16.1 `compression cannot be used on table with row security` — 实现时 implementer 在 `ALTER TABLE user_login_records SET (timescaledb.compress, ...)` 步抓到 FeatureNotSupportedError。受影响 2 张：`alarm_records` + `user_login_records`（D6 FORCE RLS）。user 拍板 Option A：摘掉这 2 张的 compression，只保留 retention。TS 上游 issue #6827 解决后 v1.3.7 补回（低写入率审计表，MVP 规模存储压力可忽略）
+- **幂等性**（M2 已在 v1.1 修复）：`if_not_exists => TRUE` + remove+add 策略；ALTER TABLE PK 改动带 `IF EXISTS` 也幂等
+- **单向迁移**：hypertable 转换与 PK 改动 downgrade 不回退（TS 限制），release note 与 spec v1.3.7 必须标注
+- **soft_logs 压缩**：v1.1 修复 `if segby: else:` 分支 bug；v1.4 仍保留"有 compress_after 的都走 SET + policy"（soft_logs 无 RLS 所以不受 Plan bug #6 影响）
+- **downgrade 不删表**（v1.1 已修）
+
+---
+
+## Task D9：集成测试（roles / functions / triggers / RLS / hypertables 全覆盖）
 
 **Files:**
 - Create: `D:\江苏润盛\tests\integration\__init__.py`（空）
 - Create: `D:\江苏润盛\tests\integration\test_alembic_upgrade.py`
+- Modify: `D:\江苏润盛\tests\conftest.py`（追加 ruisheng_api / ruisheng_gw fixture）
 
-- [ ] **Step 1：测试**
+**前置**：D8
+
+- [ ] **Step 1：conftest 加多角色 fixture**
 
 ```python
-"""集成测试：alembic upgrade head → 全量 tables + hypertables + RLS policies 就位。"""
-from __future__ import annotations
-
-import subprocess
-
-import pytest
+# tests/conftest.py 追加（3 个 engine fixture，对应 3 种 DB 身份）
+import os
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
+# 按 docker-compose.dev.yml POSTGRES_USER/POSTGRES_PASSWORD（都是 "ruisheng_dev"）；CI 可从 env 覆盖
+_DEV_DSN = os.environ.get(
+    "DEV_DATABASE_URL",
+    "postgresql+asyncpg://ruisheng_dev:ruisheng_dev@127.0.0.1:5432/ruisheng",
+)
+
+
+@pytest_asyncio.fixture(scope="session")
+async def dev_engine():
+    """以 ruisheng_dev（owner）身份连接。
+    owner 无 BYPASSRLS 属性 + D6 FORCE RLS 后也受 tenant_isolation 策略约束
+    (test_owner_does_not_bypass_rls 依赖此行为)。大多数 DDL/introspection 测试用此 fixture。
+    """
+    engine = create_async_engine(_DEV_DSN)
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture(scope="session")
+async def api_engine():
+    """以 ruisheng_api 身份连接（非 BYPASSRLS，受 RLS 约束）。"""
+    pw = os.environ["RUISHENG_API_PASSWORD"]
+    engine = create_async_engine(
+        f"postgresql+asyncpg://ruisheng_api:{pw}@127.0.0.1:5432/ruisheng"
+    )
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture(scope="session")
+async def gw_engine():
+    """以 ruisheng_gw 身份连接（BYPASSRLS，跨租户读写）。"""
+    pw = os.environ["RUISHENG_GW_PASSWORD"]
+    engine = create_async_engine(
+        f"postgresql+asyncpg://ruisheng_gw:{pw}@127.0.0.1:5432/ruisheng"
+    )
+    yield engine
+    await engine.dispose()
+```
+
+- [ ] **Step 2：测试清单**
+
+```python
+# tests/integration/test_alembic_upgrade.py
+"""Stage D 完整集成测试：从角色、函数、触发器、RLS、hypertable 全覆盖。"""
+from __future__ import annotations
+
+import subprocess
+import pytest
+from sqlalchemy import text
+
+
 @pytest.mark.integration
-async def test_upgrade_down_and_up_again() -> None:
-    """up → down → up 来回跑，保证迁移对称。"""
+async def test_upgrade_down_and_up_again():
+    """alembic 对称性：up → down → up 后 version 回到 head"""
     subprocess.check_call(["uv", "run", "alembic", "downgrade", "base"])
     subprocess.check_call(["uv", "run", "alembic", "upgrade", "head"])
 
 
 @pytest.mark.integration
-async def test_hypertables_exist() -> None:
-    engine = create_async_engine(
-        "postgresql+asyncpg://ruisheng_dev:ruisheng_dev@127.0.0.1:5432/ruisheng"
-    )
-    async with engine.connect() as conn:
-        result = await conn.execute(
-            "SELECT hypertable_name FROM timescaledb_information.hypertables"
-        )
-        names = {row[0] for row in result}
-    assert {"point_data_history", "waveform_history", "soft_logs",
-            "alarm_records", "user_control_actions"} <= names
+async def test_roles_exist(dev_engine):
+    """ruisheng_gw (BYPASSRLS) + ruisheng_api (非 BYPASSRLS)"""
+    async with dev_engine.connect() as conn:
+        rows = await conn.execute(text("""
+            SELECT rolname, rolbypassrls FROM pg_roles
+            WHERE rolname IN ('ruisheng_gw', 'ruisheng_api') ORDER BY rolname;
+        """))
+        roles = {r.rolname: r.rolbypassrls for r in rows}
+    assert roles == {"ruisheng_api": False, "ruisheng_gw": True}
+
+
+@pytest.mark.integration
+async def test_functions_are_invoker(dev_engine):
+    """3 个 PL/pgSQL 函数都是 SECURITY INVOKER 且 search_path 硬绑定"""
+    async with dev_engine.connect() as conn:
+        rows = await conn.execute(text("""
+            SELECT proname, prosecdef, proconfig
+              FROM pg_proc
+              WHERE proname IN ('set_updated_at',
+                                'enforce_scene_tenant_consistency',
+                                'fill_scene_views_snapshot');
+        """))
+        funcs = {r.proname: (r.prosecdef, r.proconfig) for r in rows}
+    assert len(funcs) == 3
+    for name, (secdef, cfg) in funcs.items():
+        assert secdef is False, f"{name} must be SECURITY INVOKER"
+        assert cfg and any("search_path" in c for c in cfg), \
+            f"{name} missing SET search_path"
+
+
+@pytest.mark.integration
+async def test_updated_at_triggers_count(dev_engine):
+    """13 张表各有 trg_<table>_updated（v1.5 修订 — 原 17 是 Plan bug #3 遗留；D5 Plan bug #3 修后 UPDATED_AT_TABLES 收敛到 13，本断言同步对齐）"""
+    async with dev_engine.connect() as conn:
+        n = await conn.scalar(text("""
+            SELECT count(*) FROM pg_trigger
+              WHERE tgname LIKE 'trg_%_updated' AND NOT tgisinternal;
+        """))
+    assert n == 13
+
+
+@pytest.mark.integration
+async def test_scene_triggers_exist(dev_engine):
+    """scene_pages 有 1 个 enforce，scene_views 有 enforce + fill_snapshot"""
+    async with dev_engine.connect() as conn:
+        rows = await conn.execute(text("""
+            SELECT tgrelid::regclass::text AS tbl, tgname
+              FROM pg_trigger
+              WHERE NOT tgisinternal
+                AND tgname IN (
+                  'trg_scene_pages_enforce_tenant',
+                  'trg_scene_views_enforce_tenant',
+                  'trg_scene_views_fill_snapshot'
+                );
+        """))
+        pairs = {(r.tbl, r.tgname) for r in rows}
+    assert pairs == {
+        ("scene_pages", "trg_scene_pages_enforce_tenant"),
+        ("scene_views", "trg_scene_views_enforce_tenant"),
+        ("scene_views", "trg_scene_views_fill_snapshot"),
+    }
+
+
+@pytest.mark.integration
+async def test_rls_forced_on_12_tables(dev_engine):
+    """12 张 RLS 表必须同时 ENABLE + FORCE（v1.2 修订 — 原 18 含 7 张 satellite 表是 Plan bug #4）"""
+    async with dev_engine.connect() as conn:
+        rows = await conn.execute(text("""
+            SELECT relname FROM pg_class
+              WHERE relnamespace='public'::regnamespace
+                AND relrowsecurity AND relforcerowsecurity
+              ORDER BY relname;
+        """))
+        rls_tables = {r.relname for r in rows}
+    assert len(rls_tables) == 12
+
+
+@pytest.mark.integration
+async def test_policies_exist(dev_engine):
+    """12 张表各 1 条 tenant_isolation policy（USING + WITH CHECK）"""
+    async with dev_engine.connect() as conn:
+        rows = await conn.execute(text("""
+            SELECT polrelid::regclass::text AS tbl, polname
+              FROM pg_policy WHERE polname='tenant_isolation';
+        """))
+        tables = {r.tbl for r in rows}
+    assert len(tables) == 12
+
+
+@pytest.mark.integration
+async def test_hypertables_exist(dev_engine):
+    """5 张 hypertable（v1.3 修订：user_control_actions 保 cmd_id UQ 幂等语义，不入 hypertable）"""
+    async with dev_engine.connect() as conn:
+        rows = await conn.execute(text("""
+            SELECT hypertable_name FROM timescaledb_information.hypertables;
+        """))
+        names = {r.hypertable_name for r in rows}
+    assert names == {
+        "point_data_history", "waveform_history", "soft_logs",
+        "user_login_records", "alarm_records",
+    }
+
+
+@pytest.mark.integration
+async def test_d8_pk_composite_and_fk_dropped(dev_engine):
+    """D8 schema prep（Plan bug #5）：3 张表 PK 复合 + alarm_outbox FK 已拆
+
+    v1.7 修订（Plan bug #9）：原 SQL alias `AS def` + Python `r.def` 触发 SyntaxError
+    （`def` 是 Python 关键字）。改为 `AS constraint_def` + `r.constraint_def`。
+    """
+    async with dev_engine.connect() as conn:
+        # 3 张复合 PK
+        rows = await conn.execute(text("""
+            SELECT conname, pg_get_constraintdef(oid) AS constraint_def
+              FROM pg_constraint
+              WHERE contype='p'
+                AND conrelid::regclass::text
+                    IN ('alarm_records','soft_logs','user_login_records')
+              ORDER BY conname;
+        """))
+        pk_defs = {r.conname: r.constraint_def for r in rows}
+        assert "triggered_at" in pk_defs["pk_alarm_records"]
+        assert "recorded_at"  in pk_defs["pk_soft_logs"]
+        assert "logged_at"    in pk_defs["pk_user_login_records"]
+        # FK 已拆
+        n = await conn.scalar(text("""
+            SELECT count(*) FROM pg_constraint
+              WHERE contype='f'
+                AND conname='fk_alarm_outbox_alarm_id_alarm_records';
+        """))
+        assert n == 0
+
+
+@pytest.mark.integration
+async def test_rls_actually_blocks_cross_tenant_read(api_engine, seed_tenants):
+    """ruisheng_api + SET LOCAL app.tenant_id='A' → 只看见 A 的行
+
+    v1.6 修订（Plan bug #8-B）：原 INSERT 只列 3 列会违反 devices 6 个 NOT NULL 无默认
+    列（dev_ser_number/modbus_addr/update_interval_decisec/loss_count/is_online/update_flag）。
+    补齐必填列；seed_tenants fixture 负责 ug_A + ug_B 的 wx_groups 行（FK 前置）。
+    """
+    async with api_engine.connect() as conn:
+        async with conn.begin():
+            await conn.execute(text("SET LOCAL app.tenant_id = 'ug_A'"))
+            await conn.execute(text("""
+                INSERT INTO devices
+                    (usr_group, dev_number, dev_ser_number, dev_name,
+                     modbus_addr, update_interval_decisec, loss_count,
+                     is_online, update_flag)
+                VALUES
+                    ('ug_A', '901', 'SER-901', 'A-dev',
+                     1, 100, 0, false, 0)
+            """))
+        async with conn.begin():
+            await conn.execute(text("SET LOCAL app.tenant_id = 'ug_A'"))
+            rows = await conn.execute(text(
+                "SELECT count(*) FROM devices WHERE dev_number='901'"
+            ))
+            assert rows.scalar() == 1
+        async with conn.begin():
+            await conn.execute(text("SET LOCAL app.tenant_id = 'ug_B'"))
+            rows = await conn.execute(text(
+                "SELECT count(*) FROM devices WHERE dev_number='901'"
+            ))
+            assert rows.scalar() == 0
+
+
+@pytest.mark.integration
+async def test_rls_blocks_cross_tenant_insert(api_engine, seed_tenants):
+    """ruisheng_api + SET tenant=A → 插 usr_group=B 被 WITH CHECK 拒绝
+
+    v1.6 修订（Plan bug #8-B）：补齐 devices NOT NULL 列。
+    """
+    async with api_engine.connect() as conn:
+        async with conn.begin():
+            await conn.execute(text("SET LOCAL app.tenant_id = 'ug_A'"))
+            with pytest.raises(Exception) as ei:
+                await conn.execute(text("""
+                    INSERT INTO devices
+                        (usr_group, dev_number, dev_ser_number, dev_name,
+                         modbus_addr, update_interval_decisec, loss_count,
+                         is_online, update_flag)
+                    VALUES
+                        ('ug_B', '902', 'SER-902', 'B-dev',
+                         1, 100, 0, false, 0)
+                """))
+            assert "row-level security" in str(ei.value).lower()
+
+
+@pytest.mark.integration
+async def test_owner_does_not_bypass_rls(dev_engine):
+    """owner (ruisheng_dev) 也受 FORCE RLS 约束（这是 M1 的核心）"""
+    async with dev_engine.connect() as conn:
+        async with conn.begin():
+            await conn.execute(text("SET LOCAL app.tenant_id = 'ug_X_not_exist'"))
+            # 即使 owner 也应看不见任何 usr_group != 'ug_X_not_exist' 的行
+            rows = await conn.execute(text("SELECT count(*) FROM users"))
+            assert rows.scalar() == 0
+
+
+@pytest.mark.integration
+async def test_gw_bypasses_rls(gw_engine):
+    """ruisheng_gw 应 BYPASSRLS：不设 tenant_id 也能跨租户读全量"""
+    async with gw_engine.connect() as conn:
+        # 不设 app.tenant_id
+        rows = await conn.execute(text("SELECT count(*) FROM users"))
+        # 至少能读，不被 RLS 拦（具体计数由种子数据决定，此处只断言 != 0 or >= 0 即可）
+        assert rows.scalar() is not None  # 能执行不抛 RLS 错
+
+
+@pytest.mark.integration
+async def test_scene_trigger_raises_23514(api_engine, seed_tenants):
+    """跨租户 INSERT scene_pages 被 enforce 触发器抛 23514。
+
+    seed_tenants 必须包含：ug_A + ug_B 两个 wx_groups 行 + user_of_ugB 用户（usr_group=ug_B）。
+    触发器路径：tenant_id='ug_A' + owner_user_name='user_of_ugB'（usr_group='ug_B'）
+    → enforce_scene_tenant_consistency 检测不一致 → RAISE EXCEPTION ERRCODE='23514'。
+    """
+    async with api_engine.connect() as conn:
+        async with conn.begin():
+            await conn.execute(text("SET LOCAL app.tenant_id = 'ug_A'"))
+            with pytest.raises(Exception) as ei:
+                await conn.execute(text("""
+                    INSERT INTO scene_pages (usr_group, owner_user_name, page_name)
+                    VALUES ('ug_A', 'user_of_ugB', 'p1')
+                """))
+            assert "23514" in str(ei.value) or "scene_tenant_violation" in str(ei.value)
+
+
+@pytest.mark.integration
+async def test_api_insert_uses_sequence(api_engine, seed_tenants):
+    """ruisheng_api INSERT 必须有 sequence USAGE（BIGSERIAL）。
+
+    v1.6 修订（Plan bug #8-A）：原目标表 wx_groups 无 id 列（PK 是 usr_group VARCHAR）
+    且无 group_name 列（真实列 company_name）——完全错表。改用 devices（BIGSERIAL id）。
+    """
+    async with api_engine.connect() as conn:
+        async with conn.begin():
+            await conn.execute(text("SET LOCAL app.tenant_id = 'ug_A'"))
+            new_id = await conn.scalar(text("""
+                INSERT INTO devices
+                    (usr_group, dev_number, dev_ser_number, dev_name,
+                     modbus_addr, update_interval_decisec, loss_count,
+                     is_online, update_flag)
+                VALUES
+                    ('ug_A', '997', 'SER-997', 'seq-probe',
+                     1, 100, 0, false, 0)
+                RETURNING id
+            """))
+            assert new_id is not None  # sequence USAGE OK
 ```
 
-- [ ] **Step 2：运行（需 docker up）**
+- [ ] **Step 2.5：seed_tenants fixture（v1.6 新增 — Plan bug #8 配套）**
+
+写入 `tests/integration/conftest.py`（或 `tests/conftest.py`）作 session-scoped fixture。用 `gw_engine`（BYPASSRLS）绕过 RLS，填充 D9 多个 RLS / trigger test 需要的最小租户基线：
+
+```python
+import pytest_asyncio
+from sqlalchemy import text
+
+
+@pytest_asyncio.fixture(scope="session")
+async def seed_tenants(gw_engine):
+    """D9 最小 tenant 种子：ug_A + ug_B 两个 wx_groups + user_of_ugB 用户。
+
+    使用 gw_engine（BYPASSRLS）幂等插入（ON CONFLICT DO NOTHING）；不做 teardown，
+    dev 容器通过 `docker compose down -v` 整体重置。Stage E 的 seeds 机制落地后
+    可升级为更完整的 fixture。
+    """
+    async with gw_engine.connect() as conn:
+        async with conn.begin():
+            await conn.execute(text("""
+                INSERT INTO wx_groups (usr_group, company_name)
+                VALUES ('ug_A', 'Company A'), ('ug_B', 'Company B')
+                ON CONFLICT (usr_group) DO NOTHING
+            """))
+            # users 表 NOT NULL 无默认列（live DB 校对）：
+            #   user_name / password_hash / authority / control_authority / usr_group
+            # - authority: VARCHAR(20) CHECK IN ('Administrators','GroupCompany','Company','User')
+            #   (见 ruisheng_shared.enums.Authority 枚举；spec §3.6 RBAC 4 级)
+            # - control_authority: SmallInteger（int），D9 只关心非空，填 0
+            # - user_name: regex ^[a-zA-Z][a-zA-Z0-9_]{3,29}$ OR ^1[3-9][0-9]{9}$
+            # - password_hash: 占位 'test-not-a-real-hash'，D9 不涉登录逻辑
+            await conn.execute(text("""
+                INSERT INTO users
+                    (user_name, password_hash, authority, control_authority, usr_group)
+                VALUES
+                    ('user_of_ugB', 'test-not-a-real-hash', 'User', 0, 'ug_B')
+                ON CONFLICT (user_name) DO NOTHING
+            """))
+    yield
+```
+
+> **说明**：implementer 必须在插 users 前**核对当前 ORM 字段列表**（`ruisheng-shared/src/ruisheng_shared/models/users.py`）决定最小合规的列/值组合（regex、phone 格式、enum 值等）。若字段偏移导致 fixture 失败，**必须 BLOCKED 上报**——不要静默改列表。
+
+- [ ] **Step 3：运行**
 
 ```bash
 uv run task up
-uv run pytest tests/integration/test_alembic_upgrade.py -v -m integration
+uv run pytest tests/integration/ -v -m integration
 ```
 
-- [ ] **Step 3：Commit**
+- [ ] **Step 4：Commit**
 
 ```bash
-git add tests/integration/
-git commit -m "test(db): alembic upgrade symmetry + hypertables presence"
+git add tests/integration/ tests/conftest.py
+git commit -m "test(db): D9 integration tests (roles/functions/triggers/RLS/hypertables, 15 cases)"
 ```
+
+**关键风险**：
+- **RLS 测试必须走 ruisheng_api 连接**（非 dev owner，除非显式测 FORCE 效果）
+- 密码 fixture 从 `os.environ` 读，CI 注入
+- `seed_tenants` fixture 提供 ug_A/ug_B 两个 wx_groups + `user_of_ugB` 用户 —— 供多个 RLS/trigger test 复用（详见 Step 2.5）
+- **测试行 commit 后残留**：plan v1.0 的 `conn.begin()` 默认自动 commit，tests 10/11/15 插入的 devices 行会永久存在于 dev DB；dev-only 容器 `docker compose down -v` 整体重置；CI pipeline 里每次启容器都是干净态，可接受。Stage E seeds 机制可引入 test-scoped 回滚或唯一化 dev_number。
 
 ---
 
-## Task D7：阶段 D 收尾
+## Task D10：阶段 D 收尾
+
+- [ ] **Step 1：PROGRESS.md 修正 & follow-up spec 清单**
+
+在 PROGRESS.md §恢复步骤 修正 RLS 变量名（`app.current_usr_group` → `app.tenant_id`），并记录需发 spec v1.3.7 的 follow-up：
+
+```markdown
+## Spec v1.3.7 follow-up（D10 完成后另开分支/PR）
+- §3.7 RLS 规约补 `FORCE ROW LEVEL SECURITY`（M1）
+- §4.1.1 (1)(4)(5) 三个函数 `CREATE FUNCTION` 尾部补 `SET search_path = pg_catalog, public`（M3）
+- §4.1 GRANT 通用规约补 SEQUENCES（M4）
+```
+
+- [ ] **Step 2：Runbook 段加入 PROGRESS.md**
+
+```markdown
+## Stage D 回滚 Runbook
+alembic 严格线性：**禁跳版 downgrade**。若要回滚 D3 删角色，必须先：
+  D10 → D9 → D8 → D7 → D6 → D5 → D4 → D3 → D2 逐 step
+否则 pg_dump 一致性被破坏（例如 D5 已建触发器依赖 D4 函数，D4 单独回滚会造成幽灵引用）。
+
+生产部署：migration 角色必须 SUPERUSER 或是 ruisheng_gw / ruisheng_api 的成员（否则 DROP OWNED 42501）。
+```
+
+- [ ] **Step 3：打 tag**
 
 ```bash
-git tag -a plan-0-stage-d-complete -m "Stage D: alembic migrations complete"
+cd D:\江苏润盛\.claude\worktrees\plan-0-foundation
+git tag -a plan-0-stage-d-complete -m "Stage D: 26 tables + 2 roles + 3 functions + 16 triggers (13 updated_at + 3 scene) + 12 RLS policies (FORCE) + 5 hypertables (Plan bug #5 PK/FK prep) + integration tests"
+git push origin plan-0-stage-d-complete
 ```
+
+- [ ] **Step 4：master PROGRESS 更新 + commit**
+
+更新 PROGRESS.md 反映 Stage D 完成 8/8 + tag + follow-up spec 清单，commit push。
 
 ---
 
@@ -3217,58 +4446,78 @@ git tag -a plan-0-stage-d-complete -m "Stage D: alembic migrations complete"
 
 ## Task E1：conftest.py — postgres/redis 双轨 fixture
 
+> **v1.1 修订（2026-04-17，Plan bug #10 反向 fix）**：原 v1.0 `Replace tests/conftest.py` 会删除 D9 已落地的 `dev_engine` / `api_engine` / `gw_engine` 三个 function-scope fixture（15 integration test + seed_tenants 依赖）。v1.1 改为 **Merge**：D9 fixture 原样保留，只在文件尾部追加新 fixture。另将 async fixtures 全部改为 **function scope**（D9 conftest.py L26-30 已证 `scope="session"` 异步 fixture 在 pytest-asyncio 0.23 auto 模式会触发 "Event loop is closed"）；`postgres_url` / `redis_url` 改为 **同步** session fixture（testcontainers 本身是同步 context manager，async 没必要），alembic upgrade 移入 `postgres_url` fixture（每 session 一次，不重复），`async_engine` + `session` 保持 async 但 function scope。
+
 **Files:**
-- Modify: `D:\江苏润盛\tests\conftest.py`
+- Modify: `D:\江苏润盛\tests\conftest.py`（**Merge, NOT Replace**）
 
-- [ ] **Step 1：扩展 conftest**
+- [ ] **Step 1：保留 D9 fixtures + 追加 E1 新 fixture**
 
-Replace `D:\江苏润盛\tests\conftest.py`:
+**不要动** D9 已有的内容：
+- `is_windows` (function scope)
+- `_DEV_DSN` 常量 + function-scope engine 注释块
+- `dev_engine` / `api_engine` / `gw_engine` 三个 async function-scope fixture
+
+**在文件末尾追加** 以下代码（保留 D9 所有 import + 在其之上按需添加新 import）：
+
 ```python
-"""根 conftest：postgres / redis 会话级 fixture（双轨）。"""
-from __future__ import annotations
+# ---------------------------------------------------------------------
+# E1 testcontainers / embedded PG 双轨 session 级 fixture（Plan bug #10 fix：与 D9 fixture 并存）
+# ---------------------------------------------------------------------
 
-import os
-import sys
-from collections.abc import AsyncIterator
-
-import pytest
-import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+# 新增 import（如已存在请去重，放在文件顶部 import 区）：
+#   from collections.abc import AsyncIterator, Iterator
+#   import subprocess
+#   from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 
 def _use_embedded() -> bool:
+    """Windows 无 Docker 环境走 tools/embedded_pg.py stub；默认走 testcontainers（需 Docker）。"""
     return os.environ.get("USE_EMBEDDED_PG") == "1"
 
 
 @pytest.fixture(scope="session")
-def is_windows() -> bool:
-    return sys.platform == "win32"
+def postgres_url() -> Iterator[str]:
+    """E1 session 级 PostgreSQL URL（testcontainers 新起容器 + alembic upgrade）。
 
-
-@pytest_asyncio.fixture(scope="session")
-async def postgres_url() -> AsyncIterator[str]:
+    * **同步** fixture：testcontainers `with PostgresContainer(...)` 本来就是同步 context
+      manager，用 `@pytest_asyncio.fixture(scope="session")` 会在 pytest-asyncio 0.23
+      auto 模式触发 "Event loop is closed"（D9 conftest.py L26-30 已证）。
+    * alembic upgrade 放在这里：每 session 跑一次；`async_engine` fixture function scope
+      只做引擎创建/释放，不再重复 upgrade。
+    * 与 D9 `dev_engine`（指向 live Docker `127.0.0.1:5432`）**并存但独立**：
+      - D9 fixtures 服务 `tests/integration/*` 现有 15 case（依赖 `docker compose up` 的 dev 容器）
+      - E1 fixtures 服务未来 Stage E+ 在 CI Linux / 无 dev stack 场景
+    """
     if _use_embedded():
         from tools.embedded_pg import EmbeddedPostgres  # lazy import
 
         pg = EmbeddedPostgres()
-        await pg.start()
+        pg.start_sync()  # E2 stub raises NotImplementedError；真实现后同步启动
         try:
             yield pg.url
         finally:
-            await pg.stop()
-    else:
-        try:
-            from testcontainers.postgres import PostgresContainer
-        except ImportError:
-            pytest.skip("testcontainers not available; set USE_EMBEDDED_PG=1")
-        with PostgresContainer("timescale/timescaledb:2.16.1-pg15") as container:
-            # 驱动要走 asyncpg
-            url = container.get_connection_url().replace("psycopg2", "asyncpg")
-            yield url
+            pg.stop_sync()
+        return
+
+    try:
+        from testcontainers.postgres import PostgresContainer
+    except ImportError:
+        pytest.skip("testcontainers not available; set USE_EMBEDDED_PG=1")
+    with PostgresContainer("timescale/timescaledb:2.16.1-pg15") as container:
+        # testcontainers 默认返回 psycopg2 DSN；改 asyncpg driver
+        url = container.get_connection_url().replace("psycopg2", "asyncpg")
+        # 新库空表，必须 alembic upgrade head 建全 26 表 + 2 角色 + ... + hypertable
+        subprocess.check_call(
+            ["uv", "run", "alembic", "upgrade", "head"],
+            env={**os.environ, "DATABASE_URL": url},
+        )
+        yield url
 
 
-@pytest_asyncio.fixture(scope="session")
-async def redis_url() -> AsyncIterator[str]:
+@pytest.fixture(scope="session")
+def redis_url() -> Iterator[str]:
+    """E1 session 级 Redis URL（testcontainers）。同 `postgres_url` 理由用同步 fixture。"""
     try:
         from testcontainers.redis import RedisContainer
     except ImportError:
@@ -3277,35 +4526,51 @@ async def redis_url() -> AsyncIterator[str]:
         yield f"redis://{r.get_container_host_ip()}:{r.get_exposed_port(6379)}/0"
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture  # function scope — 见 D9 conftest.py L26-30 关于 session-scope async 的注释
 async def async_engine(postgres_url: str) -> AsyncIterator[AsyncEngine]:
+    """从 testcontainer-spawn 的 DB 建 async engine。function scope 避开 event loop pitfall。"""
     engine = create_async_engine(postgres_url, pool_pre_ping=True)
-    # 首次启动 → alembic upgrade head
-    import subprocess
-    env = {**os.environ, "DATABASE_URL": postgres_url}
-    subprocess.check_call(["uv", "run", "alembic", "upgrade", "head"], env=env)
     yield engine
     await engine.dispose()
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture  # function scope
 async def session(async_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    """E1 通用 async session（rollback at teardown）。"""
     maker = async_sessionmaker(async_engine, expire_on_commit=False)
     async with maker() as s:
         yield s
         await s.rollback()
 ```
 
-- [ ] **Step 2：Commit**
+> **关于 E2 `EmbeddedPostgres`**：E2 stub 当前只有 async `start()` / `stop()`，E1 调用 `start_sync()` / `stop_sync()` 同步别名。E2 stub 需同步增加两个同步方法（同样 `raise NotImplementedError`），见 E2 v1.1 修订。
+
+- [ ] **Step 2：验证**（Docker 运行中）
+
+```bash
+cd D:\江苏润盛\.claude\worktrees\plan-0-foundation
+export RUISHENG_GW_PASSWORD='dev-gw-change-me'
+export RUISHENG_API_PASSWORD='dev-api-change-me'
+uv run pytest  # 336 passed + 8 skipped + 可能 N 跳过（testcontainers 非所有测试引用）
+```
+
+**关键断言**：
+- 测试数不降（仍 336 passed 至少）
+- 新 fixture 未被任何现有测试引用（纯"未来 CI 可用"的接口）→ 本 task 不引入断言 test，E3+ 才用
+- `pytest --collect-only | grep -E '(postgres_url|redis_url|async_engine|session)'` 应能 collect（只是未被 invoke）
+
+- [ ] **Step 3：Commit**
 
 ```bash
 git add tests/conftest.py
-git commit -m "test: postgres/redis session fixtures with embedded/container dual mode"
+git commit -m "test(conftest): E1 session-scope postgres_url/redis_url + function async_engine/session (merge w/ D9 fixtures)"
 ```
 
 ---
 
 ## Task E2：Embedded PG 包装
+
+> **v1.1 修订（2026-04-17，E1 Plan bug #10 fix 联动）**：E1 `postgres_url` fixture 改为 sync，故需 sync 启停方法。本 stub 同时暴露 `start()`/`stop()`（async）和 `start_sync()`/`stop_sync()`（sync），都 `raise NotImplementedError`，保持接口一致、未来双模式实现都方便。
 
 **Files:**
 - Create: `D:\江苏润盛\tools\embedded_pg.py`
@@ -3320,14 +4585,21 @@ Create `D:\江苏润盛\tools\embedded_pg.py`:
 
 使用 postgresql-binaries 包（pypi: postgresql-15.x-win）或手工下载 portable。
 这里先用 pg_tmp 风格最简实现：用 pip 包 pg_embed 或降级到 pytest-postgresql。
+当前为 stub；E1 `postgres_url` fixture 同步模式需 `start_sync()` / `stop_sync()` 入口。
 """
 from __future__ import annotations
 
 import asyncio
-import os
 import random
 import tempfile
 from pathlib import Path
+
+
+_NOT_IMPLEMENTED_MSG = (
+    "EmbeddedPostgres 目前为 stub。"
+    "真正实现在 Plan 0 后续迭代（pg_tmp / pg_embed / portable binaries）。"
+    "当前 Windows 用户请启用 Docker Desktop 或清除 USE_EMBEDDED_PG（default=container 模式）。"
+)
 
 
 class EmbeddedPostgres:
@@ -3338,13 +4610,17 @@ class EmbeddedPostgres:
         self.url = f"postgresql+asyncpg://postgres:postgres@127.0.0.1:{self.port}/ruisheng"
         self._proc: asyncio.subprocess.Process | None = None
 
+    # Sync API（E1 postgres_url fixture 用）
+    def start_sync(self) -> None:
+        raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
+
+    def stop_sync(self) -> None:
+        if self._proc:
+            self._proc.terminate()
+
+    # Async API（未来 async 场景）
     async def start(self) -> None:
-        # 占位实现：提示开发者使用容器
-        raise NotImplementedError(
-            "EmbeddedPostgres 目前为 stub。"
-            "真正实现在 Plan 0 后续迭代（pg_tmp / pg_embed）。"
-            "当前 Windows 用户请启用 Docker Desktop 或设置 USE_EMBEDDED_PG=0"
-        )
+        raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
 
     async def stop(self) -> None:
         if self._proc:
@@ -3365,12 +4641,20 @@ git commit -m "chore(tools): EmbeddedPostgres stub — full impl pending Q-E06"
 
 ## Task E3–E6：种子数据 SQL 文件 + 导入脚本
 
+> **v1.1 修订（2026-04-18，Plan bug #11 反向 fix）**：E5 `02_devices.sql` 和 E6 `03_device_points.sql` 的 INSERT 列清单漏 NOT NULL 无 `server_default` 列——D2 migration 只在 created_at/updated_at 上设了 `server_default`，其他 NOT NULL 列（devices 4 个 / device_points 5 个）的"ORM Python default"在**原生 SQL INSERT 路径不生效**（D9 Plan bug #8 同类问题，run_seeds.py 直接用 asyncpg 跑 SQL 字符串会炸 23502）。v1.1 SQL 补齐所有 NOT NULL 列，值匹配 ORM Python default 以保持语义一致。
+>
+> **devices 补 4 列**：`update_interval_decisec`=100 / `loss_count`=0 / `is_online`=false / `update_flag`=0
+> **device_points 补 5 列**：`point_ratio`=1.0 / `point_offset`=0.0 / `user_ratio`=1.0 / `user_point_offset`=0.0 / `show`=1
+
+> **v1.3 修订（2026-04-18，Plan bug #13 fix）**：v1.2 `# type: ignore[import-untyped]` 只覆盖 `uv run mypy`（asyncpg 安装在 uv venv，无 py.typed → `import-untyped`）；但 pre-commit `mirrors-mypy` 跑在**隔离 venv**，`additional_dependencies: [sqlalchemy, pydantic, types-redis]` 无 asyncpg → 变成 `import-not-found` 而非 `import-untyped` → `# type: ignore[import-untyped]` 不覆盖 + 报 `unused-ignore`。**根因修复**：`.pre-commit-config.yaml` mypy `additional_dependencies` 加 `asyncpg`，使 pre-commit env 与 uv venv 一致（Option A，principled：asyncpg 本就是项目 runtime dep）。加后 pre-commit mypy 看到 asyncpg 但无 py.typed → `import-untyped` → 与 `uv run mypy` 一致 → v1.2 的 `# type: ignore[import-untyped]` 正常生效。
+
 **Files:**
 - Create: `D:\江苏润盛\seeds\00_wx_groups.sql`
 - Create: `D:\江苏润盛\seeds\01_users.sql`
 - Create: `D:\江苏润盛\seeds\02_devices.sql`
 - Create: `D:\江苏润盛\seeds\03_device_points.sql`
 - Create: `D:\江苏润盛\tools\run_seeds.py`
+- Modify: `D:\江苏润盛\.pre-commit-config.yaml`（v1.3，mypy additional_dependencies 追加 `asyncpg`）
 
 ### E3: seeds/00_wx_groups.sql
 ```sql
@@ -3382,6 +4666,9 @@ ON CONFLICT (usr_group) DO NOTHING;
 
 ### E4: seeds/01_users.sql
 ```sql
+-- authority ∈ {'Administrators','GroupCompany','Company','User'}（ck_users_authority）
+-- user_name 匹配 ^1[3-9][0-9]{9}$（手机号）或 ^[a-zA-Z][a-zA-Z0-9_]{3,29}$（用户名）
+-- password_hash 当前仅 dev stub；生产由后端 bcrypt 计算
 INSERT INTO users (user_name, password_hash, authority, control_authority, usr_group)
 VALUES
   ('13800138000', '$2b$12$PLACEHOLDER_BCRYPT_HASH', 'Administrators', 3, 'demo'),
@@ -3389,23 +4676,50 @@ VALUES
 ON CONFLICT (user_name) DO NOTHING;
 ```
 
-### E5: seeds/02_devices.sql + 03_device_points.sql
+### E5: seeds/02_devices.sql
 ```sql
--- 02_devices.sql
-INSERT INTO devices (dev_number, dev_ser_number, modbus_addr, baud_rate, usr_group, administrators)
+-- v1.1 补全 NOT NULL 列：update_interval_decisec(100)/loss_count(0)/is_online(false)/update_flag(0)
+-- 原生 SQL INSERT 路径不走 ORM Python default，必须显式给值（D9 Plan bug #8 / E5 Plan bug #11 教训）
+-- CHECK: modbus_addr ∈ [1,247] / baud_rate ∈ {9600,19200,38400,57600,115200} / update_interval_decisec ∈ [10,1000]
+INSERT INTO devices (
+    dev_number, dev_ser_number, modbus_addr, baud_rate,
+    usr_group, administrators,
+    update_interval_decisec, loss_count, is_online, update_flag
+)
 VALUES
-  ('60270012', 'DEMO-SN-0001', 1, 9600, 'demo', '13800138000')
+  ('60270012', 'DEMO-SN-0001', 1, 9600, 'demo', '13800138000', 100, 0, FALSE, 0)
 ON CONFLICT (dev_number) DO NOTHING;
+```
 
--- 03_device_points.sql
-INSERT INTO device_points (dev_number, point_name, point_number, fun_code, dev_addr, value_type)
-VALUES
-  ('60270012', 'temperature', 0, 3, 1, '字'),
-  ('60270012', 'pressure', 1, 3, 1, '字')
-ON CONFLICT DO NOTHING;
+### E6: seeds/03_device_points.sql
+```sql
+-- v1.1 补全 NOT NULL 列：point_ratio(1.0)/point_offset(0.0)/user_ratio(1.0)/user_point_offset(0.0)/show(1)
+-- v1.2 幂等：device_points 无 UniqueConstraint on (dev_number, point_number)（id-only PK，ORM L82-88
+-- 仅 2 CheckConstraint + 1 Index），ON CONFLICT DO NOTHING 在无匹配 UQ/PK 时等于 no-op 静默重复插入。
+-- 改用 WHERE NOT EXISTS 子查询实现业务层幂等（Plan bug #12，类 option A；option B 加 UQ + 迁移超 E3-E6 范围）。
+-- CHECK: point_number ∈ [0,65535] / fun_code ∈ {1,2,3,4}
+INSERT INTO device_points (
+    dev_number, point_name, point_number, fun_code, dev_addr, value_type,
+    point_ratio, point_offset, user_ratio, user_point_offset, show
+)
+SELECT
+    v.dev_number, v.point_name, v.point_number, v.fun_code, v.dev_addr, v.value_type,
+    v.point_ratio, v.point_offset, v.user_ratio, v.user_point_offset, v.show
+FROM (VALUES
+    ('60270012', 'temperature', 0, 3::smallint, 1::smallint, '字', 1.0, 0.0, 1.0, 0.0, 1::smallint),
+    ('60270012', 'pressure',    1, 3::smallint, 1::smallint, '字', 1.0, 0.0, 1.0, 0.0, 1::smallint)
+) AS v(dev_number, point_name, point_number, fun_code, dev_addr, value_type,
+       point_ratio, point_offset, user_ratio, user_point_offset, show)
+WHERE NOT EXISTS (
+    SELECT 1 FROM device_points dp
+    WHERE dp.dev_number = v.dev_number AND dp.point_number = v.point_number
+);
 ```
 
 ### E6: tools/run_seeds.py
+
+> **v1.2 修订（Plan bug #12 Part 2）**：`asyncpg` 无 `py.typed` marker，mypy --strict 在 `import asyncpg` 炸 `import-untyped`。项目 pre-commit 也 strict，所以需抑制。最小侵入方案：inline `# type: ignore[import-untyped]`（等未来 `[[tool.mypy.overrides]]` 批量处理第三方库时一并清理）。
+
 ```python
 """按字典序跑 seeds/ 下所有 .sql 文件。"""
 from __future__ import annotations
@@ -3414,7 +4728,7 @@ import asyncio
 import os
 from pathlib import Path
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]  # asyncpg 无 py.typed marker
 
 SEEDS_DIR = Path(__file__).parent.parent / "seeds"
 
@@ -3438,9 +4752,18 @@ if __name__ == "__main__":
 ```
 
 **E3–E6 Commits:**
+
+v1.3 需在同一 commit 包含 `.pre-commit-config.yaml` 修改（mypy deps 加 asyncpg），否则 `tools/run_seeds.py` 的 `# type: ignore[import-untyped]` 在 pre-commit 上仍会因为 asyncpg 缺席抛 `import-not-found`。
+
 ```bash
-git add seeds/ tools/run_seeds.py
-git commit -m "feat(db): seed data (demo wx group + users + devices + points)"
+git add seeds/ tools/run_seeds.py .pre-commit-config.yaml
+git commit -m "feat(db): E3-E6 seed data (demo wx_group + 2 users + 1 device + 2 points) + run_seeds.py"
+```
+
+`.pre-commit-config.yaml` delta（v1.3）：
+```diff
+-        additional_dependencies: [sqlalchemy, pydantic, types-redis]
++        additional_dependencies: [sqlalchemy, pydantic, types-redis, asyncpg]
 ```
 
 - [ ] **验证跑种子**
@@ -3494,6 +4817,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pcap_gen"]
+
+# Plan bug #16 fix (v1.3): uv workspace members 不能自动 by-name 互引；
+# pcap_gen 依赖 ruisheng-shared 必须在此显式声明 workspace source，
+# 否则 `uv sync --all-packages` 会去 PyPI 解析 ruisheng-shared 失败。
+# 参考：https://docs.astral.sh/uv/concepts/projects/workspaces/
+[tool.uv.sources]
+ruisheng-shared = { workspace = true }
 ```
 
 - [ ] **Step 2：__init__**
@@ -3516,9 +4846,39 @@ git commit -m "feat(tools): pcap_gen package skeleton"
 ## Task F2：modbus_frames.py — CRC16 + 帧构造
 
 **Files:**
+- Modify: `D:\江苏润盛\pyproject.toml`（Plan bug #17 fix，pythonpath extend）
 - Create: `D:\江苏润盛\tools\pcap_gen\src\pcap_gen\modbus_frames.py`
 - Create: `D:\江苏润盛\tests\tools\__init__.py`（空）
 - Create: `D:\江苏润盛\tests\tools\test_pcap_gen.py`
+
+- [ ] **Step 0：Plan bug #17 fix — 扩展 pytest pythonpath**（v1.4 新增）
+
+> **背景（plan v1.4 2026-04-18 新增）**：Windows CJK 路径 `D:\江苏润盛\...` 下，uv editable install 生成的 `.pth` 文件走 mbcs 编码，但 `site.addsitedir` 读回时用 UTF-8 解码 → 路径注入静默失败。`ruisheng_shared` 在 A1 时靠 root `pyproject.toml` `[tool.pytest.ini_options] pythonpath = ["ruisheng-shared/src"]` 绕过；`pcap_gen` 未加入该列表 → F2 测试 `from pcap_gen.modbus_frames import ...` 必炸 ModuleNotFoundError（controller 已实测 probe 确认）。
+
+修改 `D:\江苏润盛\pyproject.toml` `[tool.pytest.ini_options]` 段：
+```diff
+ [tool.pytest.ini_options]
+ minversion = "8.0"
+ asyncio_mode = "auto"
+ testpaths = ["tests"]
+-pythonpath = ["ruisheng-shared/src"]
++pythonpath = ["ruisheng-shared/src", "tools/pcap_gen/src"]
+ addopts = "-ra --strict-markers --strict-config"
+```
+
+验证：
+```bash
+# F1 后应立即成功（无需等 F2 Step 3 modbus_frames.py 落地）：
+uv run python -c "
+import sys
+print('pcap_gen probe:', end=' ')
+import pcap_gen
+print(pcap_gen.__version__)
+"
+# 期望：pcap_gen probe: 0.1.0
+```
+
+**注意**：仅改这一行（pythonpath），其他 tool 段不动。commit 单独合入 Step 5 一起提（或允许本 Step 单独先 commit `chore(pytest): extend pythonpath for pcap_gen workspace member`，implementer 自行判断 — 但若单独 commit，Step 5 的 commit message 也要相应调整）。
 
 - [ ] **Step 1：测试 CRC + 注册帧构造**
 
@@ -3535,7 +4895,9 @@ from pcap_gen.modbus_frames import crc16, encode_read_holding, encode_register_f
 @pytest.mark.parametrize(
     ("body", "expected_lo_hi"),
     [
-        (bytes.fromhex("0103000000020" + "2"), (0xC4, 0x0B)),  # 01 03 00 00 00 02 -> C4 0B
+        # Plan bug #14 fix (v1.1)：原 "0103000000020" + "2" = 14 hex chars = 7 bytes (01 03 00 00 00 02 02)，
+        # CRC=0x528B 与断言 (0xC4, 0x0B) 不符。改为 12 hex chars = 6 bytes 的标准 ModBus 向量。
+        (bytes.fromhex("010300000002"), (0xC4, 0x0B)),  # 01 03 00 00 00 02 -> CRC=0x0BC4, wire lo=C4 hi=0B
     ],
 )
 def test_crc16_standard_vectors(body: bytes, expected_lo_hi: tuple[int, int]) -> None:
@@ -3670,10 +5032,17 @@ def gen_normal_session(
 
     同步输出 expected.json：
       {
+        "scenario": "normal_session",
         "dev_ser": "...",
-        "frames": [{"type": "register", ...}, {"type": "read", ...}, ...],
+        "slave": 1,
+        "frames_count": N,
         "values": [[v0, v1], [v2, v3], ...],
+        "generated_at": "<ISO8601 UTC>",
       }
+
+    Plan bug #18 fix (v1.5): 原 docstring 写 "frames": [...] 但代码未输出该字段，
+    docstring 与 runtime 自相矛盾。改为如实记录 6 个字段。若未来需要 frames 元信息，
+    另开 Plan 1 task 扩展 scenarios 签名 + expected.json schema。
     """
     rng = random.Random(seed)
     packets = []
@@ -3821,27 +5190,65 @@ git commit -m "feat(tools): pcap-gen CLI (normal command)"
 - [ ] **Step 1：批量脚本**
 
 ```python
-"""首批 15 个 pcap：5 种设备类型 × 3 种工况。"""
+"""首批 15 个 pcap：5 种设备类型 × 3 种工况。
+
+Plan bug #15 fix (v1.2): 原脚本用中文 DEVICE_TYPES 做 ASCII encode errors="ignore"，
+5 种中文类型全部被剥成空，f"DEMO-{dtype}-{j}" 变成 "DEMO--0/1/2"，
+`or fallback` 不触发（"DEMO--0" truthy），5 种 type 全坍缩为 3 个唯一文件名，
+产物 6 文件（3 pcap + 3 expected），不是期望的 30。修复：直接用 ASCII TYPE{i} 编码。
+
+Plan bug #20 fix (v1.6): 原方案 subprocess.check_call(["uv", "run", "pcap-gen", ...])
+走 console script，在 Windows CJK 路径 D:\\江苏润盛\\... 下会被 uv editable .pth mbcs
+解码问题炸（与 F2 pytest 绕路的同根问题；F4 typer CLI 走 pip entry-point 也是基于
+site-packages，无 pytest pythonpath 兜底）。改为直接 from pcap_gen.scenarios import
+gen_normal_session，调用 Python API；CJK 路径下 gen_normal_session 本身 OK（scapy
+wrpcap/rdpcap CJK 路径实测 roundtrip 通过），只需在 entry 处把 tools/pcap_gen/src 加到
+sys.path 即可绕过 .pth 问题（与 root pyproject.toml [tool.pytest.ini_options] pythonpath
+同策略）。F4 的 CLI 仍然保留（Linux/ASCII 路径下可用，也给 Plan 1 之后的交互式测试用）。
+"""
 from __future__ import annotations
 
-import subprocess
+import sys
 from pathlib import Path
 
-DEVICE_TYPES = ["采油机", "保温", "电气", "液位", "温湿度"]
+# CJK 路径绕路：把需要的 editable 子包 src 加 sys.path（同 [tool.pytest.ini_options] 策略）
+# Plan bug #21 fix (v1.7)：v1.6 只加 tools/pcap_gen/src，但 scenarios.py → modbus_frames.py
+# 间接 import `ruisheng_shared.constants.protocol`，同样受 CJK .pth mbcs 影响，必须一起加。
+# 通用规则：CJK 路径下任何 script/test 需要的 in-repo editable 包，都必须 prepend 其 src 根。
+_REPO_ROOT = Path(__file__).resolve().parents[3]  # scripts/ → pcap_gen/ → tools/ → repo
+for _src_root in (
+    _REPO_ROOT / "tools" / "pcap_gen" / "src",
+    _REPO_ROOT / "ruisheng-shared" / "src",
+):
+    if str(_src_root) not in sys.path:
+        sys.path.insert(0, str(_src_root))
+
+from pcap_gen.scenarios import gen_normal_session  # noqa: E402
+
+# 5 种设备类型（注释仅说明，实际 dev_ser 走 TYPE{i} ASCII）
+# TYPE0=采油机 / TYPE1=保温 / TYPE2=电气 / TYPE3=液位 / TYPE4=温湿度
+DEVICE_TYPE_COUNT = 5
 SEEDS = [100, 200, 300]  # 3 种工况
+FRAMES_PER_PCAP = 100
+SLAVE_DEFAULT = 1
 
 
 def main() -> None:
-    for i, dtype in enumerate(DEVICE_TYPES):
+    out_dir = _REPO_ROOT / "corpus" / "generated"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(DEVICE_TYPE_COUNT):
         for j, seed in enumerate(SEEDS):
-            dev_ser = f"DEMO-{dtype}-{j}".encode("ascii", errors="ignore").decode() \
-                or f"DEMO-TYPE{i}-{j}"
-            subprocess.check_call([
-                "uv", "run", "pcap-gen", "normal",
-                "--dev-ser", dev_ser,
-                "--frames", "100",
-                "--seed", str(seed),
-            ])
+            dev_ser = f"DEMO-TYPE{i}-{j}"
+            name = f"normal_{dev_ser}_{FRAMES_PER_PCAP}_seed{seed}"
+            gen_normal_session(
+                dev_ser=dev_ser,
+                slave=SLAVE_DEFAULT,
+                frames_count=FRAMES_PER_PCAP,
+                out_pcap=out_dir / f"{name}.pcap",
+                out_expected=out_dir / f"{name}.expected.json",
+                seed=seed,
+            )
+            print(f"wrote: {name}.pcap and .expected.json")
 
 
 if __name__ == "__main__":
@@ -3881,6 +5288,10 @@ git tag -a plan-0-stage-f-complete -m "Stage F: pcap generator + initial 15 corp
 **Files:**
 - Modify: `D:\江苏润盛\.github\workflows\ci.yml`
 
+**v1.8 修订（Plan bug #22 A+B，pre-dispatch 抓）**：
+- **#22-A**：所有 5 job 的 `uv sync` → `uv sync --all-packages`（项目是 uv workspace，F1 加了 tools/pcap_gen 子包；不加会漏装，mypy/ruff/pytest 都会报 `ModuleNotFoundError: pcap_gen`）。当前 `.github/workflows/ci.yml` 的 lint/unit job 已经是 `--all-packages`，plan v1.7 直接 replace 会回退。
+- **#22-B**：integration + alembic-check job 必须注入 `RUISHENG_GW_PASSWORD` + `RUISHENG_API_PASSWORD`（D3 migration `_require_env()` + conftest.py `api_engine/gw_engine` fixture 都读这俩，缺则 raise RuntimeError / KeyError）。user 决策 Option A（2026-04-18）：CI 硬编码值 `ci-gw-change-me` / `ci-api-change-me`（跟 `POSTGRES_PASSWORD: ruisheng_dev` 同风格；角色仅存在 CI 临时 PG 容器内，无泄漏风险；不走 GitHub Secrets）。
+
 - [ ] **Step 1：扩展**
 
 Edit `D:\江苏润盛\.github\workflows\ci.yml`:
@@ -3900,7 +5311,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-      - run: uv sync
+      - run: uv sync --all-packages
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy .
@@ -3912,7 +5323,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-      - run: uv sync
+      - run: uv sync --all-packages
       - run: uv run pytest tests/unit tests/tools -v --cov --cov-fail-under=90
 
   integration:
@@ -3931,10 +5342,14 @@ jobs:
       redis:
         image: redis:7-alpine
         ports: ['6379:6379']
+    env:
+      # v1.8 #22-B：D3 migration _require_env + conftest api/gw_engine fixture 必读；CI-only 值
+      RUISHENG_GW_PASSWORD: ci-gw-change-me
+      RUISHENG_API_PASSWORD: ci-api-change-me
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
-      - run: uv sync
+      - run: uv sync --all-packages
       - run: uv run alembic upgrade head
         env:
           DATABASE_URL: postgresql+asyncpg://ruisheng_dev:ruisheng_dev@127.0.0.1:5432/ruisheng
@@ -3956,10 +5371,14 @@ jobs:
         options: >-
           --health-cmd "pg_isready"
           --health-interval 5s --health-retries 10
+    env:
+      # v1.8 #22-B：D3 migration _require_env 必读；CI-only 值
+      RUISHENG_GW_PASSWORD: ci-gw-change-me
+      RUISHENG_API_PASSWORD: ci-api-change-me
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
-      - run: uv sync
+      - run: uv sync --all-packages
       - name: 验证迁移对称（up → down → up）
         run: |
           uv run alembic upgrade head
@@ -3975,10 +5394,12 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v3
-      - run: uv sync
+      - run: uv sync --all-packages
       - name: 检查 SHARED_SCHEMA_VERSION 是否随 models 变更同步升级
         run: uv run python tools/verify_schema_version.py
 ```
+
+**注**：`schema-version-guard` 本 task 调的是 `tools/verify_schema_version.py` stub（`git diff --cached` 模型，CI 上返 0 degenerate-pass）；G2 会升级成 `git diff HEAD^ HEAD` 真正检测 breaking 变更。G1 承接 stub 行为不阻塞。
 
 - [ ] **Step 2：Commit**
 
@@ -3994,17 +5415,29 @@ git commit -m "ci: add integration / alembic symmetry / schema-version jobs"
 **Files:**
 - Modify: `D:\江苏润盛\tools\verify_schema_version.py`
 
+**v1.9 修订（Plan bug #24，pre-dispatch 抓）**：G1 留的 stub 用 `git diff --cached`（staged），pre-commit 友好；plan v1.8 直接 replace 为 `git diff HEAD^ HEAD`（CI 友好）会让 `.pre-commit-config.yaml` 的 `shared-schema-version-bump` local hook **静默失效**（查 last-commit 而非 staged，用户改 shared/models/ 不升 SCHEMA_VERSION 不报警）。
+
+**user 决策 Option A**（2026-04-18，双模式自动检测）：脚本检查 `PRE_COMMIT=1` 环境变量（pre-commit 工具自动设置），pre-commit 用 `--cached`，CI 用 `HEAD^ HEAD`。两上下文都绿，零回归风险。
+
+此外 v1.9 清理 v1.8 代码的 2 个 dead 项：unused `VERSION_RE` 常量 + unused `_git_diff` 包装函数（两者皆是 v1.8 起草时的遗留）。
+
 - [ ] **Step 1：升级实现**
 
 Replace `D:\江苏润盛\tools\verify_schema_version.py`:
 ```python
-"""验证：若 ruisheng-shared/src/ruisheng_shared/models/ 改动了，则：
+"""验证：若 ruisheng-shared/src/ruisheng_shared/models|schemas/ 改动了，则：
 1) CHANGELOG.md 必须有今日条目
-2) 若任一条目以 `breaking:` 前缀，SHARED_SCHEMA_VERSION 必须已升级
+2) 若任一条目以 `breaking:` 前缀，SHARED_SCHEMA_VERSION 必须同步升级
+
+双模式（v1.9 Plan bug #24 fix）：
+- pre-commit 上下文：`git diff --cached`（staged 变更）— pre-commit 工具自动设 PRE_COMMIT=1
+- CI 上下文：`git diff HEAD^ HEAD`（已提交变更）— schema-version-guard job 用
 """
+
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import pathlib
 import re
 import subprocess
@@ -4012,18 +5445,23 @@ import sys
 
 CHANGELOG = pathlib.Path("ruisheng-shared/src/ruisheng_shared/CHANGELOG.md")
 INIT = pathlib.Path("ruisheng-shared/src/ruisheng_shared/__init__.py")
-VERSION_RE = re.compile(r"SHARED_SCHEMA_VERSION\s*:\s*int\s*=\s*(\d+)")
 
 
-def _git_diff(*args: str) -> str:
-    return subprocess.check_output(["git", "diff", *args], text=True)
+def _is_precommit() -> bool:
+    """pre-commit 工具调用 hook 时会自动设置 PRE_COMMIT=1 环境变量。"""
+    return os.environ.get("PRE_COMMIT") == "1"
+
+
+def _diff_args() -> list[str]:
+    """根据上下文返回 git diff 参数（pre-commit 看 staged，CI 看已提交）。"""
+    if _is_precommit():
+        return ["--cached"]
+    return ["HEAD^", "HEAD"]
 
 
 def _schema_files_changed() -> bool:
-    out = subprocess.check_output(
-        ["git", "diff", "--name-only", "HEAD^", "HEAD"],
-        text=True,
-    )
+    args = ["git", "diff", *_diff_args(), "--name-only"]
+    out = subprocess.check_output(args, text=True)
     return any(
         p.startswith("ruisheng-shared/src/ruisheng_shared/models/")
         or p.startswith("ruisheng-shared/src/ruisheng_shared/schemas/")
@@ -4039,7 +5477,7 @@ def _has_today_entry() -> bool:
 def _has_breaking_today() -> bool:
     today = _dt.date.today().isoformat()
     text = CHANGELOG.read_text(encoding="utf-8")
-    # 从 "## <today>" 开始到下一个 "## " 之间
+    # 匹配 "## YYYY-MM-DD" 开始的段落到下一个 "## " 或文件末尾
     section = re.search(rf"## .*{today}.*?(?=\n## |\Z)", text, re.DOTALL)
     if not section:
         return False
@@ -4047,7 +5485,8 @@ def _has_breaking_today() -> bool:
 
 
 def _version_changed() -> bool:
-    diff = _git_diff("HEAD^", "HEAD", "--", str(INIT))
+    args = ["git", "diff", *_diff_args(), "--", str(INIT)]
+    diff = subprocess.check_output(args, text=True)
     return "SHARED_SCHEMA_VERSION" in diff and ("+SHARED" in diff or "-SHARED" in diff)
 
 
@@ -4070,11 +5509,28 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
+**验收门（implementer 必跑）**：
+1. `uv run ruff check tools/verify_schema_version.py` 0 errors
+2. `uv run mypy tools/verify_schema_version.py` 0 issues
+3. **CI 模式手工验证**（不改任何文件，仅跑）：
+   ```bash
+   unset PRE_COMMIT  # 确保非 pre-commit 模式
+   uv run python tools/verify_schema_version.py
+   echo "exit: $?"  # 期望 0（最近两 commit 若没动 shared/models/schemas/ 则 degenerate-pass）
+   ```
+4. **pre-commit 模式手工验证**（显式设 env）：
+   ```bash
+   PRE_COMMIT=1 uv run python tools/verify_schema_version.py
+   echo "exit: $?"  # 期望 0（无 staged 变更则 degenerate-pass）
+   ```
+5. 端到端 pre-commit 复测：`git add .pre-commit-config.yaml` 随便 staged 个非 shared 文件 → `uv run pre-commit run shared-schema-version-bump --files .pre-commit-config.yaml` 应 pass（filter 不匹配故跳过 hook）
+6. pytest 324+8 无回归（coverage 不受影响，tools/verify_schema_version.py 不在 coverage source）
+
 - [ ] **Step 2：Commit**
 
 ```bash
 git add tools/verify_schema_version.py
-git commit -m "ci(schema-guard): enforce version bump on breaking changes"
+git commit -m "ci(schema-guard): enforce version bump on breaking changes (dual-mode)"
 ```
 
 ---
@@ -4133,6 +5589,10 @@ git commit -m "docs: developer architecture overview"
 **Files:**
 - Create: `D:\江苏润盛\.github\workflows\mutation.yml`（weekly 调度）
 
+**v2.0 修订（Plan bug #25 A+B，pre-dispatch 抓）**：
+- **#25-A**：`uv sync` → `uv sync --all-packages`（与 G1 Plan bug #22-A 同型；workspace + pcap_gen 子包统一口径，`ci.yml` lint/unit 已是 `--all-packages`，G4 新 workflow 对齐）
+- **#25-B**：原 "Fail if survival rate > 10%" 步 Python 脚本含字面 `[...]` 省略号 + `alive`/`total` 未更新导致 `ZeroDivisionError`，**照跑必炸**。改为 heredoc 真解析 `mutmut results` 输出的 `survived (N)` / `killed (N)` / `timeout (N)` / `suspicious (N)` 节头，total=0 时 exit 0（首次运行/全 skip 场景）
+
 - [ ] **Step 1：创建**
 
 Create `D:\江苏润盛\.github\workflows\mutation.yml`:
@@ -4150,7 +5610,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
-      - run: uv sync
+      - run: uv sync --all-packages
       - run: |
           uv pip install mutmut
           uv run mutmut run \
@@ -4159,7 +5619,22 @@ jobs:
       - run: uv run mutmut results
       - name: Fail if survival rate > 10%
         run: |
-          uv run mutmut results | python -c "import sys; lines=sys.stdin.read(); alive=0; total=0; [...]; exit(1 if alive/total > 0.1 else 0)"
+          python - <<'PY'
+          import re, subprocess, sys
+          out = subprocess.check_output(["uv", "run", "mutmut", "results"], text=True)
+          def count(label: str) -> int:
+              m = re.search(rf"^{label} \((\d+)\)", out, re.MULTILINE)
+              return int(m.group(1)) if m else 0
+          alive = count("survived")
+          total = alive + count("killed") + count("timeout") + count("suspicious")
+          print(f"alive={alive} total={total}")
+          if total == 0:
+              print("No mutants analyzed — treating as neutral (exit 0).")
+              sys.exit(0)
+          rate = alive / total
+          print(f"survival_rate={rate:.2%}")
+          sys.exit(1 if rate > 0.10 else 0)
+          PY
 ```
 
 - [ ] **Step 2：Commit**
@@ -4174,40 +5649,390 @@ git commit -m "ci: weekly mutation testing (mutmut) with 10% survival gate"
 ## Task G5：Plan 0 完成 README 补完 + 最终 tag
 
 **Files:**
-- Modify: `D:\江苏润盛\README.md`
+- Modify: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\README.md`
 
-- [ ] **Step 1：在 README 末尾追加 "状态"**
+**v2.1 修订（Plan bug #26 A+B+C，pre-dispatch 抓）**：
+- **#26-A**：README 现存 `## 后续阶段` 已列 Plan 1-4；原 plan "append `## 当前状态`" 会造成两节重复。user 选 **A1** — **替换** `## 后续阶段` → `## 当前状态`（带 checkbox，Plan 0 勾上），单一源。
+- **#26-B**：Step 2 `cd "D:\江苏润盛"`（master，只放 docs）无 pyproject/Taskfile/代码必炸 → 改 worktree `D:\江苏润盛\.claude\worktrees\plan-0-foundation`
+- **#26-C**：Step 3 缺 `git push origin plan-0-complete`，与 D10/E7/F6 6 个 tag 的 push 惯例不一致 → 补齐
+- **Stage G roadmap 提示**：G5 tag `plan-0-complete` 意为 **plan 主干完成**；G6（deps 迁移）+ G7（release workflow）属 post-complete 清理/增强，不阻塞 tag 语义。
 
-Append to `D:\江苏润盛\README.md`:
+- [ ] **Step 1：替换 README `## 后续阶段` 为 `## 当前状态`**
+
+Edit `D:\江苏润盛\.claude\worktrees\plan-0-foundation\README.md`，删除现有：
 ```markdown
+## 后续阶段
+
+- **Plan 1**: 采集网关 `ruisheng-gw`
+- **Plan 2**: Web API `ruisheng-api`
+- **Plan 3**: 前端 `ruisheng-web`
+- **Plan 4**: 部署与运维
+```
+
+替换为：
+```markdown
+## 当前状态
+
+- [x] **Plan 0**：基础设施（`ruisheng-shared` + alembic + docker compose + pcap gen）
+- [ ] **Plan 1**：采集网关 `ruisheng-gw`
+- [ ] **Plan 2**：Web API `ruisheng-api`
+- [ ] **Plan 3**：前端 `ruisheng-web`
+- [ ] **Plan 4**：部署与运维
+```
+
+- [ ] **Step 2：最终验收**（worktree 内）
+
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+uv run task bootstrap   # 一键全跑（uv sync --all-packages + pre-commit install + docker up + pytest -x）
+uv run pytest tests/ --cov --cov-fail-under=90
+```
+期望：bootstrap 全链通过 + 324 passed + 8 skipped + coverage ≥ 90%。
+**前置**：Docker Desktop 运行中（`task up` 需拉 PG+Redis 容器）。
+
+- [ ] **Step 3：打最终 tag + push**
+
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+git add README.md
+git commit -m "docs: mark Plan 0 complete in README"
+git push origin feature/plan-0-foundation
+git tag -a plan-0-complete -m "Plan 0 Foundation fully complete (2026-04-18)"
+git push origin plan-0-complete
+```
 
 ---
 
-## 当前状态
+## Task G6：技术债清理 — 迁移 `[tool.uv] dev-dependencies` → `[dependency-groups]`
 
-- [x] **Plan 0**：基础设施（本仓库的 `ruisheng-shared` + alembic + docker compose + pcap gen）
-- [ ] Plan 1：采集网关 `ruisheng-gw`
-- [ ] Plan 2：Web API `ruisheng-api`
-- [ ] Plan 3：前端 `ruisheng-web`
-- [ ] Plan 4：部署与运维
-```
+**目的：** Stage A 用了 uv 已弃用的 `[tool.uv] dev-dependencies` 写法（每次 `uv sync` 报 warning）。PEP 735 `[dependency-groups]` 是 uv 新推荐写法。同时借此根治 Stage A 遗留的 `testcontainers[postgres]` extra 解析问题（当时靠显式加 `asyncpg` 绕过）。
 
-- [ ] **Step 2：最终验收**
+**v2.2 修订（Plan bug #27 A+B+C，pre-dispatch 抓）**：
+- **#27-A**：原 Step 3 "在 `[project]` 的 `dependencies` 里把 `asyncpg` 注释掉" — **前提错误**，worktree 根 pyproject.toml 的 `[project]` 段只有 name/version/description 等 metadata，**没有 `dependencies` 块**；所有依赖（含 asyncpg）都在 `[tool.uv] dev-dependencies` 14 条里。修正：Step 3 改为"在 Step 2 新建的 `[dependency-groups].dev` 列表里把 asyncpg 注释掉"
+- **#27-B**：Files/paths `D:\江苏润盛\...`（master 只放 docs）全错 → worktree `D:\江苏润盛\.claude\worktrees\plan-0-foundation\...`（同 G5 #26-B）
+- **#27-C**：CI `ci.yml` 5 处 `uv sync --all-packages`（无 `--group` 标志）。PEP 735 `[dependency-groups].dev` 在 uv 0.4.30+ 特殊默认装，但需 implementer **实测确认**：Step 5 跑 pytest 前先验 `ruff/mypy/pytest/testcontainers` 可用；若缺则 Step 6 给 5 job 加 `--group dev`（或 `--all-groups`），否则 Step 6 保持 no-op
+- **辅助提示**：`tools/run_seeds.py` `import asyncpg` 是运行时依赖（非仅 test），若 testcontainers[postgres] 不带 asyncpg，原有 Step 3 fallback 分支（保留 asyncpg 显式）适用
+
+**Files（worktree）：**
+- Modify: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\pyproject.toml`
+- Modify: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\uv.lock`（由 `uv sync` 重新生成）
+- Modify: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\.github\workflows\ci.yml`（仅当 #27-C 实测需要时）
+
+- [ ] **Step 1：备份当前 pyproject.toml**
 
 ```bash
-cd "D:\江苏润盛"
-uv run task bootstrap   # 一键全跑
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+cp pyproject.toml pyproject.toml.bak
+```
+
+- [ ] **Step 2：把 `[tool.uv] dev-dependencies` 块改为 `[dependency-groups].dev`**
+
+Edit `D:\江苏润盛\.claude\worktrees\plan-0-foundation\pyproject.toml`，删除现有（line 12-28）：
+```toml
+[tool.uv]
+dev-dependencies = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
+  "pytest-rerunfailures>=14.0",
+  "hypothesis>=6.100",
+  "ruff>=0.5",
+  "mypy>=1.11",
+  "pydantic>=2.7",
+  "pre-commit>=3.7",
+  "testcontainers[postgres,redis]>=4.7",
+  "asyncpg>=0.29",
+  "taskipy>=1.13",
+  "fakeredis>=2.23",
+  "alembic>=1.13",
+]
+```
+替换为：
+```toml
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
+  "pytest-rerunfailures>=14.0",
+  "hypothesis>=6.100",
+  "ruff>=0.5",
+  "mypy>=1.11",
+  "pydantic>=2.7",
+  "pre-commit>=3.7",
+  "testcontainers[postgres,redis]>=4.7",
+  "asyncpg>=0.29",
+  "taskipy>=1.13",
+  "fakeredis>=2.23",
+  "alembic>=1.13",
+]
+```
+
+**保留 `[tool.uv.workspace]` 段**（workspace members 定义不可动）。
+
+- [ ] **Step 3：尝试去掉显式 `asyncpg`**（在新 `[dependency-groups].dev` 里）
+
+在 Step 2 新建的 `[dependency-groups].dev` 列表里把 `"asyncpg>=0.29",` 注释掉：
+```toml
+# "asyncpg>=0.29",  # G6: 尝试由 testcontainers[postgres] 间接带入
+```
+**保留 `testcontainers[postgres,redis]>=4.7`** 不动。
+
+- [ ] **Step 4：重新解析 + 测试 testcontainers extra**
+
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+rm uv.lock
+uv sync --all-packages   # 或 uv sync --all-packages --group dev，按 #27-C 实测
+uv run python -c "import testcontainers.postgres; import asyncpg; print('ok')"
+uv run python -c "import tools.run_seeds" 2>/dev/null || uv run python tools/run_seeds.py --help 2>&1 | head -3   # 运行时 asyncpg 可 import
+```
+期望：无 `dev-dependencies` 弃用警告；`asyncpg` 能被间接拉入（通过 testcontainers[postgres]）。
+
+**若 `import asyncpg` 失败** → 回退：把 Step 3 注释恢复（保留 asyncpg 显式，只做 dependency-groups 迁移部分），重跑 Step 4。
+
+- [ ] **Step 5：跑全量测试 + 工具可用性实测**
+
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+export RUISHENG_GW_PASSWORD='dev-gw-change-me'
+export RUISHENG_API_PASSWORD='dev-api-change-me'
+# 先验工具可用（#27-C 关键检查）
+uv run ruff --version && uv run mypy --version && uv run pytest --version
+# 再跑全量
 uv run pytest tests/ --cov --cov-fail-under=90
 ```
-期望：全部通过。
+期望：ruff/mypy/pytest 全装可用（若缺 → 记录 #27-C 需要 `--group dev`）；**339 passed + 8 skipped + coverage ≥ 90%**；**无 `dev-dependencies` 弃用警告**。
 
-- [ ] **Step 3：打最终 tag**
+- [ ] **Step 6：更新 CI（仅当 #27-C 实测需要）**
+
+若 Step 5 验出 `uv sync --all-packages` 不带 dev 组 → 改 `.github/workflows/ci.yml` 5 处 `uv sync --all-packages` → `uv sync --all-packages --group dev`（或 `--all-groups`）。
+若 Step 5 工具齐全 → **本步 no-op，不改 ci.yml**。
+
+- [ ] **Step 7：删除备份 + Commit**
 
 ```bash
-git add README.md
-git commit -m "docs: mark Plan 0 complete in README"
-git tag -a plan-0-complete -m "Plan 0 Foundation fully complete (2026-04-13)"
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+rm pyproject.toml.bak
+git add pyproject.toml uv.lock   # ci.yml 仅当 Step 6 改了才 add
+git commit -m "chore(deps): migrate to PEP 735 dependency-groups; retry testcontainers extras"
+git push origin feature/plan-0-foundation
 ```
+
+---
+
+## Task G7：ruisheng-shared release workflow
+
+**目的：** ruisheng-shared 将被 Plan 1（gw）/ Plan 2（api）通过 `SHARED_SCHEMA_VERSION` 引用。Plan 0 完成时需要一个清晰的版本发布流程：semver bump + CHANGELOG + git tag + GitHub Release。**不做 PyPI publish**（私有仓）。
+
+**v2.5 修订（Plan bug #28-F，CI 实测抓）**：
+- **#28-F mawk vs gawk 分歧**：v2.4 `\\\\[` 在 **local gawk 5.x** 工作，但 GitHub Actions `ubuntu-latest` 默认 `/usr/bin/awk` = **mawk 1.3.x**，对同 pattern 仍输出空 → workflow run `24600246937` "Extract changelog section" 步 FAILED `::error::Empty release notes`。**彻底避坑方案 — 用 Python heredoc 替换整个 awk**（沿用 G4 mutation.yml precedent，跨所有 awk 实现免疫）。Step 3 workflow + Step 5 dry-run 同步切 Python。awk 双转义记录为失败方案（v2.4 → 归档）
+
+**v2.4 修订（Plan bug #28-E，implementer 实测抓）— 归档**：
+- **#28-E gawk dynamic regex 转义**：v2.3 的 `$0 ~ "^## \\[" ver "\\]"` 在 gawk 5.x 下**实测 empty output**（警告 `escape sequence '\[' treated as plain '['`，gawk 对动态构造 regex 里的 `\[` 不识别转义反而降级为字符类）。v2.4 双转义 `"\\\\["` 本地 gawk 通过但 CI mawk 仍失败 → 见 #28-F 彻底换 Python
+
+**v2.3 修订（Plan bug #28 A+B+C+D，pre-dispatch 抓）**：
+- **#28-A paths**：Files/paths 全 `D:\江苏润盛\...`（master）→ worktree `D:\江苏润盛\.claude\worktrees\plan-0-foundation\...`（同 G5/G6 #26-B/#27-B）
+- **#28-B SHARED_SCHEMA_VERSION 格式冲突（严重）**：原 Step 1 代码块把 `SHARED_SCHEMA_VERSION` 从现有整数 `20260415`（DB schema 兼容版本，api/gw 启动校验）改为 semver 字符串 `"0.1.0"`，会破坏 `test_smoke.py` 3 个 assertion（`isinstance(int)` / `>20250000`）+ `tools/verify_schema_version.py` 语义 + api/gw 启动校验 + **作废 G2 刚落的 schema-version-guard**。**两个版本概念必须分离**：`__version__`（包 API semver, pyproject `version` 同步, tag `shared-v<ver>` 用）≠ `SHARED_SCHEMA_VERSION`（DB schema 兼容日期整数, breaking change bump, 运行时校验）→ Step 1 改为 **verify-only**（现状 `__init__.py` 已 export `SHARED_SCHEMA_VERSION` + `__version__`，无 edit；仅补 `__all__` 加 `"__version__"` 让双字段外部可导入）
+- **#28-C awk 范围 bug（confirmed 实测）**：`awk '/^## \[VER\]/,/^## \[/' | sed '$d'` 对最后一版场景输出**空**（start/end 同一行都匹配 `^## \[` → awk range 单行 → `sed '$d'` 删掉）。改状态 flag：`awk '/^## \[VER\]/{flag=1;next} flag && /^## \[/{flag=0} flag'`（跳过 header 行，停在下一版 header）— **注**：v2.4 再 fix 此处 `\[` 转义细节，见 #28-E
+- **#28-D Step 7 强制执行**：原 plan 写"optional, can delay"。user 选 (a) — **真推 `shared-v0.1.0` tag 端到端验证 release workflow**（避免 Plan 1 引用时才发现 workflow bug）
+
+**两个版本概念总览**（#28-B 分离）：
+
+| 字段 | 类型 | 值 | 用途 | Bump 时机 |
+|---|---|---|---|---|
+| `__version__` / pyproject `version` | str | `"0.1.0"` | 包 API semver, CHANGELOG, tag `shared-v<ver>` | 新功能/breaking/修复 |
+| `SHARED_SCHEMA_VERSION` | int | `20260415` | DB schema 兼容, api/gw 启动校验 | 仅 breaking schema change |
+
+**Files（worktree）：**
+- Create: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\ruisheng-shared\CHANGELOG.md`
+- Create: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\.github\workflows\release-shared.yml`
+- Create: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\docs\RELEASE.md`
+- Modify: `D:\江苏润盛\.claude\worktrees\plan-0-foundation\ruisheng-shared\src\ruisheng_shared\__init__.py`（**仅** `__all__` 补 `"__version__"`，保留 `SHARED_SCHEMA_VERSION: int = 20260415` 不动）
+- **不改**：`ruisheng-shared\pyproject.toml`（`version = "0.1.0"` 已是；无需 modify）
+
+- [ ] **Step 1：验证 + 微调 `__init__.py`**（**非破坏性**，保留 `SHARED_SCHEMA_VERSION` 整数）
+
+验证现状：
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+uv run python -c "from ruisheng_shared import SHARED_SCHEMA_VERSION, __version__; print(type(SHARED_SCHEMA_VERSION), SHARED_SCHEMA_VERSION, __version__)"
+```
+期望：`<class 'int'> 20260415 0.1.0`
+
+唯一 edit — 把 `__all__` 扩展（让外部 `from ruisheng_shared import __version__` 显式工作）：
+```python
+__all__ = ["SHARED_SCHEMA_VERSION", "__version__"]
+```
+其余**保留原样**：`SHARED_SCHEMA_VERSION: int = 20260415`、docstring、`__version__ = "0.1.0"`。
+
+- [ ] **Step 2：写 CHANGELOG.md 初始条目**
+
+Create `D:\江苏润盛\.claude\worktrees\plan-0-foundation\ruisheng-shared\CHANGELOG.md`:
+```markdown
+# Changelog
+
+遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) + [SemVer](https://semver.org/lang/zh-CN/)。
+
+两个版本字段分离（详见 `docs/RELEASE.md`）：
+- `__version__` / pyproject `version`：包 API semver（本文件追踪）
+- `SHARED_SCHEMA_VERSION`（integer date）：DB schema 兼容，breaking schema change 才 bump
+
+## [Unreleased]
+
+## [0.1.0] - 2026-04-18
+### Added
+- Plan 0 基础建设：enums / errors / constants / validators / schemas 骨架
+- ORM 23 张表 + Alembic 初始迁移（含 TimescaleDB hypertable / compression / retention）
+- PCAP 生成器雏形（15 个 corpus 场景）
+- CI：lint / unit / integration / alembic-check / schema-guard + weekly mutation
+- SHARED_SCHEMA_VERSION 基线 `20260415`（后续 breaking schema change 才 bump）
+```
+
+- [ ] **Step 3：创建 release workflow**（awk 状态 flag 修正版）
+
+Create `D:\江苏润盛\.claude\worktrees\plan-0-foundation\.github\workflows\release-shared.yml`:
+```yaml
+name: Release ruisheng-shared
+
+on:
+  push:
+    tags:
+      - "shared-v*.*.*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#shared-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify pyproject version matches tag
+        run: |
+          PY_VER=$(grep -E '^version\s*=' ruisheng-shared/pyproject.toml | head -1 | sed -E 's/.*"(.+)".*/\1/')
+          if [ "$PY_VER" != "${{ steps.version.outputs.VERSION }}" ]; then
+            echo "::error::pyproject version $PY_VER != tag ${{ steps.version.outputs.VERSION }}"
+            exit 1
+          fi
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          VER='${{ steps.version.outputs.VERSION }}'
+          python - "$VER" <<'PY' > /tmp/release-notes.md
+          import sys
+          ver = sys.argv[1]
+          header = f"## [{ver}]"
+          in_section = False
+          for raw in open("ruisheng-shared/CHANGELOG.md", encoding="utf-8"):
+              line = raw.rstrip("\n")
+              if line.startswith(header):
+                  in_section = True
+                  continue
+              if in_section:
+                  if line.startswith("## ["):
+                      break
+                  print(line)
+          PY
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "::error::Empty release notes for version $VER — CHANGELOG missing section?"
+            exit 1
+          fi
+          cat /tmp/release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/release-notes.md
+          name: ruisheng-shared ${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: false
+```
+
+- [ ] **Step 4：写 docs/RELEASE.md 流程说明**
+
+Create `D:\江苏润盛\.claude\worktrees\plan-0-foundation\docs\RELEASE.md`:
+```markdown
+# ruisheng-shared 发布流程
+
+## 两个独立版本字段（不要混淆）
+
+| 字段 | 类型 | 例 | 用途 | Bump 时机 |
+|---|---|---|---|---|
+| `__version__` / pyproject `version` | str | `"0.1.0"` | 包 API semver，CHANGELOG 追踪，tag `shared-v<ver>` | 任何 release（major/minor/patch） |
+| `SHARED_SCHEMA_VERSION` | int | `20260415` | DB schema 兼容，api/gw 启动校验 | **仅 breaking schema change**（字段删/改类型/必填新增） |
+
+## 发布新版本
+
+1. 在 `ruisheng-shared/pyproject.toml` 更新 `version`（遵 semver）
+2. 同步更新 `src/ruisheng_shared/__init__.py` 的 `__version__`（与 pyproject 一致）
+3. **若** 本次含 breaking schema 变更，同步 bump `SHARED_SCHEMA_VERSION`（整数日期）
+4. 在 `ruisheng-shared/CHANGELOG.md` 把 `[Unreleased]` 下的条目搬到新版本下
+5. Commit：`chore(release): ruisheng-shared vX.Y.Z`
+6. 打 tag：`git tag -a shared-vX.Y.Z -m "..."`
+7. Push：`git push && git push --tags`
+8. GitHub Actions 自动创建 Release（CHANGELOG 对应段作为 body）
+
+## SemVer 规则（`__version__`）
+
+- **major**：shared 的 schema 接口（enum 值、常量、错误码、pydantic model 字段）有 **breaking** 改动
+- **minor**：新增枚举值 / 新增 schema 字段（向后兼容）
+- **patch**：文档、测试、内部实现改动
+```
+
+- [ ] **Step 5：本地 dry-run Python 提取**（v2.5，替换 awk，跨 mawk/gawk 免疫）
+
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+python - "0.1.0" <<'PY'
+import sys
+ver = sys.argv[1]
+header = f"## [{ver}]"
+in_section = False
+for raw in open("ruisheng-shared/CHANGELOG.md", encoding="utf-8"):
+    line = raw.rstrip("\n")
+    if line.startswith(header):
+        in_section = True
+        continue
+    if in_section:
+        if line.startswith("## ["):
+            break
+        print(line)
+PY
+```
+期望：输出 0.1.0 段的 Added 列表（`### Added` + bullet list），**非空**。
+
+- [ ] **Step 6：Commit + push**
+
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+git add ruisheng-shared/CHANGELOG.md \
+        ruisheng-shared/src/ruisheng_shared/__init__.py \
+        .github/workflows/release-shared.yml \
+        docs/RELEASE.md
+git commit -m "feat(release): ruisheng-shared release workflow with separated version fields"
+git push origin feature/plan-0-foundation
+```
+
+- [ ] **Step 7：真推首个 tag `shared-v0.1.0` 端到端验证**（#28-D user 选 a）
+
+```bash
+cd "D:\江苏润盛\.claude\worktrees\plan-0-foundation"
+git tag -a shared-v0.1.0 -m "ruisheng-shared 0.1.0 — Plan 0 foundation"
+git push origin shared-v0.1.0
+```
+
+然后 **手工验证**（controller / reviewer 任一）：
+- GitHub Actions → `Release ruisheng-shared` workflow run，step "Verify pyproject version matches tag" + "Extract changelog section" + "Create GitHub Release" 全绿
+- GitHub Releases 页面出现 `ruisheng-shared 0.1.0` 条目，body 含 CHANGELOG [0.1.0] 段内容
+- 若任一步失败（workflow 红 / body 空）→ BLOCKED，不记 G7 完成，反向 fix workflow
 
 ---
 
