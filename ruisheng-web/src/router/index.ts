@@ -1,0 +1,151 @@
+import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { useAuthStore, type Authority } from '@/stores/auth'
+
+declare module 'vue-router' {
+  interface RouteMeta {
+    public?: boolean
+    requiresAuth?: boolean
+    roles?: Authority[]
+  }
+}
+
+const routes: RouteRecordRaw[] = [
+  { path: '/', redirect: '/dashboard' },
+  {
+    path: '/',
+    component: () => import('@/layouts/AuthLayout.vue'),
+    children: [
+      {
+        path: 'login',
+        name: 'login',
+        component: () => import('@/views/auth/LoginView.vue'),
+        meta: { public: true },
+      },
+    ],
+  },
+  {
+    path: '/',
+    component: () => import('@/layouts/AppLayout.vue'),
+    meta: { requiresAuth: true },
+    children: [
+      {
+        path: 'dashboard',
+        name: 'dashboard',
+        component: () => import('@/views/dashboard/DashboardView.vue'),
+      },
+      {
+        path: 'devices',
+        name: 'device-list',
+        component: () => import('@/views/devices/DeviceListView.vue'),
+      },
+      {
+        path: 'devices/:devNumber',
+        name: 'device-detail',
+        component: () => import('@/views/devices/DeviceDetailView.vue'),
+        props: true,
+      },
+      {
+        path: 'devices/:devNumber/history',
+        name: 'device-history',
+        component: () => import('@/views/devices/DeviceHistoryView.vue'),
+        props: true,
+      },
+      {
+        path: 'devices/:devNumber/control',
+        name: 'device-control',
+        component: () => import('@/views/devices/DeviceControlView.vue'),
+        props: true,
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
+      {
+        path: 'devices/:devNumber/points',
+        name: 'device-points',
+        component: () => import('@/views/devices/PointConfigView.vue'),
+        props: true,
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
+      {
+        path: 'devices/:devNumber/alarms/configs',
+        name: 'alarm-config',
+        component: () => import('@/views/alarms/AlarmConfigView.vue'),
+        props: true,
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
+      {
+        path: 'alarms',
+        name: 'alarm-list',
+        component: () => import('@/views/alarms/AlarmListView.vue'),
+      },
+      {
+        path: 'reports',
+        name: 'reports',
+        component: () => import('@/views/reports/DailyReportView.vue'),
+      },
+      {
+        path: 'waveforms',
+        name: 'waveforms',
+        component: () => import('@/views/waveforms/WaveformView.vue'),
+      },
+      {
+        path: 'plans/timing',
+        name: 'timing-plans',
+        component: () => import('@/views/plans/TimingPlanView.vue'),
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
+      {
+        path: 'plans/maintenance',
+        name: 'maintenance-plans',
+        component: () => import('@/views/plans/MaintenancePlanView.vue'),
+      },
+      {
+        path: 'scenes',
+        name: 'scene-list',
+        component: () => import('@/views/scenes/SceneListView.vue'),
+      },
+      {
+        path: 'scenes/:pageId',
+        name: 'scene-canvas',
+        component: () => import('@/views/scenes/SceneCanvasView.vue'),
+        props: true,
+      },
+      {
+        path: 'settings/users',
+        name: 'user-management',
+        component: () => import('@/views/settings/UserManagementView.vue'),
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
+      {
+        path: 'settings/contacts',
+        name: 'contacts',
+        component: () => import('@/views/settings/ContactView.vue'),
+      },
+      {
+        path: 'pay',
+        name: 'pay',
+        component: () => import('@/views/pay/PayView.vue'),
+      },
+      {
+        path: '__diag',
+        name: 'diag',
+        component: () => import('@/views/DiagView.vue'),
+      },
+    ],
+  },
+  { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
+]
+
+const router = createRouter({ history: createWebHistory(), routes })
+
+router.beforeEach((to) => {
+  const auth = useAuthStore()
+  if (to.meta.public) return true
+  if (!auth.isAuthenticated) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  if (to.meta.roles && !auth.hasRole(to.meta.roles)) {
+    return { path: '/dashboard' }
+  }
+  return true
+})
+
+export default router

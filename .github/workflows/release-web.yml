@@ -1,0 +1,34 @@
+name: web-release
+
+on:
+  push:
+    tags: ['web-v*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: ruisheng-web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: ruisheng-web
+      - run: pnpm build
+        working-directory: ruisheng-web
+      - name: Package dist
+        run: |
+          cd ruisheng-web
+          tar czf ruisheng-web-${{ github.ref_name }}.tar.gz -C dist .
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ruisheng-web/ruisheng-web-${{ github.ref_name }}.tar.gz
+          body_path: ruisheng-web/CHANGELOG.md
+          generate_release_notes: true

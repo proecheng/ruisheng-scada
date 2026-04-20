@@ -1,0 +1,10 @@
+{
+  "extends": "@vue/tsconfig/tsconfig.json",
+  "include": ["vite.config.ts", "vitest.config.ts"],
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": false,
+    "lib": ["ES2022"],
+    "types": ["node"]
+  }
+}
