@@ -38,6 +38,12 @@ const routes: RouteRecordRaw[] = [
         name: 'device-list',
         component: () => import('@/views/devices/DeviceListView.vue'),
       },
+      {
+        path: 'devices/:devNumber',
+        name: 'device-detail',
+        component: () => import('@/views/devices/DeviceDetailView.vue'),
+        props: true,
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
