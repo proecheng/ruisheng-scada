@@ -1,0 +1,99 @@
+name: ruisheng-prod
+
+services:
+  postgres:
+    image: timescale/timescaledb:2.16.1-pg15
+    container_name: ruisheng-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ruisheng
+    volumes:
+      - ruisheng-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ruisheng"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: ruisheng-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - ruisheng-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: ruisheng-api/Dockerfile
+    entrypoint: ["bash", "scripts/entrypoint-migrate.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/ruisheng
+      RUISHENG_GW_PASSWORD: ${RUISHENG_GW_PASSWORD}
+      RUISHENG_API_PASSWORD: ${RUISHENG_API_PASSWORD}
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: ruisheng-api/Dockerfile
+    container_name: ruisheng-api
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      API_LISTEN_HOST: "0.0.0.0"
+      API_DB_URL: postgresql+asyncpg://ruisheng_api:${RUISHENG_API_PASSWORD}@postgres:5432/ruisheng
+      API_GW_DB_URL: postgresql+asyncpg://ruisheng_gw:${RUISHENG_GW_PASSWORD}@postgres:5432/ruisheng
+      API_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      API_JWT_SECRET: ${JWT_SECRET}
+      API_ENV: prod
+    restart: unless-stopped
+
+  gw:
+    build:
+      context: .
+      dockerfile: ruisheng-gw/Dockerfile
+    container_name: ruisheng-gw
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      GW_LISTEN_HOST: "0.0.0.0"
+      GW_LISTEN_PORT: "5020"
+      GW_DATABASE_URL: postgresql+asyncpg://ruisheng_gw:${RUISHENG_GW_PASSWORD}@postgres:5432/ruisheng
+      GW_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    ports:
+      - "5020:5020"
+      - "9090:9090"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ruisheng-web
+      dockerfile: Dockerfile
+    container_name: ruisheng-web
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+volumes:
+  ruisheng-pgdata:
+  ruisheng-redisdata:
