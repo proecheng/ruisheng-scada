@@ -114,6 +114,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/settings/UserManagementView.vue'),
         meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
       },
+      {
+        path: 'settings/contacts',
+        name: 'contacts',
+        component: () => import('@/views/settings/ContactView.vue'),
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
