@@ -5,39 +5,25 @@
 
 ---
 
-## 当前状态：**CI 全绿 ✅ · 三个 PR 等待 merge**（2026-04-20 session）
+## 当前状态：**全部 PR merge ✅ · GitHub Release web-v0.1.0 发布 ✅**（2026-04-20 session）
 
-### PR 状态
+### 完成清单
 
-| PR | 分支 | CI | URL |
-|---|---|---|---|
-| #1 | `feature/plan-0-foundation` | ✅ 全绿 | https://github.com/proecheng/ruisheng-scada/pull/1 |
-| #2 | `feature/plan-2-api` | ✅ 全绿 | https://github.com/proecheng/ruisheng-scada/pull/2 |
-| #3 | `feature/plan-3-web` | ✅ 全绿 | https://github.com/proecheng/ruisheng-scada/pull/3 |
+| 步骤 | 状态 |
+|---|---|
+| Merge PR #1 `feature/plan-0-foundation` | ✅ |
+| Merge PR #2 `feature/plan-2-api`（rebase 冲突 → merge 解决）| ✅ |
+| Merge PR #3 `feature/plan-3-web` | ✅ |
+| `git push origin --tags`（plan-3-* 全部 tags）| ✅ |
+| `web-v0.1.0` tag → release-web.yml → GitHub Release | ✅ |
 
-### CI 修复汇总（本 session 解决）
+**Release URL**：https://github.com/proecheng/ruisheng-scada/releases/tag/web-v0.1.0
 
-| 问题 | 根因 | 修复 |
-|---|---|---|
-| schema-version-guard | PR 上下文 `git diff HEAD^HEAD` 误报 | `if: github.event_name == 'push'` |
-| lint ASYNC240 | pre-commit ruff v0.5.7 不认 | 升级 v0.11.13 + 行内 `# noqa: ASYNC240` |
-| gw-unit coverage 55% | `--cov` 测量所有包 | `--cov=ruisheng-gw/src` + omit main.py/repository.py |
-| unit coverage | 同上 | `--cov=ruisheng-shared/src` |
-| api-unit coverage 45% | 同上 | `--cov=ruisheng-api/src` + 阈值 60% |
-| gw-integration 2 failed | test_repository.py 无 DB 隔离 | autouse `_clean_tables` fixture |
-| gw-benchmark deadlock | 并发 upsert 竞态 | `--reruns=2` |
-| api-integration alembic fail | DB_URL vs DATABASE_URL 变量名 | 改为 DATABASE_URL |
-| api-integration alembic fail 2 | 缺少 GW/API password env | 补充两个 env var |
-| api-integration exit 5 | 集成测试尚未实现 | `\|\| [ $? = 5 ]` |
-| mypy unused-ignore | uvicorn 本地/CI 环境不一致 | mypy override ignore_missing_imports |
-| gw-tenant-lint | 误改 `# noqa: tenant-lint` 为普通注释 | 还原 noqa 格式 |
+### 后续工作（Plan 4，可选）
 
-### 后续工作（下一 session）
-
-1. **Merge PRs**（建议顺序：#1 → #2 → #3）
-2. **Push tags**：`git push origin --tags`（所有 plan-* tags）
-3. **打 release tags**：`web-v0.1.0` → 触发 release-web.yml → GitHub Release
-4. **Plan 4**（可选）：生产部署 / E2E 集成测试 / 国际化
+1. **生产部署**：Docker Compose / K8s 部署配置
+2. **E2E 集成测试**：Playwright 端到端测试
+3. **国际化**：i18n（中/英）
 
 ---
 
