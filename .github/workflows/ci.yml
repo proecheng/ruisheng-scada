@@ -186,9 +186,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --all-packages
-      - run: uv run pytest ruisheng-api/tests/unit -x --cov --cov-report=xml
-        env:
-          COVERAGE_PROCESS_START: pyproject.toml
+      - run: uv run pytest ruisheng-api/tests/unit -x --cov=ruisheng-api/src --cov-report=xml --cov-fail-under=85
 
   api-integration:
     name: api-integration
@@ -219,7 +217,7 @@ jobs:
       - run: uv sync --all-packages
       - run: uv run alembic upgrade head
         env:
-          DB_URL: postgresql+asyncpg://ruisheng_dev:dev@localhost:5432/ruisheng
+          DATABASE_URL: postgresql+asyncpg://ruisheng_dev:dev@localhost:5432/ruisheng
       - run: uv run pytest ruisheng-api/tests/integration -x
         env:
           API_DB_URL: postgresql+asyncpg://ruisheng_api:dev@localhost:5432/ruisheng
