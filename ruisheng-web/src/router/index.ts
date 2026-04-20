@@ -33,6 +33,11 @@ const routes: RouteRecordRaw[] = [
         name: 'dashboard',
         component: () => import('@/views/dashboard/DashboardView.vue'),
       },
+      {
+        path: 'devices',
+        name: 'device-list',
+        component: () => import('@/views/devices/DeviceListView.vue'),
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
