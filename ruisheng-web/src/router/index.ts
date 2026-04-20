@@ -97,6 +97,17 @@ const routes: RouteRecordRaw[] = [
         name: 'maintenance-plans',
         component: () => import('@/views/plans/MaintenancePlanView.vue'),
       },
+      {
+        path: 'scenes',
+        name: 'scene-list',
+        component: () => import('@/views/scenes/SceneListView.vue'),
+      },
+      {
+        path: 'scenes/:pageId',
+        name: 'scene-canvas',
+        component: () => import('@/views/scenes/SceneCanvasView.vue'),
+        props: true,
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
