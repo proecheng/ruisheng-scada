@@ -45,7 +45,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint("ck_devices_serial_port_consistency", "devices")
-    op.drop_constraint("ck_devices_transport_type", "devices")
+    op.drop_constraint("ck_devices_serial_port_consistency", "devices", type_="check")
+    op.drop_constraint("ck_devices_transport_type", "devices", type_="check")
     op.drop_column("devices", "serial_port")
     op.drop_column("devices", "transport_type")
