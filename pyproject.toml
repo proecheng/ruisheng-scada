@@ -40,6 +40,7 @@ ignore = ["E501", "PLR0913", "B008"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["PLR2004", "PLC0415"]
 "ruisheng-gw/tests/**/*.py" = ["PLR2004", "PLC0415"]
+"ruisheng-api/src/**/*.py" = ["PLC0415"]
 "ruisheng-api/tests/**/*.py" = ["PLR2004", "PLC0415"]
 # Alembic autogenerate creates large upgrade/downgrade() funcs; don't fight it.
 "alembic/versions/**/*.py" = ["PLR0915", "E501", "PLC0415"]
