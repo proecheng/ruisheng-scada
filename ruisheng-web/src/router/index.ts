@@ -92,6 +92,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/plans/TimingPlanView.vue'),
         meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
       },
+      {
+        path: 'plans/maintenance',
+        name: 'maintenance-plans',
+        component: () => import('@/views/plans/MaintenancePlanView.vue'),
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
