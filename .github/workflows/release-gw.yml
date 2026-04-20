@@ -1,0 +1,61 @@
+name: Release ruisheng-gw
+
+on:
+  push:
+    tags:
+      - "gw-v*.*.*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#gw-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify pyproject version matches tag
+        run: |
+          PY_VER=$(grep -E '^version\s*=' ruisheng-gw/pyproject.toml | head -1 | sed -E 's/.*"(.+)".*/\1/')
+          if [ "$PY_VER" != "${{ steps.version.outputs.VERSION }}" ]; then
+            echo "::error::pyproject version $PY_VER != tag ${{ steps.version.outputs.VERSION }}"
+            exit 1
+          fi
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          VER='${{ steps.version.outputs.VERSION }}'
+          python - "$VER" <<'PY' > /tmp/release-notes.md
+          import sys
+          ver = sys.argv[1]
+          header = f"## [{ver}]"
+          in_section = False
+          for raw in open("ruisheng-gw/CHANGELOG.md", encoding="utf-8"):
+              line = raw.rstrip("\n")
+              if line.startswith(header):
+                  in_section = True
+                  continue
+              if in_section:
+                  if line.startswith("## ["):
+                      break
+                  print(line)
+          PY
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "::error::Empty release notes for version $VER"
+            exit 1
+          fi
+          cat /tmp/release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/release-notes.md
+          name: ruisheng-gw ${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: false

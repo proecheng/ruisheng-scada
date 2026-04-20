@@ -1,0 +1,36 @@
+name: ruisheng-dev
+
+services:
+  postgres:
+    image: timescale/timescaledb:2.16.1-pg15
+    container_name: ruisheng-postgres-dev
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ruisheng_dev
+      POSTGRES_PASSWORD: ruisheng_dev
+      POSTGRES_DB: ruisheng
+    volumes:
+      - ruisheng-pgdata:/var/lib/postgresql/data
+      - ./seeds:/seeds:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ruisheng_dev -d ruisheng"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: ruisheng-redis-dev
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass dev-redis-pw
+    volumes:
+      - ruisheng-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "dev-redis-pw", "ping"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  ruisheng-pgdata:
+  ruisheng-redisdata:

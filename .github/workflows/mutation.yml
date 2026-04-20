@@ -1,0 +1,38 @@
+name: Mutation Testing
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'   # 每周日 02:00 UTC
+  workflow_dispatch:
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-packages
+      - run: |
+          uv pip install mutmut
+          uv run mutmut run \
+            --paths-to-mutate ruisheng-shared/src/ruisheng_shared \
+            --runner "pytest tests/unit/shared -q"
+      - run: uv run mutmut results
+      - name: Fail if survival rate > 10%
+        run: |
+          python - <<'PY'
+          import re, subprocess, sys
+          out = subprocess.check_output(["uv", "run", "mutmut", "results"], text=True)
+          def count(label: str) -> int:
+              m = re.search(rf"^{label} \((\d+)\)", out, re.MULTILINE)
+              return int(m.group(1)) if m else 0
+          alive = count("survived")
+          total = alive + count("killed") + count("timeout") + count("suspicious")
+          print(f"alive={alive} total={total}")
+          if total == 0:
+              print("No mutants analyzed — treating as neutral (exit 0).")
+              sys.exit(0)
+          rate = alive / total
+          print(f"survival_rate={rate:.2%}")
+          sys.exit(1 if rate > 0.10 else 0)
+          PY
