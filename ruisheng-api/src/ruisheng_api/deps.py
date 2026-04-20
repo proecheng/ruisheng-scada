@@ -28,12 +28,24 @@ def get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
     return request.app.state.session_factory  # type: ignore[no-any-return]
 
 
+def get_gw_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
+    # ruisheng_gw role has BYPASSRLS — used for cross-tenant reads (e.g. login user lookup)
+    return request.app.state.gw_session_factory  # type: ignore[no-any-return]
+
+
 def get_redis(request: Request) -> _Redis:
     return request.app.state.redis  # type: ignore[no-any-return]
 
 
 async def get_session(
     factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+) -> AsyncIterator[AsyncSession]:
+    async with factory() as session:
+        yield session
+
+
+async def get_gw_session(
+    factory: async_sessionmaker[AsyncSession] = Depends(get_gw_session_factory),
 ) -> AsyncIterator[AsyncSession]:
     async with factory() as session:
         yield session

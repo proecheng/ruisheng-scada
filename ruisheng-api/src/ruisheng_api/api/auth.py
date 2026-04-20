@@ -34,7 +34,7 @@ from ..core.security import (
     verify_token,
 )
 from ..db.repositories import users as users_repo
-from ..deps import get_config, get_current_user, get_redis, get_session
+from ..deps import get_config, get_current_user, get_gw_session, get_redis, get_session
 from ..services import otp as otp_svc
 from .schemas.auth import (
     LoginRequest,
@@ -55,7 +55,7 @@ async def login(
     request: Request,
     cfg: Config = Depends(get_config),
     r: _Redis = Depends(get_redis),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_gw_session),
 ) -> ApiResponse:
     ip = request.client.host if request.client else "unknown"
     ua = request.headers.get("user-agent", "")
