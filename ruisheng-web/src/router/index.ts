@@ -57,6 +57,13 @@ const routes: RouteRecordRaw[] = [
         props: true,
         meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
       },
+      {
+        path: 'devices/:devNumber/points',
+        name: 'device-points',
+        component: () => import('@/views/devices/PointConfigView.vue'),
+        props: true,
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
