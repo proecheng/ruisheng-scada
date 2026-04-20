@@ -7,17 +7,30 @@
 
 ## 当前状态：**Plan 3 — 完整闭环 ✅**（tag `plan-3-complete`）（2026-04-21 session）
 
-**Plan 3 Stage K 进度**（tag `plan-3-stage-k-complete`）：
-
-| # | Task | Commit | Notes |
-|---|---|---|---|
-| K1 | DiagView + debug panels | `c72e06d` | /__diag + RequestLogPanel + WsStatePanel；?debug=1 toggle；client.ts diag recording |
-| K2 | build-info + PWA + CI | `1cf6519` | prebuild script；NetworkFirst /api；ci-web.yml；Makefile web targets |
-| K3 | CHANGELOG + README + Release | `fc4636a`+tags | CHANGELOG [web-0.1.0]；release-web.yml；plan-3-complete tag |
-
 **Plan 3 完整统计**：11 Stage / 30 task；53 unit tests；vue-tsc clean；eslint clean
+**Worktree**：`D:\江苏润盛\.claude\worktrees\plan-3-web`（branch `feature/plan-3-web`）
+**最终 commit**：`fc4636a`（K3 docs: CHANGELOG + README + release workflow）
 
-**Stage A 4/4 ✅**（2026-04-21 session）
+| Stage | 任务 | 说明 | 状态 | 末尾 commit |
+|---|---|---|---|---|
+| A | A1-A4 | 脚手架 + axios + WS + Pinia stores | ✅ | `f53d91d` |
+| B | B1-B3 | Auth + AppLayout + 路由守卫 + v-permission | ✅ | `6772bbd` |
+| C | C1-C3 | Toast/Skeleton/ErrorBoundary/CommandPalette/useAsync/useRecent | ✅ | `c4167c2` |
+| D | D1-D3 | 设备列表 + DeviceTree + Dashboard WS | ✅ | `8c30657` |
+| E | E1-E3 | DeviceDetail + ECharts History + Control OTP | ✅ | `a15339c` |
+| F | F1-F3 | 点位配置 + 告警阈值 + 告警列表 批量复位 | ✅ | `1684759` |
+| G | G1-G2 | 日报表 Excel + 波形 FFT/OPM | ✅ | `7e20746` |
+| H | H1-H2 | 定时计划 + 保养计划 action_uuid 幂等 | ✅ | `501b6be` |
+| I | I1-I2 | 组态列表 + vue-konva 画布 | ✅ | `2d474da` |
+| J | J1-J3 | 用户管理 + 通讯录 + 微信支付 NATIVE QR | ✅ | `37be65d` |
+| K | K1-K3 | /__diag + PWA + CI + README/CHANGELOG | ✅ | `fc4636a` |
+
+**后续工作（新 session）**：
+1. Push `feature/plan-3-web` → GitHub（`git push -u origin feature/plan-3-web`）
+2. Push tags：`git push origin --tags`（plan-3-* + plan-3-complete）
+3. 打 `web-v0.1.0` tag → release-web.yml 自动构建 + 发布 GitHub Release
+4. 三个分支合并策略讨论：plan-0-foundation / plan-2-api / plan-3-web → master
+5. 若有 Plan 4（生产部署/E2E/国际化），新建 plan 文件
 
 **Plan 3 文件**：`D:\江苏润盛\docs\superpowers\plans\2026-04-20-plan-3-web.md`（8583 行）
 
