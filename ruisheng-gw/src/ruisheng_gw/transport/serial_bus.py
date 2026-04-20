@@ -51,7 +51,7 @@ class SerialBus:
 
     async def start(self) -> None:
         """Open real serial port and start read loop."""
-        import serial_asyncio  # type: ignore[import-not-found]  # noqa: PLC0415
+        import serial_asyncio  # noqa: PLC0415
 
         reader, writer = await serial_asyncio.open_serial_connection(
             url=self._port,
