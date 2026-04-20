@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useAlarmsStore } from '@/stores/alarms'
 import { useWsStore } from '@/stores/ws'
 import { logout as apiLogout } from '@/api/auth'
+import CommandPalette from '@/components/CommandPalette.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -79,6 +80,7 @@ function toggleSidebar(): void {
       </main>
     </div>
   </div>
+  <CommandPalette />
 </template>
 
 <style scoped>
