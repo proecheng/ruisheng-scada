@@ -76,6 +76,16 @@ const routes: RouteRecordRaw[] = [
         name: 'alarm-list',
         component: () => import('@/views/alarms/AlarmListView.vue'),
       },
+      {
+        path: 'reports',
+        name: 'reports',
+        component: () => import('@/views/reports/DailyReportView.vue'),
+      },
+      {
+        path: 'waveforms',
+        name: 'waveforms',
+        component: () => import('@/views/waveforms/WaveformView.vue'),
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
