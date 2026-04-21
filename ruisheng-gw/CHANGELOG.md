@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-04-21
+### Fixed
+- `main()` 正式接入 `run_server()`：Docker 容器不再因进程退出而持续重启
+- health 端点（`:9090`）在 `run_server()` 启动时自动开启，DB alembic 校验通过后标记 `db_ok=True`
+- structlog JSON 输出接入 `run_server()` 启动日志
+
+### Changed
+- `EXPECTED_ALEMBIC_HEAD` 升至 `0009_serial_port_unique`（需运行新迁移后才能启动）
+
+### Migration
+- `0009_serial_port_unique`：对 `transport_type = 'serial'` 设备加 `(serial_port, modbus_addr)` 部分唯一索引，防止同一串口地址重复注册
+
 ## [0.1.0] - 2026-04-19
 ### Added
 - 设备采集网关 MVP：asyncio TCP server + ModBus RTU-on-TCP 协议 10 FunCode
