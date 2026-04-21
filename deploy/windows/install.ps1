@@ -1,10 +1,10 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    江苏润盛 SCADA — Windows Server 原生部署前置组件安装脚本
+    江苏润盛 SCADA — Windows 原生部署前置组件安装脚本
 .DESCRIPTION
     安装 PostgreSQL 15、TimescaleDB、Memurai、Python 3.11、uv、NSSM、Nginx。
-    适用于 Windows Server 2019/2022。
+    适用于 Windows 10 / 11 / Server 2019 / 2022。
     运行前请确保已接入互联网（或已手动放置离线安装包至 $OfflineDir）。
 .NOTES
     以管理员身份在 PowerShell 中运行：
@@ -53,8 +53,9 @@ Write-Step "检查 winget 可用性"
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     throw @"
 未找到 winget。
-  Windows Server 2022：从 https://aka.ms/getwinget 下载 App Installer 并安装。
-  Windows Server 2019：winget 不内置，建议手动安装各组件或使用 Chocolatey。
+  Windows 10（1809 以前）/ Server 2019：winget 不内置，
+  请从 https://aka.ms/getwinget 下载 App Installer 并安装。
+  Windows 10（1809+）/ 11 / Server 2022：winget 已内置，无需额外安装。
 "@
 }
 Write-Host "  winget 可用。"

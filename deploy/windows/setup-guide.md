@@ -1,6 +1,6 @@
-# 江苏润盛 SCADA — Windows Server 原生部署指南
+# 江苏润盛 SCADA — Windows 原生部署指南
 
-适用于 **Windows Server 2019 / 2022**，不依赖 Docker。
+适用于 **Windows 10 / 11 / Server 2019 / 2022**，不依赖 Docker。
 所有组件以 Windows 服务形式运行，随系统自动启动。
 
 ---
