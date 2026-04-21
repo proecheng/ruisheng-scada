@@ -35,8 +35,7 @@ function Assert-Command([string]$cmd) {
 # ── Step 0：创建目录结构 ──────────────────────────────────────────────────
 Write-Step "创建目录结构 $InstallRoot"
 @(
-    "$InstallRoot\api",
-    "$InstallRoot\gw",
+    "$InstallRoot\src",
     "$InstallRoot\web\dist",
     "$InstallRoot\nginx\conf",
     "$InstallRoot\nginx\logs",
@@ -45,8 +44,7 @@ Write-Step "创建目录结构 $InstallRoot"
     "$InstallRoot\logs\gw",
     "$InstallRoot\logs\nginx",
     "$InstallRoot\backup",
-    "$InstallRoot\config",
-    "$InstallRoot\gw\wal"
+    "$InstallRoot\config"
 ) | ForEach-Object { New-Item -ItemType Directory -Force -Path $_ | Out-Null }
 Write-Host "  目录创建完成。"
 

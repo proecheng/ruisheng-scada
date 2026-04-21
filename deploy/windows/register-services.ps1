@@ -7,7 +7,7 @@
     运行前请确认：
       1. install.ps1 已成功执行
       2. D:\ruisheng\config\ruisheng-api.env 和 ruisheng-gw.env 已填写完毕
-      3. uv sync 已在 api\ 和 gw\ 各自执行完毕
+      3. uv sync 已在 D:\ruisheng\src\ 执行完毕
       4. alembic upgrade head 和 run_seeds.py 已完成
 .NOTES
     重新注册（更新配置）时先运行：
