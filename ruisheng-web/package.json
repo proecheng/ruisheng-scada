@@ -11,6 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "lint": "eslint src tests",
     "lint:fix": "eslint src tests --fix",
     "typecheck": "vue-tsc --noEmit"
@@ -28,6 +30,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@testing-library/vue": "^8.1.0",
     "@types/node": "^22.7.4",
     "@typescript-eslint/eslint-plugin": "^8.58.2",

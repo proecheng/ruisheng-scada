@@ -43,24 +43,24 @@ function openDevice(devNumber: string): void {
 <template>
   <section class="dashboard">
     <div class="welcome">
-      <h2>欢迎，{{ auth.user?.user_name }}</h2>
+      <h2>欢迎，<span data-testid="welcome-username">{{ auth.user?.user_name }}</span></h2>
       <p class="sub">{{ auth.user?.authority }} · {{ auth.user?.usr_group }}</p>
     </div>
 
     <div class="cards">
-      <div class="card">
+      <div class="card" data-testid="stat-total">
         <span class="num">{{ stats.total }}</span>
         <span class="label">设备总数</span>
       </div>
-      <div class="card online">
+      <div class="card online" data-testid="stat-online">
         <span class="num">{{ stats.online }}</span>
         <span class="label">在线</span>
       </div>
-      <div class="card offline">
+      <div class="card offline" data-testid="stat-offline">
         <span class="num">{{ stats.offline }}</span>
         <span class="label">离线</span>
       </div>
-      <div class="card warning">
+      <div class="card warning" data-testid="stat-warning">
         <span class="num">{{ stats.warning }}</span>
         <span class="label">告警中</span>
       </div>

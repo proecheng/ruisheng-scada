@@ -32,6 +32,32 @@ jobs:
       - run: pnpm lint
         working-directory: ruisheng-web
 
+  web-e2e:
+    runs-on: ubuntu-latest
+    needs: web-unit
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: ruisheng-web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: ruisheng-web
+      - run: pnpm exec playwright install chromium --with-deps
+        working-directory: ruisheng-web
+      - run: pnpm test:e2e
+        working-directory: ruisheng-web
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: playwright-report
+          path: ruisheng-web/playwright-report
+          retention-days: 14
+
   web-build:
     runs-on: ubuntu-latest
     needs: web-unit

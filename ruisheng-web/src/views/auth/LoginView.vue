@@ -35,14 +35,14 @@ async function submit(): Promise<void> {
   <form class="login-form" @submit.prevent="submit">
     <label class="field">
       <span>用户名</span>
-      <input v-model="userName" type="text" autocomplete="username" required />
+      <input v-model="userName" data-testid="login-username" type="text" autocomplete="username" required />
     </label>
     <label class="field">
       <span>密码</span>
-      <input v-model="password" type="password" autocomplete="current-password" required />
+      <input v-model="password" data-testid="login-password" type="password" autocomplete="current-password" required />
     </label>
-    <p v-if="errorMsg" class="err" role="alert">{{ errorMsg }}</p>
-    <button type="submit" :disabled="loading" class="submit">
+    <p v-if="errorMsg" data-testid="login-error" class="err" role="alert">{{ errorMsg }}</p>
+    <button type="submit" data-testid="login-submit" :disabled="loading" class="submit">
       {{ loading ? '登录中…' : '登录' }}
     </button>
   </form>

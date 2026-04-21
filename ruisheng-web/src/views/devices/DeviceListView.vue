@@ -82,12 +82,12 @@ async function confirmDelete(): Promise<void> {
     <header class="toolbar">
       <h2>设备列表</h2>
       <div class="filters">
-        <input v-model="query" class="search" type="text" placeholder="搜索设备号/名称…" />
+        <input v-model="query" data-testid="device-search" class="search" type="text" placeholder="搜索设备号/名称…" />
         <select v-model="companyFilter">
           <option value="">所有公司</option>
           <option v-for="c in companies" :key="c" :value="c">{{ c }}</option>
         </select>
-        <select v-model="stateFilter">
+        <select v-model="stateFilter" data-testid="device-state-filter">
           <option value="">所有状态</option>
           <option value="online">在线</option>
           <option value="offline">离线</option>
@@ -126,8 +126,8 @@ async function confirmDelete(): Promise<void> {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="d in filtered" :key="d.dev_number" @click="openDetail(d)">
-          <td><code>{{ d.dev_number }}</code></td>
+        <tr v-for="d in filtered" :key="d.dev_number" data-testid="device-row" @click="openDetail(d)">
+          <td><code data-testid="device-number">{{ d.dev_number }}</code></td>
           <td>{{ d.dev_name }}</td>
           <td>
             <span class="pill" :data-state="d.state">{{
