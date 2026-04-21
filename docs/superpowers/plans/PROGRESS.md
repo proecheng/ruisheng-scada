@@ -1,6 +1,6 @@
 # 实施进度备忘（断点续跑用）
 
-## 当前状态快照（2026-04-21 更新）
+## 当前状态快照（2026-04-21 session 结束）
 
 ### 已完成
 | 里程碑 | 状态 | 备注 |
@@ -11,42 +11,37 @@
 | Plan 3 前端 | ✅ | Vue 3 SPA + ECharts + vue-konva + PWA |
 | Serial Port Support | ✅ | RS485 串口双模式接入 |
 | Plan 4 Docker 部署 | ✅ | 本机冒烟测试通过，deploy/ 包已生成 |
-| CI setup-uv v3→v4 | ✅ | CI 恢复全绿 |
-| P1 GW run_server 接线 | ✅ | main() → run_server() + health :9090 + structlog |
+| CI Actions 全面升级 | ✅ | Node.js 24 兼容；setup-uv v4→v7；2026-06-02 deadline 完成 |
+| P1 GW run_server 接线 | ✅ | main() → run_server() + health :9090 + structlog；gw-v0.1.1 |
 | P4 DB UNIQUE 约束 | ✅ | migration 0009: (serial_port, modbus_addr) 部分唯一索引 |
-| P7 Node.js 24 Actions 升级 | ✅ | checkout/setup-uv/setup-node/upload-artifact/pnpm/gh-release 全升级 |
+| P5 E2E Playwright 测试 | ✅ | 14 tests（登录/仪表板/设备列表）；web-v0.1.1 |
 
-**master HEAD**：`9c469ed`
-**测试**：112 unit tests ✅ · CI 全绿 ✅
-**GitHub Releases**：shared / gw / api / web / deploy 均已发布
+**master HEAD**：`720f330`（chore(release): bump gw and web to v0.1.1）
+**测试**：251 Python unit + 53 前端 unit + 14 E2E = **318 tests ✅** · CI 全绿 ✅
+**GitHub Releases**：
+- shared-v0.1.0 / **gw-v0.1.1** / api-v0.1.0 / **web-v0.1.1**（Latest）/ deploy-v0.1.0
 
 ### 后续工作（按优先级）
 
-#### 🔴 必须做（影响真实部署）
+#### 🔴 等待条件（需现场 / 硬件）
 
-**P2 — 客户机实际部署验证**（需现场）
-- 将 `deploy/` 文件夹传至客户电脑
-- 按 `deploy/setup-customer.md` 执行：加载镜像 → 配置 .env.prod → docker compose up
-- 验证登录、设备数据展示
-
-#### 🟡 已有代码但未验证
+**P2 — 客户机实际部署验证**
+- 客户机当前是 Win7（不兼容），已告知需升级到 Win10/11
+- 升级后：将 `deploy/` 传至客户机，按 `deploy/setup-customer.md` 执行 Docker 部署
+- 若客户机无法跑 Docker，参考 Windows 原生部署方案（P8）
 
 **P3 — RS485 串口真机测试**
-- `SerialBus` 代码已写，`_noop_serial_frame` 是空实现（stub）
-- 需接真实 RS485 设备，在 docker-compose.prod.yml gw 服务添加 `devices:` 挂载
-- 设置 `GW_SERIAL_PORTS=[{"port":"/dev/ttyUSB0","baud_rate":9600}]`
-
-**P4 — DB UNIQUE 约束补全**
-- `(serial_port, modbus_addr)` 目前只有 SerialBus 运行时检查
-- 需新建 alembic migration 加数据库级约束
+- `SerialBus` 已写，`_noop_serial_frame` 是空实现（stub）
+- 需接真实 RS485 设备；Windows 下通过 `GW_SERIAL_PORTS=[{"port":"COM3","baud_rate":9600}]` 配置
 
 #### 🟢 可选增强
 
-**P5 — E2E 集成测试**（Playwright 端到端，前端操作流程）
-
 **P6 — 国际化 i18n**（中英切换，视客户需求）
 
-**P7 — Node.js 24 Actions 升级**（2026-06-02 前需将 actions/checkout、setup-uv 升至支持 Node 24 的版本）
+**P8 — Windows 原生部署文档**（Option C，无 Docker）
+- 目标 OS：Win10 / 11 / Server 2019 / 2022
+- deploy/windows/ 草稿已撤销（2026-04-21 session），需重新确认后再写
+- 关键技术点已验证：alembic 需 DATABASE_URL；API mock 需 pathname 精确匹配
 
 ---
 
