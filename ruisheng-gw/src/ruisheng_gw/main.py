@@ -58,9 +58,12 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     6. Wait for shutdown signal
     7. Graceful shutdown (stop batch_writer + tcp server)
     """
+    from aiohttp import web  # noqa: PLC0415
     from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
 
     from ruisheng_gw.domain.registry import Registry  # noqa: PLC0415
+    from ruisheng_gw.health import HealthState, create_health_app  # noqa: PLC0415
+    from ruisheng_gw.logging_setup import get_logger  # noqa: PLC0415
     from ruisheng_gw.persistence.batch_writer import BatchWriter  # noqa: PLC0415
     from ruisheng_gw.persistence.repository import Repository  # noqa: PLC0415
     from ruisheng_gw.persistence.wal import Wal  # noqa: PLC0415
@@ -71,9 +74,21 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     from ruisheng_gw.transport.session import SessionMap  # noqa: PLC0415
     from ruisheng_gw.transport.tcp_server import GwServer  # noqa: PLC0415
 
+    log = get_logger(__name__)
+
+    # 0. Health endpoint (starts before DB check so /health always responds)
+    health_state = HealthState()
+    health_app = create_health_app(health_state)
+    runner = web.AppRunner(health_app)
+    await runner.setup()
+    health_site = web.TCPSite(runner, "0.0.0.0", config.health_port)
+    await health_site.start()
+    log.info("health endpoint started", port=config.health_port)
+
     # 1. Engine + alembic check
     engine = create_async_engine(config.database_url)
     await check_alembic_head(engine)
+    health_state.set_db_ok(True)
 
     # 2. WAL replay (before accepting connections)
     wal = Wal(
@@ -125,6 +140,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         handler=_noop_handler,
     )
     await server.start()
+    log.info("TCP server started", host=config.listen_host, port=config.listen_port)
 
     # 5b. Start serial buses (if configured)
     serial_buses: list[SerialBus] = []
@@ -171,6 +187,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         pass
     finally:
         # 7. Graceful shutdown
+        log.info("shutting down")
         supervisor.shutdown_sync()
         for bus in serial_buses:
             await bus.shutdown()
@@ -180,6 +197,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         await server.shutdown()
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await asyncio.wait_for(batch_task, timeout=5.0)
+        await runner.cleanup()
         await engine.dispose()
         # suppress unused-var warnings from type checkers
         _ = registry
@@ -215,7 +233,7 @@ async def run_gw_service_for_test(
     await run_server(cfg)
 
 
-def main() -> int:
+def main() -> int:  # noqa: PLR0911
     import argparse  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(prog="ruisheng-gw")
@@ -250,8 +268,26 @@ def main() -> int:
         print(cfg.model_dump_json(indent=2))
         return 0
 
-    # TODO A4+ — structlog + health + run_server (后续 task)
-    print("ruisheng-gw main not yet fully implemented (Stage A4+)", file=sys.stderr)
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from ruisheng_gw.config import Config  # noqa: PLC0415
+    from ruisheng_gw.logging_setup import configure_logging  # noqa: PLC0415
+
+    configure_logging()
+
+    try:
+        cfg = Config()
+    except ValidationError as e:
+        print(f"ERROR: config invalid: {e}", file=sys.stderr)
+        return 3
+
+    try:
+        asyncio.run(run_server(cfg))
+    except KeyboardInterrupt:
+        pass
+    except RuntimeError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
     return 0
 
 

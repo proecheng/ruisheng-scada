@@ -79,3 +79,18 @@ def test_print_config_exit_3_on_invalid_env() -> None:
     )
     assert result.returncode == _EXIT_CONFIG_INVALID
     assert "config invalid" in result.stderr.lower()
+
+
+def test_normal_run_exit3_on_missing_required_env() -> None:
+    """main() 正常运行路径：缺少必填 GW_ 变量 → exit 3（config invalid）。"""
+    env = {k: v for k, v in _subprocess_env().items() if not k.startswith("GW_")}
+    result = subprocess.run(
+        [sys.executable, "-m", "ruisheng_gw"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == _EXIT_CONFIG_INVALID
+    assert "config invalid" in result.stderr.lower()
