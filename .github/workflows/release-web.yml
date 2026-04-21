@@ -10,11 +10,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: 'pnpm'
@@ -27,7 +27,7 @@ jobs:
         run: |
           cd ruisheng-web
           tar czf ruisheng-web-${{ github.ref_name }}.tar.gz -C dist .
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: ruisheng-web/ruisheng-web-${{ github.ref_name }}.tar.gz
           body_path: ruisheng-web/CHANGELOG.md

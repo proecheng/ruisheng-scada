@@ -9,8 +9,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
       - run: uv sync --all-packages
@@ -21,8 +21,8 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
       - run: uv sync --all-packages
@@ -49,8 +49,8 @@ jobs:
       RUISHENG_GW_PASSWORD: ci-gw-change-me
       RUISHENG_API_PASSWORD: ci-api-change-me
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
       - run: uv sync --all-packages
       - run: uv run alembic upgrade head
         env:
@@ -78,8 +78,8 @@ jobs:
       RUISHENG_GW_PASSWORD: ci-gw-change-me
       RUISHENG_API_PASSWORD: ci-api-change-me
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
       - run: uv sync --all-packages
       - name: 验证迁移对称（up → down → up）
         run: |
@@ -93,10 +93,10 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v8
       - run: uv sync --all-packages
       - name: 检查 SHARED_SCHEMA_VERSION 是否随 models 变更同步升级
         run: uv run python tools/verify_schema_version.py
@@ -109,8 +109,8 @@ jobs:
       GW_DATABASE_URL: postgresql+asyncpg://u:p@h:5432/d
       GW_REDIS_URL: redis://h:6379/0
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
       - run: uv sync --all-packages
@@ -119,8 +119,8 @@ jobs:
   gw-unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with: { enable-cache: true }
       - run: uv sync --all-packages
       - run: uv run pytest ruisheng-gw/tests/unit ruisheng-gw/tests/property -v --cov=ruisheng-gw/src --cov-fail-under=85
@@ -131,8 +131,8 @@ jobs:
       RUISHENG_GW_PASSWORD: ci-gw-change-me
       RUISHENG_API_PASSWORD: ci-api-change-me
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with: { enable-cache: true }
       - run: uv sync --all-packages
       - run: docker compose -f docker-compose.dev.yml up -d --wait
@@ -145,8 +145,8 @@ jobs:
       RUISHENG_GW_PASSWORD: ci-gw-change-me
       RUISHENG_API_PASSWORD: ci-api-change-me
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with: { enable-cache: true }
       - run: uv sync --all-packages
       - run: docker compose -f docker-compose.dev.yml up -d --wait
@@ -157,8 +157,8 @@ jobs:
   gw-tenant-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with: { enable-cache: true }
       - run: uv sync --all-packages
       - run: uv run python -m ruisheng_gw.ci_lint.tenant_filter_lint
@@ -169,8 +169,8 @@ jobs:
       RUISHENG_GW_PASSWORD: ci-gw-change-me
       RUISHENG_API_PASSWORD: ci-api-change-me
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with: { enable-cache: true }
       - run: uv sync --all-packages
       - run: docker compose -f docker-compose.dev.yml up -d --wait
@@ -181,8 +181,8 @@ jobs:
     name: api-unit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
       - run: uv sync --all-packages
@@ -210,8 +210,8 @@ jobs:
         ports:
           - "6379:6379"
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
       - run: uv sync --all-packages
@@ -231,8 +231,8 @@ jobs:
     name: api-tenant-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
       - run: uv sync --all-packages
