@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 # hardcoded literal — 与 G7 #28-B 两版本字段分离一致
 # 升 shared 时 gw PR 必须同步改此常量
 REQUIRED_SHARED_SCHEMA_VERSION: int = 20260415
-EXPECTED_ALEMBIC_HEAD: str = "0008_transport_serial"
+EXPECTED_ALEMBIC_HEAD: str = "0009_serial_port_unique"
 
 
 def check_shared_schema_version(required: int = REQUIRED_SHARED_SCHEMA_VERSION) -> None:
