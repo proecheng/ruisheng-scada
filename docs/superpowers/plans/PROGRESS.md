@@ -1,6 +1,6 @@
 # 实施进度备忘（断点续跑用）
 
-## 当前状态快照（2026-04-20 session 结束）
+## 当前状态快照（2026-04-21 更新）
 
 ### 已完成
 | 里程碑 | 状态 | 备注 |
@@ -12,22 +12,19 @@
 | Serial Port Support | ✅ | RS485 串口双模式接入 |
 | Plan 4 Docker 部署 | ✅ | 本机冒烟测试通过，deploy/ 包已生成 |
 | CI setup-uv v3→v4 | ✅ | CI 恢复全绿 |
+| P1 GW run_server 接线 | ✅ | main() → run_server() + health :9090 + structlog |
+| P4 DB UNIQUE 约束 | ✅ | migration 0009: (serial_port, modbus_addr) 部分唯一索引 |
+| P7 Node.js 24 Actions 升级 | ✅ | checkout/setup-uv/setup-node/upload-artifact/pnpm/gh-release 全升级 |
 
-**master HEAD**：`d37a75d`（ci: upgrade setup-uv v3→v4）
-**测试**：250 unit tests ✅ · CI 全绿 ✅
+**master HEAD**：`9c469ed`
+**测试**：112 unit tests ✅ · CI 全绿 ✅
 **GitHub Releases**：shared / gw / api / web / deploy 均已发布
 
 ### 后续工作（按优先级）
 
 #### 🔴 必须做（影响真实部署）
 
-**P1 — GW run_server 实现**
-- `ruisheng-gw/src/ruisheng_gw/main.py` 第 254 行有 `# TODO A4+`
-- 现状：`main()` 打印一行消息后 return 0，Docker 持续重启
-- 需要：把已有的 TCP 服务器（`run_server`）和 SerialBus 正式接入 main 循环
-- 影响：不做则部署后设备无法连接，网关形同虚设
-
-**P2 — 客户机实际部署验证**
+**P2 — 客户机实际部署验证**（需现场）
 - 将 `deploy/` 文件夹传至客户电脑
 - 按 `deploy/setup-customer.md` 执行：加载镜像 → 配置 .env.prod → docker compose up
 - 验证登录、设备数据展示
