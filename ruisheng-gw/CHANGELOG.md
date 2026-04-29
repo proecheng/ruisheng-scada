@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-04-29
+### Fixed
+- pytest 全量收集在 monorepo 多个 `tests` 目录下不再发生 conftest / 同名测试模块冲突。
+- 缺少 Docker、dev PostgreSQL 或测试角色密码时，集成测试明确 skip，不再以环境异常失败。
+- `RealClock.monotonic()` 改用 `time.perf_counter()`，提升 Windows 短间隔计时测试稳定性。
+
+### Changed
+- tenant-filter lint suppression 使用 Ruff 可识别的 `TNL001` 外部规则码，并保留旧写法兼容。
+- CI tenant-filter lint 改用脚本路径执行，避免依赖 workspace 包导入路径。
+
 ## [0.1.1] - 2026-04-21
 ### Fixed
 - `main()` 正式接入 `run_server()`：Docker 容器不再因进程退出而持续重启

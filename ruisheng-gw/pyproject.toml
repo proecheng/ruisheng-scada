@@ -1,6 +1,6 @@
 [project]
 name = "ruisheng-gw"
-version = "0.1.1"
+version = "0.1.2"
 description = "江苏润盛 IoT SCADA 设备采集网关"
 requires-python = ">=3.11,<3.12"
 license = { text = "Proprietary" }

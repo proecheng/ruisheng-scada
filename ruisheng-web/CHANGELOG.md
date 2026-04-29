@@ -1,5 +1,9 @@
 # ruisheng-web CHANGELOG
 
+## [web-0.1.2] — 2026-04-29
+### Fixed
+- 修复通讯录页面模板属性顺序，使 `pnpm lint` 无 warning 通过。
+
 ## [web-0.1.1] — 2026-04-21
 ### Added
 - Playwright E2E 测试框架（14 tests / Chromium）：登录流程、仪表板、设备列表三条核心用户旅程
