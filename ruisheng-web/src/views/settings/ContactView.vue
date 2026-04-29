@@ -103,7 +103,7 @@ async function delEmail(em: EmailRecord): Promise<void> {
   <section class="contacts">
     <header>
       <h2>通讯录</h2>
-      <label class="target" v-permission="['Administrators','GroupCompany','Company']">
+      <label v-permission="['Administrators','GroupCompany','Company']" class="target">
         管理用户 <input v-model="target" type="text" @change="reload" />
       </label>
     </header>

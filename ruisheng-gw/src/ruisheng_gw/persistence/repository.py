@@ -40,7 +40,7 @@ class Repository:
         async with self._engine.begin() as conn:
             # UPSERT realtime
             await conn.execute(
-                text(  # noqa: tenant-lint (table has no usr_group column)
+                text(  # noqa: TNL001 (table has no usr_group column)
                     """
                 INSERT INTO point_data_realtime
                     (dev_number, point_id, org_value, rt_value, recorded_at)
@@ -56,7 +56,7 @@ class Repository:
             )
             # INSERT history
             await conn.execute(
-                text(  # noqa: tenant-lint (table has no usr_group column)
+                text(  # noqa: TNL001 (table has no usr_group column)
                     """
                 INSERT INTO point_data_history
                     (dev_number, point_id, org_value, rt_value, recorded_at)

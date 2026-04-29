@@ -1,5 +1,11 @@
+import pytest
 import pytest_asyncio
 from sqlalchemy import text
+
+
+@pytest.fixture(autouse=True)
+def require_dev_database(dev_database_ready, role_passwords_ready):
+    """Skip this suite unless the dev DB and role passwords are configured."""
 
 
 @pytest_asyncio.fixture

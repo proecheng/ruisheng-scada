@@ -52,7 +52,7 @@ def test_allows_noqa_escape_hatch(tmp_path: Path) -> None:
     f.write_text("""
 from sqlalchemy import text
 async def get():
-    return await conn.execute(text("SELECT * FROM users"))  # noqa: tenant-lint
+    return await conn.execute(text("SELECT * FROM users"))  # noqa: TNL001
 """)
     violations = check_file(f, forbidden_tables=FORCE_RLS_TABLES)
     assert violations == []

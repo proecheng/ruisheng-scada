@@ -20,7 +20,7 @@ class Clock(Protocol):
 
 class RealClock:
     def monotonic(self) -> float:
-        return time.monotonic()
+        return time.perf_counter()
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)

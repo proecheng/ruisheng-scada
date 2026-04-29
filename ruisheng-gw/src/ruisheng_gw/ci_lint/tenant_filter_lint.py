@@ -4,7 +4,7 @@ Applied to all *.py under ruisheng-gw/src/. Each `text("...")` literal
 is scanned for table names in the forbidden list; if matched without
 a co-occurring 'usr_group' token (anywhere in the same string), flag.
 
-# noqa: tenant-lint on the same line suppresses.
+# noqa: TNL001 on the same line suppresses.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-_NOQA_RE = re.compile(r"#\s*noqa:\s*tenant-lint", re.IGNORECASE)
+_NOQA_RE = re.compile(r"#\s*noqa:\s*(?:TNL001|tenant-lint)", re.IGNORECASE)
 
 
 def check_file(path: Path, *, forbidden_tables: set[str]) -> list[str]:
@@ -62,13 +62,15 @@ def main() -> int:
         "user_control_actions",
         "soft_logs",
     }
-    # File is at src/ruisheng_gw/ci_lint/tenant_filter_lint.py
-    # parent      = src/ruisheng_gw/ci_lint/
-    # parent.parent = src/ruisheng_gw/
-    src_root = Path(__file__).parent.parent
+    # File is at src/ruisheng_gw/ci_lint/tenant_filter_lint.py.
+    # With no arguments, lint the gateway source tree. CI can pass additional
+    # source roots, e.g. ruisheng-api/src, to reuse the same rule elsewhere.
+    roots = [Path(arg) for arg in sys.argv[1:]] or [Path(__file__).parent.parent]
     violations: list[str] = []
-    for py in src_root.rglob("*.py"):
-        violations.extend(check_file(py, forbidden_tables=forbidden))
+    for root in roots:
+        candidates = [root] if root.is_file() else root.rglob("*.py")
+        for py in candidates:
+            violations.extend(check_file(py, forbidden_tables=forbidden))
     if violations:
         print("\n".join(violations), file=sys.stderr)
         return 1

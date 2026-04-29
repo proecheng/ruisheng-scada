@@ -1,14 +1,17 @@
-"""根 conftest：Windows 标识 + D9 dev/api/gw engine + E1 testcontainers/embedded PG 双轨 fixture。"""
+"""Repository-level pytest fixtures shared by all Python test suites."""
 
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -29,38 +32,123 @@ _DEV_DSN = os.environ.get(
 )
 
 
+def _dsn_host_port(dsn: str) -> tuple[str, int]:
+    url = make_url(dsn)
+    return url.host or "127.0.0.1", int(url.port or 5432)
+
+
+def _role_dsn(username: str, password: str) -> str:
+    base = make_url(_DEV_DSN)
+    return URL.create(
+        drivername=base.drivername,
+        username=username,
+        password=password,
+        host=base.host or "127.0.0.1",
+        port=base.port or 5432,
+        database=base.database or "ruisheng",
+    ).render_as_string(hide_password=False)
+
+
+def _skip_if_tcp_unavailable(dsn: str, label: str) -> None:
+    host, port = _dsn_host_port(dsn)
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return
+    except OSError as exc:
+        pytest.skip(f"{label} is not reachable at {host}:{port}: {exc}")
+
+
+def _required_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        pytest.skip(f"{name} is required for database role integration tests")
+    return value
+
+
+def _require_role_passwords() -> None:
+    _required_env("RUISHENG_GW_PASSWORD")
+    _required_env("RUISHENG_API_PASSWORD")
+
+
+def _docker_skip_reason() -> str | None:
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"Docker is not available: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        reason = detail[-1] if detail else f"docker info exited with {result.returncode}"
+        return f"Docker daemon is not available: {reason}"
+    return None
+
+
+def _skip_if_docker_unavailable() -> None:
+    reason = _docker_skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+
+async def _checked_engine(dsn: str, label: str) -> AsyncIterator[AsyncEngine]:
+    _skip_if_tcp_unavailable(dsn, label)
+    engine = create_async_engine(dsn, pool_pre_ping=True)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        await engine.dispose()
+        pytest.skip(f"{label} is not ready: {exc}")
+
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def dev_database_ready() -> None:
+    _skip_if_tcp_unavailable(_DEV_DSN, "PostgreSQL dev database")
+
+
+@pytest.fixture
+def role_passwords_ready() -> None:
+    _require_role_passwords()
+
+
 # 注：engine fixtures 使用 function scope 而非 session。
 # pytest-asyncio 0.23 auto 模式默认 event_loop 为 function scope；session 级 async
 # fixture 会把 asyncpg 连接池绑到首个 test 的 loop，第 2 个 test 跑时 loop 已关闭
 # → "Event loop is closed" / "another operation is in progress"。function scope
 # 每个 test 重建 engine（~ms 级），简单且对 Windows proactor loop 稳定。
 @pytest_asyncio.fixture
-async def dev_engine():
+async def dev_engine() -> AsyncIterator[AsyncEngine]:
     """以 ruisheng_dev (owner) 身份连接。
     owner 无 BYPASSRLS + D6 FORCE RLS 后也受 tenant_isolation 约束
     (test_owner_does_not_bypass_rls 依赖此行为)。
     """
-    engine = create_async_engine(_DEV_DSN)
-    yield engine
-    await engine.dispose()
+    async for engine in _checked_engine(_DEV_DSN, "PostgreSQL dev database"):
+        yield engine
 
 
 @pytest_asyncio.fixture
-async def api_engine():
+async def api_engine() -> AsyncIterator[AsyncEngine]:
     """以 ruisheng_api 身份连接（非 BYPASSRLS，受 RLS 约束）。"""
-    pw = os.environ["RUISHENG_API_PASSWORD"]
-    engine = create_async_engine(f"postgresql+asyncpg://ruisheng_api:{pw}@127.0.0.1:5432/ruisheng")
-    yield engine
-    await engine.dispose()
+    dsn = _role_dsn("ruisheng_api", _required_env("RUISHENG_API_PASSWORD"))
+    async for engine in _checked_engine(dsn, "ruisheng_api database role"):
+        yield engine
 
 
 @pytest_asyncio.fixture
-async def gw_engine():
+async def gw_engine() -> AsyncIterator[AsyncEngine]:
     """以 ruisheng_gw 身份连接（BYPASSRLS，跨租户读写）。"""
-    pw = os.environ["RUISHENG_GW_PASSWORD"]
-    engine = create_async_engine(f"postgresql+asyncpg://ruisheng_gw:{pw}@127.0.0.1:5432/ruisheng")
-    yield engine
-    await engine.dispose()
+    dsn = _role_dsn("ruisheng_gw", _required_env("RUISHENG_GW_PASSWORD"))
+    async for engine in _checked_engine(dsn, "ruisheng_gw database role"):
+        yield engine
 
 
 # ---------------------------------------------------------------------
@@ -90,13 +178,18 @@ def postgres_url() -> Iterator[str]:
         from tools.embedded_pg import EmbeddedPostgres  # noqa: PLC0415 (lazy: USE_EMBEDDED_PG only)
 
         pg = EmbeddedPostgres()
-        pg.start_sync()  # E2 stub raises NotImplementedError；真实现后同步启动
+        try:
+            pg.start_sync()  # E2 stub raises NotImplementedError；真实现后同步启动
+        except NotImplementedError as exc:
+            pytest.skip(f"embedded PostgreSQL is not implemented: {exc}")
         try:
             yield pg.url
         finally:
             pg.stop_sync()
         return
 
+    _skip_if_docker_unavailable()
+    _require_role_passwords()
     try:
         from testcontainers.postgres import PostgresContainer  # noqa: PLC0415 — optional-dep guard
     except ImportError:
@@ -115,6 +208,7 @@ def postgres_url() -> Iterator[str]:
 @pytest.fixture(scope="session")
 def redis_url() -> Iterator[str]:
     """E1 session 级 Redis URL（testcontainers）。同 `postgres_url` 理由用同步 fixture。"""
+    _skip_if_docker_unavailable()
     try:
         from testcontainers.redis import RedisContainer  # noqa: PLC0415 — optional-dep guard
     except ImportError:
