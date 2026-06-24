@@ -149,7 +149,9 @@ def _raw_value_for_point(
         return None
     if response.fun_code in (1, 2):
         return _bit_response_value(response=response, index=index)
-    return _register_response_value(response=response, index=index, value_type=point.value_type, bit=point.r_bit)
+    return _register_response_value(
+        response=response, index=index, value_type=point.value_type, bit=point.r_bit
+    )
 
 
 def _points_for_response(

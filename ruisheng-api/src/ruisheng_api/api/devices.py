@@ -105,7 +105,11 @@ async def update_device(
         d = await devices_repo.get_by_dev_number(session, dev_number)
         if d is None:
             raise BizError(ErrCode.BAD_PARAM, "device not found")
-        if body.serial_port is not None and body.transport_type is None and d.transport_type != "serial":
+        if (
+            body.serial_port is not None
+            and body.transport_type is None
+            and d.transport_type != "serial"
+        ):
             raise BizError(ErrCode.BAD_PARAM, "serial_port can only be set on serial devices")
         target_transport = updates.get("transport_type", d.transport_type)
         target_serial_port = updates.get("serial_port", d.serial_port)
