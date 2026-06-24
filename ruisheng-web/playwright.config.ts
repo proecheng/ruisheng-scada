@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test'
 
+const slowMo = Number(process.env.E2E_SLOW_MO_MS ?? 0)
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
@@ -12,6 +14,7 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
     trace: 'retain-on-failure',
+    launchOptions: slowMo > 0 ? { slowMo } : undefined,
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },

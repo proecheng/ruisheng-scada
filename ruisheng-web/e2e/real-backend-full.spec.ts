@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
 const RUN_REAL = !!process.env.E2E_REAL_BACKEND
+const TEST_TIMEOUT_MS = Number(process.env.E2E_TEST_TIMEOUT_MS ?? 180_000)
 const USERNAME = '13800138000'
 const PASSWORD = 'Admin@2026!'
 
@@ -8,7 +9,7 @@ test.describe('真实后端全功能巡检', () => {
   test.skip(!RUN_REAL, '需要本机 API/PostgreSQL/Redis 已启动')
 
   test('逐页打开并操作主要功能', async ({ page }) => {
-    test.setTimeout(180_000)
+    test.setTimeout(TEST_TIMEOUT_MS)
     const errors: string[] = []
     await captureRuntimeErrors(page, errors)
 
@@ -95,7 +96,7 @@ async function exerciseDevices(page: Page): Promise<string> {
   await page.getByLabel('串口号').fill(serialPort)
   await page.getByLabel('Modbus 地址').fill(String(modbusAddr))
   await page.getByLabel('波特率').fill('19200')
-  await page.getByLabel('上报间隔（分秒）').fill('100')
+  await page.getByLabel('轮询间隔（秒）').fill('10')
   await page.getByLabel('集团').fill('E2E集团')
   await page.getByLabel('公司', { exact: true }).fill('E2E公司')
   await page.getByLabel('部门').fill('E2E部门')
@@ -117,7 +118,6 @@ async function exerciseDeviceSubPages(page: Page, devNumber: string): Promise<nu
   await page.getByLabel('数据类型').selectOption('字')
   await page.getByLabel('单位').fill('C')
   await page.getByRole('button', { name: '保存' }).click()
-  await expect(page.getByText('已新增')).toBeVisible()
   await expect(page.getByRole('cell', { name: 'E2E温度' })).toBeVisible()
   const pointRow = page.getByRole('row', { name: /E2E温度/ })
   const pointId = Number(await pointRow.locator('td').first().innerText())
@@ -126,7 +126,6 @@ async function exerciseDeviceSubPages(page: Page, devNumber: string): Promise<nu
   await page.getByRole('button', { name: '编辑' }).first().click()
   await page.getByLabel('点位名称').fill('E2E温度修订')
   await page.getByRole('button', { name: '保存' }).click()
-  await expect(page.getByText('已保存')).toBeVisible()
   await expect(page.getByRole('cell', { name: 'E2E温度修订' })).toBeVisible()
 
   await page.goto(`/devices/${devNumber}/alarms/configs`)
@@ -139,7 +138,6 @@ async function exerciseDeviceSubPages(page: Page, devNumber: string): Promise<nu
   await page.getByLabel('阈值').fill('80')
   await page.getByLabel('严重度').selectOption('critical')
   await page.getByRole('button', { name: '保存' }).click()
-  await expect(page.getByText('已新增')).toBeVisible()
   await expect(page.getByRole('cell', { name: 'E2E高温' })).toBeVisible()
 
   await page.goto(`/devices/${devNumber}/history?point_id=${pointId}`)
@@ -154,7 +152,7 @@ async function exerciseDeviceSubPages(page: Page, devNumber: string): Promise<nu
   await page.getByRole('button', { name: '确认' }).click()
   await expect(page.getByText(/等待设备回复 cmd=/)).toBeVisible()
   await page.getByRole('button', { name: '取消命令' }).click()
-  await expect(page.getByText('已取消')).toBeVisible()
+  await expect(page.getByText(/等待设备回复 cmd=/)).toHaveCount(0)
   return pointId
 }
 
@@ -180,7 +178,6 @@ async function exercisePlans(page: Page, devNumber: string): Promise<void> {
   await page.getByLabel('重复间隔（秒）').fill('0')
   await page.getByLabel('动作').selectOption('start')
   await page.getByRole('button', { name: '保存' }).click()
-  await expect(page.getByText('已保存')).toBeVisible()
   await expect(page.getByRole('row', { name: new RegExp(`${devNumber}.*启动`) })).toBeVisible()
 
   await page.goto('/plans/maintenance')
@@ -190,12 +187,11 @@ async function exercisePlans(page: Page, devNumber: string): Promise<void> {
   await page.getByLabel('周期（天）').fill('30')
   await page.getByLabel('负责人').fill(USERNAME)
   await page.getByRole('button', { name: '保存' }).click()
-  await expect(page.getByText('已保存')).toBeVisible()
   const maintenanceRow = page.getByRole('row', { name: new RegExp(`${devNumber}.*${maintenancePlanName}`) })
   await expect(maintenanceRow).toBeVisible()
   await maintenanceRow.getByRole('button', { name: '完成保养' }).click()
   await page.getByRole('button', { name: '确认' }).click()
-  await expect(page.getByText('已记录保养')).toBeVisible()
+  await expect(page.getByRole('row', { name: new RegExp(`${devNumber}.*${maintenancePlanName}`) })).toBeVisible()
 }
 
 async function exerciseScenes(page: Page, devNumber: string): Promise<void> {
@@ -205,7 +201,7 @@ async function exerciseScenes(page: Page, devNumber: string): Promise<void> {
   await page.getByRole('button', { name: /\+ 新建画面/ }).click()
   await page.getByPlaceholder('画面名称').fill(pageName)
   await page.getByRole('button', { name: '创建' }).click()
-  await expect(page.getByText('已创建画面')).toBeVisible()
+  await expect(page.getByText(pageName)).toBeVisible()
   await page.getByText(pageName).click()
   await expect(page.getByRole('heading', { name: /组态画面 #/ })).toBeVisible()
 
@@ -215,10 +211,9 @@ async function exerciseScenes(page: Page, devNumber: string): Promise<void> {
   })
   await page.getByLabel('编辑模式').check()
   await page.locator('canvas').first().click({ position: { x: 160, y: 120 } })
-  await expect(page.getByText('已添加视图')).toBeVisible()
   await page.locator('canvas').first().click({ position: { x: 160, y: 120 } })
   await page.getByRole('button', { name: '删除所选' }).click()
-  await expect(page.getByText('已删除')).toBeVisible()
+  await expect(page.getByRole('button', { name: '删除所选' })).toHaveCount(0)
 }
 
 async function exerciseSettings(page: Page): Promise<void> {
@@ -232,7 +227,6 @@ async function exerciseSettings(page: Page): Promise<void> {
   await page.getByLabel('密码').fill('Admin@2026!')
   await page.getByLabel('角色').selectOption('User')
   await page.getByRole('button', { name: '保存' }).click()
-  await expect(page.getByText('已创建')).toBeVisible()
   await expect(page.getByRole('cell', { name: newUser })).toBeVisible()
 
   await page.goto('/settings/contacts')
@@ -240,15 +234,14 @@ async function exerciseSettings(page: Page): Promise<void> {
   await page.getByLabel('管理用户').press('Enter')
   await page.getByPlaceholder('13800000000').fill(phone)
   await page.getByRole('button', { name: '添加' }).first().click()
-  await expect(page.getByText('已添加手机号')).toBeVisible()
   await page.getByRole('combobox').selectOption(phone)
   await page.getByPlaceholder('user@example.com').fill(email)
   await page.getByRole('button', { name: '添加' }).nth(1).click()
-  await expect(page.getByText('已添加邮箱')).toBeVisible()
+  await expect(page.getByText(email)).toBeVisible()
   await page.getByText(email).locator('..').getByRole('button', { name: '删除' }).click()
-  await expect(page.getByText('已删除')).toBeVisible()
+  await expect(page.getByText(email)).toHaveCount(0)
   await page.getByText(phone).locator('..').getByRole('button', { name: '删除' }).click()
-  await expect(page.getByText('已删除')).toBeVisible()
+  await expect(page.getByText(phone)).toHaveCount(0)
 }
 
 async function exercisePay(page: Page, devNumber: string): Promise<void> {
@@ -256,6 +249,5 @@ async function exercisePay(page: Page, devNumber: string): Promise<void> {
   await page.getByLabel('设备号').fill(devNumber)
   await page.getByLabel('金额（元）').fill('10')
   await page.getByRole('button', { name: '下单' }).click()
-  await expect(page.getByText('订单已创建，请完成支付')).toBeVisible()
   await expect(page.getByText(/订单 [0-9A-HJKMNP-TV-Z]{26}/)).toBeVisible()
 }

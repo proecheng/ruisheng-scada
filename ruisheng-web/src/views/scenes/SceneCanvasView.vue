@@ -75,6 +75,7 @@ async function onStageClick(e: any): Promise<void> {
       height: 40,
     })
     views.value.push(v)
+    selectedView.value = v
     toast.success('已添加视图')
   } catch (err) {
     toast.error(err instanceof Error ? err.message : '添加失败')

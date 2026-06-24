@@ -17,7 +17,7 @@ const transportType = ref<'tcp' | 'serial'>('tcp')
 const serialPort = ref('')
 const modbusAddr = ref<string | number>('1')
 const baudRate = ref<string | number>('9600')
-const updateInterval = ref<string | number>('100')
+const updateIntervalSeconds = ref<string | number>('10')
 const iccid = ref('')
 const groupCompany = ref('')
 const company = ref('')
@@ -55,9 +55,12 @@ function buildPayload(): DeviceCreatePayload {
     throw new Error('波特率必须是正整数')
   }
 
-  const interval = optionalInt(updateInterval.value)
-  if (interval !== undefined && (!Number.isInteger(interval) || interval < 10 || interval > 1000)) {
-    throw new Error('上报间隔范围为 10-1000 分秒')
+  const intervalSeconds = optionalInt(updateIntervalSeconds.value)
+  if (
+    intervalSeconds !== undefined &&
+    (!Number.isInteger(intervalSeconds) || intervalSeconds < 1 || intervalSeconds > 100)
+  ) {
+    throw new Error('轮询间隔范围为 1-100 秒')
   }
 
   const port = optionalText(serialPort.value)
@@ -75,7 +78,7 @@ function buildPayload(): DeviceCreatePayload {
     dev_name: optionalText(devName.value),
     dev_type: optionalText(devType.value),
     baud_rate: baud,
-    update_interval_decisec: interval,
+    update_interval_decisec: intervalSeconds === undefined ? undefined : intervalSeconds * 10,
     group_company: optionalText(groupCompany.value),
     company: optionalText(company.value),
     department: optionalText(department.value),
@@ -162,8 +165,8 @@ async function submit(): Promise<void> {
           <input v-model="baudRate" type="number" min="1" step="1" />
         </label>
         <label>
-          上报间隔（分秒）
-          <input v-model="updateInterval" type="number" min="10" max="1000" step="1" />
+          轮询间隔（秒）
+          <input v-model="updateIntervalSeconds" type="number" min="1" max="100" step="1" />
         </label>
       </fieldset>
 
