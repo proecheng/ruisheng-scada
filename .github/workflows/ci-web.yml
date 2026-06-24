@@ -109,7 +109,6 @@ jobs:
       API_ENV: dev
       API_LISTEN_HOST: 127.0.0.1
       API_LISTEN_PORT: 8000
-      VITE_API_BASE: http://127.0.0.1:8000/api
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
