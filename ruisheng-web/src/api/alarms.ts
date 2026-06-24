@@ -99,6 +99,7 @@ function toAlarmConfigUpdatePayload(c: Partial<AlarmConfig>) {
     alarm_name: c.alarm_name,
     alarm_type: c.alarm_type,
     limit_value: c.limit,
+    relation_point_id: c.relation_point_id,
     phone_alarm: c.channels?.length,
   }
 }

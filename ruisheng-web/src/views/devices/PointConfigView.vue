@@ -168,7 +168,7 @@ async function confirmDelete(): Promise<void> {
     <table v-else class="point-table">
       <thead>
         <tr>
-          <th>ID</th>
+          <th>点位 ID</th>
           <th>名称</th>
           <th>寄存器类型</th>
           <th>地址</th>
@@ -200,9 +200,9 @@ async function confirmDelete(): Promise<void> {
     <div v-if="editing" class="drawer">
       <h3>{{ isNew ? '新增点位' : `编辑点位 ${editing.point_id}` }}</h3>
       <form @submit.prevent="save">
-        <label v-if="isNew">
+        <label v-if="!isNew">
           点位 ID
-          <input v-model.number="editing.point_id" type="number" min="0" required />
+          <input :value="editing.point_id" type="number" readonly />
         </label>
         <label>
           点位名称

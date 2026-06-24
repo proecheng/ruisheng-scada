@@ -14,6 +14,7 @@ from ..core.response import ApiResponse, ok
 from ..core.tenant import apply_tenant_context
 from ..db.repositories import alarms as alarms_repo
 from ..db.repositories import devices as devices_repo
+from ..db.repositories import points as points_repo
 from ..deps import get_current_user, get_session
 from .schemas.alarms import (
     AlarmCfgCreateRequest,
@@ -54,6 +55,13 @@ async def create_config(
         d = await devices_repo.get_by_dev_number(session, dev_number)
         if d is None:
             raise BizError(ErrCode.BAD_PARAM, "device not found")
+        point = await points_repo.get_point(session, body.point_id)
+        if point is None or point.dev_number != dev_number:
+            raise BizError(ErrCode.BAD_PARAM, "point not found for device")
+        if body.relation_point_id is not None:
+            relation_point = await points_repo.get_point(session, body.relation_point_id)
+            if relation_point is None or relation_point.dev_number != dev_number:
+                raise BizError(ErrCode.BAD_PARAM, "relation point not found for device")
         c = await alarms_repo.create_cfg(
             session, dev_number=dev_number, **body.model_dump(exclude_none=True)
         )
@@ -82,6 +90,10 @@ async def update_config(
         c = await alarms_repo.get_cfg(session, cfg_id)
         if c is None or c.dev_number != dev_number:
             raise BizError(ErrCode.BAD_PARAM, "cfg not found")
+        if body.relation_point_id is not None:
+            relation_point = await points_repo.get_point(session, body.relation_point_id)
+            if relation_point is None or relation_point.dev_number != dev_number:
+                raise BizError(ErrCode.BAD_PARAM, "relation point not found for device")
         await alarms_repo.update_cfg(session, c, updates)
         await session.execute(
             text("UPDATE devices SET update_flag = 1 WHERE dev_number = :d"),

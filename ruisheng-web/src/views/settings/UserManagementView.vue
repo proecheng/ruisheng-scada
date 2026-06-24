@@ -6,6 +6,8 @@ import {
   updateUser,
   deleteUser,
   type OrgUser,
+  type OrgUserCreatePayload,
+  type OrgUserUpdatePayload,
 } from '@/api/orgs'
 import { useAsync } from '@/composables/useAsync'
 import { useToast } from '@/composables/useToast'
@@ -13,8 +15,10 @@ import LoadingSkeleton from '@/components/LoadingSkeleton.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import type { Authority } from '@/stores/auth'
+import { useAuthStore } from '@/stores/auth'
 
 const toast = useToast()
+const auth = useAuthStore()
 const loader = useAsync(listUsers)
 const users = ref<OrgUser[]>([])
 const query = ref('')
@@ -45,7 +49,7 @@ function startNew(): void {
   editing.value = {
     user_name: '',
     authority: 'User',
-    usr_group: '',
+    usr_group: auth.user?.usr_group ?? '',
     control_authority: 0,
     password: '',
   }
@@ -65,10 +69,26 @@ async function save(): Promise<void> {
         toast.error('新建用户需设置密码')
         return
       }
-      await createUser({ ...editing.value, password: editing.value.password })
+      const payload: OrgUserCreatePayload = {
+        user_name: editing.value.user_name,
+        password: editing.value.password,
+        authority: editing.value.authority,
+        control_authority: editing.value.control_authority,
+        group_company: editing.value.group_company,
+        company: editing.value.company,
+        department: editing.value.department,
+      }
+      await createUser(payload)
       toast.success('已创建')
     } else {
-      await updateUser(editing.value.user_name, editing.value)
+      const payload: OrgUserUpdatePayload = {
+        authority: editing.value.authority,
+        control_authority: editing.value.control_authority,
+        group_company: editing.value.group_company,
+        company: editing.value.company,
+        department: editing.value.department,
+      }
+      await updateUser(editing.value.user_name, payload)
       toast.success('已保存')
     }
     editing.value = null
@@ -160,7 +180,10 @@ function hasBit(n: number, bit: number): boolean {
       <form @submit.prevent="save">
         <label>用户名 <input v-model="editing.user_name" type="text" :readonly="!isNew" required /></label>
         <label v-if="isNew">密码 <input v-model="editing.password" type="password" required /></label>
-        <label>显示名 <input v-model="editing.display_name" type="text" /></label>
+        <label>
+          显示名
+          <input :value="editing.display_name ?? '后端暂未支持'" type="text" readonly />
+        </label>
         <label>
           角色
           <select v-model="editing.authority">
@@ -170,7 +193,7 @@ function hasBit(n: number, bit: number): boolean {
             <option value="Administrators">L4 超管</option>
           </select>
         </label>
-        <label>租户 (usr_group) <input v-model="editing.usr_group" type="text" required /></label>
+        <label>租户 (usr_group) <input v-model="editing.usr_group" type="text" readonly /></label>
         <label>公司 <input v-model="editing.company" type="text" /></label>
         <label>部门 <input v-model="editing.department" type="text" /></label>
         <div class="ca">

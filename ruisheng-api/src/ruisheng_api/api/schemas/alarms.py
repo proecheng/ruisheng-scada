@@ -47,6 +47,10 @@ class AlarmCfgUpdateRequest(BaseModel):
     alarm_name: str | None = None
     alarm_type: str | None = Field(default=None, pattern=r"^(>|<|=|!=|LX)$")
     limit_value: float | None = None
+    relation_point_id: int | None = None
+    relation_reg_bit: int | None = None
+    relation_alarm_type: str | None = Field(default=None, pattern=r"^(>|<|=|!=|LX)$")
+    relation_limit_value: float | None = None
     enable: bool | None = None
     phone_alarm: int | None = None
     reset_remind: bool | None = None

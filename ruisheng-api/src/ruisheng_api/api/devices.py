@@ -72,6 +72,14 @@ async def create_device(
         existing = await devices_repo.get_by_dev_number(session, body.dev_number)
         if existing:
             raise BizError(ErrCode.BAD_PARAM, "dev_number already exists")
+        if body.transport_type == "serial" and body.serial_port is not None:
+            endpoint = await devices_repo.get_serial_endpoint(
+                session,
+                serial_port=body.serial_port,
+                modbus_addr=body.modbus_addr,
+            )
+            if endpoint is not None:
+                raise BizError(ErrCode.BAD_PARAM, "serial_port and modbus_addr already in use")
         d = await devices_repo.create_device(
             session, **body.model_dump(exclude_none=True), usr_group=user.usr_group
         )
@@ -99,6 +107,17 @@ async def update_device(
             raise BizError(ErrCode.BAD_PARAM, "device not found")
         if body.serial_port is not None and body.transport_type is None and d.transport_type != "serial":
             raise BizError(ErrCode.BAD_PARAM, "serial_port can only be set on serial devices")
+        target_transport = updates.get("transport_type", d.transport_type)
+        target_serial_port = updates.get("serial_port", d.serial_port)
+        target_modbus_addr = d.modbus_addr
+        if target_transport == "serial" and isinstance(target_serial_port, str):
+            endpoint = await devices_repo.get_serial_endpoint(
+                session,
+                serial_port=target_serial_port,
+                modbus_addr=target_modbus_addr,
+            )
+            if endpoint is not None and endpoint.dev_number != dev_number:
+                raise BizError(ErrCode.BAD_PARAM, "serial_port and modbus_addr already in use")
         await devices_repo.update_device_fields(session, d, updates)
         await session.execute(
             text("UPDATE devices SET update_flag = 1 WHERE dev_number = :d"),

@@ -19,6 +19,9 @@ async def test_expire_stale_calls_update():
     mock_factory = MagicMock(return_value=mock_session)
     await expire_stale_pay_orders(mock_factory)
     mock_session.execute.assert_awaited_once()
+    sql = str(mock_session.execute.await_args.args[0])
+    assert "RETURNING out_trade_no" in sql
+    assert "RETURNING id" not in sql
 
 
 @pytest.mark.asyncio

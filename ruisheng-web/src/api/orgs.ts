@@ -6,6 +6,7 @@ export interface OrgUser {
   display_name?: string;
   authority: Authority;
   usr_group: string;
+  group_company?: string;
   company?: string;
   department?: string;
   control_authority: number;
@@ -29,6 +30,24 @@ export interface EmailRecord {
   email: string;
 }
 
+export interface OrgUserCreatePayload {
+  user_name: string;
+  password: string;
+  authority: Authority;
+  control_authority: number;
+  group_company?: string;
+  company?: string;
+  department?: string;
+}
+
+export interface OrgUserUpdatePayload {
+  authority?: Authority;
+  control_authority?: number;
+  group_company?: string;
+  company?: string;
+  department?: string;
+}
+
 interface ListEnvelope<T> {
   items: T[];
   total?: number;
@@ -49,16 +68,14 @@ export async function listUsers(): Promise<OrgUser[]> {
   return itemsOf(data.data as ListEnvelope<OrgUser>);
 }
 
-export async function createUser(
-  u: Omit<OrgUser, "deleted_at"> & { password: string },
-): Promise<OrgUser> {
+export async function createUser(u: OrgUserCreatePayload): Promise<OrgUser> {
   const { data } = await apiClient.post("/orgs/users", u);
   return data.data as OrgUser;
 }
 
 export async function updateUser(
   userName: string,
-  u: Partial<OrgUser>,
+  u: OrgUserUpdatePayload,
 ): Promise<OrgUser> {
   const { data } = await apiClient.put(
     `/orgs/users/${encodeURIComponent(userName)}`,

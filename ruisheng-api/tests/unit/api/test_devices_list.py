@@ -71,7 +71,11 @@ def _install(app, monkeypatch, rows):
     async def fake_apply(session, usr_group, role):
         return None
 
+    async def fake_serial_endpoint(session, *, serial_port, modbus_addr):
+        return None
+
     monkeypatch.setattr(devices_repo, "list_devices", fake_list)
+    monkeypatch.setattr(devices_repo, "get_serial_endpoint", fake_serial_endpoint)
     from ruisheng_api.api import devices as devapi
 
     monkeypatch.setattr(devapi, "apply_tenant_context", fake_apply)
@@ -198,6 +202,38 @@ def test_create_serial_device_requires_serial_port(monkeypatch):
         },
     )
     assert resp.status_code == 400
+
+
+def test_create_serial_device_rejects_duplicate_endpoint(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install(app, monkeypatch, [])
+
+    async def fake_get(session, dev_number):
+        assert dev_number == "DEV004"
+
+    async def fake_endpoint(session, *, serial_port, modbus_addr):
+        assert serial_port == "COM3"
+        assert modbus_addr == 3
+        return _device(dev_number="OTHER", serial_port=serial_port, modbus_addr=modbus_addr)
+
+    monkeypatch.setattr(devices_repo, "get_by_dev_number", fake_get)
+    monkeypatch.setattr(devices_repo, "get_serial_endpoint", fake_endpoint)
+
+    resp = TestClient(app).post(
+        "/api/devices",
+        headers={"Authorization": f"Bearer {_token(role='Company')}"},
+        json={
+            "dev_number": "DEV004",
+            "dev_ser_number": "SN-D4",
+            "transport_type": "serial",
+            "serial_port": "COM3",
+            "modbus_addr": 3,
+            "baud_rate": 9600,
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["msg"] == "serial_port and modbus_addr already in use"
 
 
 def test_create_device_rejects_extra_fields(monkeypatch):

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   listAlarmConfigs,
@@ -9,6 +9,7 @@ import {
   type AlarmConfig,
   type AlarmType,
 } from '@/api/alarms'
+import { listPoints, type PointConfig } from '@/api/points'
 import { useAsync } from '@/composables/useAsync'
 import { useToast } from '@/composables/useToast'
 import LoadingSkeleton from '@/components/LoadingSkeleton.vue'
@@ -21,6 +22,10 @@ const toast = useToast()
 
 const loader = useAsync(() => listAlarmConfigs(props.devNumber))
 const cfgs = ref<AlarmConfig[]>([])
+const pointsLoader = useAsync(() => listPoints(props.devNumber))
+const points = ref<PointConfig[]>([])
+const isLoading = computed(() => loader.isPending.value || pointsLoader.isPending.value)
+const canAddConfig = computed(() => points.value.length > 0 && !pointsLoader.isPending.value)
 
 const editing = ref<AlarmConfig | null>(null)
 const isNew = ref(false)
@@ -30,15 +35,22 @@ const showDeleteDialog = ref(false)
 const ALL_CHANNELS = ['wechat', 'sms', 'voice', 'email'] as const
 
 async function reload(): Promise<void> {
-  cfgs.value = await loader.run()
+  const [loadedCfgs, loadedPoints] = await Promise.all([loader.run(), pointsLoader.run()])
+  cfgs.value = loadedCfgs
+  points.value = loadedPoints
 }
 
 onMounted(() => reload())
 
 function startNew(): void {
+  if (pointsLoader.isPending.value) return
+  if (points.value.length === 0) {
+    toast.error('请先配置点位，再新增告警阈值')
+    return
+  }
   editing.value = {
     cfg_id: 0,
-    point_id: 1,
+    point_id: points.value[0]?.point_id ?? 0,
     alarm_name: '',
     alarm_type: '>',
     limit: 0,
@@ -46,6 +58,16 @@ function startNew(): void {
     channels: ['wechat'],
   }
   isNew.value = true
+}
+
+function goToPointConfig(): void {
+  router.push(`/devices/${props.devNumber}/points`)
+}
+
+function pointLabel(pointId: number): string {
+  const point = points.value.find((p) => p.point_id === pointId)
+  if (!point) return `点位 ID ${pointId}`
+  return `${point.point_name} (ID ${point.point_id}, FC${point.fun_code} 地址 ${point.register_address})`
 }
 
 function startEdit(c: AlarmConfig): void {
@@ -104,20 +126,27 @@ const ALARM_TYPES: AlarmType[] = ['>', '<', '=', '!=', 'LX']
     <header>
       <button class="back" @click="router.back()">← 返回</button>
       <h2>{{ devNumber }} — 告警阈值</h2>
-      <button class="add" @click="startNew">+ 新增阈值</button>
+      <button class="add" :disabled="!canAddConfig" @click="startNew">+ 新增阈值</button>
     </header>
 
-    <LoadingSkeleton v-if="loader.isPending.value" :lines="3" />
+    <LoadingSkeleton v-if="isLoading" :lines="3" />
+    <EmptyState
+      v-else-if="points.length === 0"
+      title="尚未配置点位"
+      description="告警阈值需要先绑定设备点位。"
+      action-label="去配置点位"
+      @action="goToPointConfig"
+    />
     <EmptyState v-else-if="cfgs.length === 0" title="尚无告警规则" action-label="新增阈值" @action="startNew" />
     <table v-else class="cfg-table">
       <thead>
         <tr>
-          <th>点位</th><th>规则名</th><th>类型</th><th>阈值</th><th>严重度</th><th>通道</th><th>操作</th>
+          <th>绑定点位</th><th>规则名</th><th>类型</th><th>阈值</th><th>严重度</th><th>通道</th><th>操作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="c in cfgs" :key="c.cfg_id">
-          <td>{{ c.point_id }}</td>
+          <td>{{ pointLabel(c.point_id) }}</td>
           <td>{{ c.alarm_name }}</td>
           <td>{{ c.alarm_type }}</td>
           <td>{{ c.limit }}</td>
@@ -134,7 +163,14 @@ const ALARM_TYPES: AlarmType[] = ['>', '<', '=', '!=', 'LX']
     <div v-if="editing" class="drawer">
       <h3>{{ isNew ? '新增规则' : `编辑规则 ${editing.cfg_id}` }}</h3>
       <form @submit.prevent="save">
-        <label>点位 ID <input v-model.number="editing.point_id" type="number" required /></label>
+        <label>
+          绑定点位
+          <select v-model.number="editing.point_id" required>
+            <option v-for="p in points" :key="p.point_id" :value="p.point_id">
+              {{ p.point_name }}（ID {{ p.point_id }} / FC{{ p.fun_code }} 地址 {{ p.register_address }}）
+            </option>
+          </select>
+        </label>
         <label>规则名 <input v-model="editing.alarm_name" type="text" required /></label>
         <label>
           比较类型
@@ -145,7 +181,12 @@ const ALARM_TYPES: AlarmType[] = ['>', '<', '=', '!=', 'LX']
         <label>阈值 <input v-model.number="editing.limit" type="number" step="any" /></label>
         <label v-if="editing.alarm_type === 'LX'">
           关联点位（联锁）
-          <input v-model.number="editing.relation_point_id" type="number" />
+          <select v-model.number="editing.relation_point_id">
+            <option :value="undefined">不关联</option>
+            <option v-for="p in points" :key="p.point_id" :value="p.point_id">
+              {{ p.point_name }}（ID {{ p.point_id }}）
+            </option>
+          </select>
         </label>
         <label>
           严重度
@@ -188,6 +229,7 @@ header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .back { background: none; border: 1px solid #ccc; padding: 4px 10px; border-radius: 4px; cursor: pointer; }
 h2 { flex: 1; font-size: 18px; }
 .add { background: var(--color-primary); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+.add:disabled { opacity: 0.45; cursor: not-allowed; }
 .cfg-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .cfg-table th, .cfg-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; }
 .cfg-table button { margin-right: 6px; padding: 3px 8px; border: 1px solid #ccc; background: #fff; border-radius: 3px; cursor: pointer; font-size: 12px; }

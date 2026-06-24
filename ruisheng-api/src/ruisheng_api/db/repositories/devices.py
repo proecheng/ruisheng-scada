@@ -34,6 +34,21 @@ async def get_by_dev_number(session: AsyncSession, dev_number: str) -> Device | 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_serial_endpoint(
+    session: AsyncSession,
+    *,
+    serial_port: str,
+    modbus_addr: int,
+) -> Device | None:
+    stmt = select(Device).where(
+        Device.deleted_at.is_(None),
+        Device.transport_type == "serial",
+        Device.serial_port == serial_port,
+        Device.modbus_addr == modbus_addr,
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def create_device(session: AsyncSession, **fields: object) -> Device:
     d = Device(**fields)
     session.add(d)

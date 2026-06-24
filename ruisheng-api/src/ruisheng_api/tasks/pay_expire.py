@@ -15,7 +15,7 @@ async def expire_stale_pay_orders(factory: async_sessionmaker[AsyncSession]) -> 
                 "UPDATE pay_orders SET pay_state = 'expired' "
                 "WHERE pay_state = 'pending' "
                 "AND created_at < now() - INTERVAL '2 hours' "
-                "RETURNING id"
+                "RETURNING out_trade_no"
             )
         )
         count = len(result.fetchall())

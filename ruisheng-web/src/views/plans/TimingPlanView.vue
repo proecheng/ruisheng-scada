@@ -21,6 +21,31 @@ const isNew = ref(false)
 const deleteTarget = ref<TimingPlan | null>(null)
 const showDeleteDialog = ref(false)
 
+function formatDateTimeLocal(iso: string): string {
+  const date = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function toIsoFromLocal(value: string): string {
+  return new Date(value).toISOString()
+}
+
+function nextHourIso(): string {
+  const date = new Date()
+  date.setHours(date.getHours() + 1, 0, 0, 0)
+  return date.toISOString()
+}
+
+function actionLabel(action: string): string {
+  return ({ start: '启动', stop: '停止', reset: '复位' } as Record<string, string>)[action] ?? action
+}
+
+function repetitionLabel(seconds: number): string {
+  if (seconds <= 0) return '一次'
+  return `每 ${seconds} 秒`
+}
+
 async function reload(): Promise<void> {
   plans.value = await loader.run()
 }
@@ -31,9 +56,9 @@ function startNew(): void {
   editing.value = {
     id: 0,
     dev_number: '',
-    plan_name: '',
-    cron: '0 0 * * *',
     action: 'start',
+    action_at: nextHourIso(),
+    repetition: 0,
     enabled: true,
   }
   isNew.value = true
@@ -97,7 +122,7 @@ async function confirmDelete(): Promise<void> {
     <table v-else class="p-table">
       <thead>
         <tr>
-          <th>启用</th><th>设备</th><th>计划名</th><th>Cron</th><th>动作</th><th>下次运行</th><th>操作</th>
+          <th>启用</th><th>设备</th><th>执行时间</th><th>重复</th><th>动作</th><th>更新时间</th><th>操作</th>
         </tr>
       </thead>
       <tbody>
@@ -106,10 +131,10 @@ async function confirmDelete(): Promise<void> {
             <input type="checkbox" :checked="p.enabled" @change="toggleEnabled(p)" />
           </td>
           <td><code>{{ p.dev_number }}</code></td>
-          <td>{{ p.plan_name }}</td>
-          <td><code>{{ p.cron }}</code></td>
-          <td>{{ p.action }}</td>
-          <td>{{ p.next_run_at ? new Date(p.next_run_at).toLocaleString() : '—' }}</td>
+          <td>{{ new Date(p.action_at).toLocaleString() }}</td>
+          <td>{{ repetitionLabel(p.repetition) }}</td>
+          <td>{{ actionLabel(p.action) }}</td>
+          <td>{{ p.updated_at ? new Date(p.updated_at).toLocaleString() : '—' }}</td>
           <td>
             <button @click="startEdit(p)">编辑</button>
             <button class="danger" @click="askDelete(p)">删除</button>
@@ -122,11 +147,19 @@ async function confirmDelete(): Promise<void> {
       <h3>{{ isNew ? '新增定时计划' : `编辑计划 ${editing.id}` }}</h3>
       <form @submit.prevent="save">
         <label>设备号 <input v-model="editing.dev_number" type="text" required /></label>
-        <label>计划名 <input v-model="editing.plan_name" type="text" required /></label>
         <label>
-          Cron 表达式
-          <input v-model="editing.cron" type="text" placeholder="分 时 日 月 周" required />
-          <small>例：0 8 * * * = 每天 8:00</small>
+          执行时间
+          <input
+            :value="formatDateTimeLocal(editing.action_at)"
+            type="datetime-local"
+            required
+            @input="(e: Event) => { if (editing) editing.action_at = toIsoFromLocal((e.target as HTMLInputElement).value) }"
+          />
+        </label>
+        <label>
+          重复间隔（秒）
+          <input v-model.number="editing.repetition" type="number" min="0" step="1" required />
+          <small>0 表示只执行一次。</small>
         </label>
         <label>
           动作
@@ -149,7 +182,7 @@ async function confirmDelete(): Promise<void> {
 
     <ConfirmDialog
       v-model="showDeleteDialog"
-      :message="`确认删除计划 ${deleteTarget?.plan_name}？`"
+      :message="`确认删除 ${deleteTarget?.dev_number} 的定时计划？`"
       danger
       @confirm="confirmDelete"
     />

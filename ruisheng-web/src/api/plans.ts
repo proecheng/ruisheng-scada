@@ -3,12 +3,11 @@ import { apiClient } from '@/api/client'
 export interface TimingPlan {
   id: number
   dev_number: string
-  plan_name: string
-  cron: string
   action: string
+  action_at: string
+  repetition: number
   enabled: boolean
-  last_run_at?: string
-  next_run_at?: string
+  updated_at?: string
 }
 
 export interface MaintenancePlan {
@@ -35,7 +34,7 @@ interface ListEnvelope<T> {
 interface TimingPlanWire {
   id: number
   dev_number: string
-  action_at?: string
+  action_at: string
   action: number | string
   repetition?: number
   enable?: boolean
@@ -72,50 +71,33 @@ function actionCode(action: number | string | undefined): number {
   return ({ start: 1, stop: 2, reset: 3 } as Record<string, number>)[action ?? 'start'] ?? 1
 }
 
-function actionAtFromCron(cron: string | undefined): string {
-  if (!cron) return new Date().toISOString()
-  const parsed = Date.parse(cron)
-  if (!Number.isNaN(parsed)) return new Date(parsed).toISOString()
-
-  const [minuteRaw, hourRaw] = cron.trim().split(/\s+/)
-  const minute = Number(minuteRaw)
-  const hour = Number(hourRaw)
-  if (Number.isInteger(minute) && Number.isInteger(hour)) {
-    const next = new Date()
-    next.setHours(hour, minute, 0, 0)
-    if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1)
-    return next.toISOString()
-  }
-  return new Date().toISOString()
-}
-
 function toTimingPlan(p: TimingPlanWire): TimingPlan {
   return {
     id: p.id,
     dev_number: p.dev_number,
-    plan_name: `动作 ${actionName(p.action)}`,
-    cron: p.action_at ?? '',
     action: actionName(p.action),
+    action_at: p.action_at,
+    repetition: p.repetition ?? 0,
     enabled: p.enabled ?? p.enable ?? false,
-    last_run_at: p.updated_at,
-    next_run_at: p.action_at,
+    updated_at: p.updated_at,
   }
 }
 
 function toTimingPayload(p: Partial<TimingPlan> & { dev_number: string }) {
   return {
     dev_number: p.dev_number,
-    action_at: actionAtFromCron(p.cron ?? p.next_run_at),
+    action_at: p.action_at ?? new Date().toISOString(),
     action: actionCode(p.action),
-    repetition: 0,
+    repetition: p.repetition ?? 0,
     enable: p.enabled ?? true,
   }
 }
 
 function toTimingUpdatePayload(p: Partial<TimingPlan>) {
   return {
-    action_at: p.cron || p.next_run_at ? actionAtFromCron(p.cron ?? p.next_run_at) : undefined,
+    action_at: p.action_at,
     action: p.action === undefined ? undefined : actionCode(p.action),
+    repetition: p.repetition,
     enable: p.enabled,
   }
 }
