@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from .config import Config
 from .core.rbac import CurrentUser
 from .core.security import client_fingerprint, verify_token
+from .core.token_blacklist import is_jti_blacklisted
 
 if TYPE_CHECKING:
     _Redis = redis_async.Redis[Any]
@@ -69,7 +70,7 @@ async def get_current_user(
     fp = client_fingerprint(client_host, ua)
     payload = verify_token(token, secret=cfg.jwt_secret, expected_fp=fp)
     jti = str(payload.get("jti") or "")
-    if await r.sismember("jwt_blacklist", jti):
+    if await is_jti_blacklisted(r, jti):
         raise BizError(ErrCode.UNAUTHED, "token revoked")
     ca_raw = payload.get("ca")
     ca = int(ca_raw) if isinstance(ca_raw, int | float | str) else 0

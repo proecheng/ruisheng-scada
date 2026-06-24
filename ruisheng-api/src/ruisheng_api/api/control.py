@@ -136,9 +136,13 @@ async def cancel_command(
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse:
+    check_ca(user, bit=0x01)
+    owner_filter = (
+        None if user.role in ("Administrators", "GroupCompany", "Company") else user.user_name
+    )
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
-        cancelled = await control_repo.cancel_action(session, cmd_id)
+        cancelled = await control_repo.cancel_action(session, cmd_id, user_name=owner_filter)
     if not cancelled:
         raise BizError(ErrCode.BAD_PARAM, "cmd not pending or not found")
     return ok(data={"cmd_id": cmd_id, "status": "cancelled"})

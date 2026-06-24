@@ -17,6 +17,7 @@ from ruisheng_gw.protocol.modbus_codec import (
 
 FC_READ_HOLDING_REGISTERS = 0x03
 FC_HEARTBEAT = 0x19
+FC_DEVICE_REGISTER = 0x15
 FC_LOW_POWER_REGISTER = 0x16
 FC_PRIVATE_13 = 0x0D
 FC_PRIVATE_26 = 0x1A
@@ -25,6 +26,10 @@ MIN_FRAME_BODY_LEN = 2
 MIN_EXCEPTION_BODY_LEN = 3
 EXCEPTION_BIT = 0x80
 FC_MASK = 0x7F
+REGISTER_BODY_LEN = 34
+REGISTER_SER_LEN = 24
+REGISTER_FW_LEN = 5
+REGISTER_HW_LEN = 3
 
 
 @dataclass(frozen=True)
@@ -187,8 +192,18 @@ class LowPowerRegisterFrame:
     payload: bytes
 
 
+@dataclass(frozen=True)
+class RegisterFrame:
+    """FC 21 (0x15) TCP device registration frame."""
+
+    slave: int
+    dev_ser_number: str
+    fw_version: str
+    hw_version: str
+
+
 AnyFrame: TypeAlias = (
-    ExceptionResponse | ReadHoldingResponse | HeartbeatFrame | LowPowerRegisterFrame
+    ExceptionResponse | ReadHoldingResponse | HeartbeatFrame | LowPowerRegisterFrame | RegisterFrame
 )
 
 
@@ -202,6 +217,31 @@ def encode_heartbeat(slave: int) -> bytes:
     """Encode FC 0x19 heartbeat request (4 bytes: slave + fc + CRC)."""
     body = bytes([slave & 0xFF, 0x19])
     return append_crc_to_frame(body)
+
+
+def _decode_ascii_field(raw: bytes) -> str:
+    return raw.split(b"\x00", 1)[0].decode("ascii", errors="ignore").strip()
+
+
+def decode_register_frame(raw: bytes) -> RegisterFrame:
+    """Decode FC 21 registration: [0xFE][0x15][ser24][fw5][hw3][CRC]."""
+    verify_crc16(raw)
+    body = raw[:-2]
+    if len(body) != REGISTER_BODY_LEN:
+        raise ProtocolError(f"FC21 register body len={len(body)}, expected {REGISTER_BODY_LEN}")
+    slave = body[0]
+    fc = body[1]
+    if fc != FC_DEVICE_REGISTER:
+        raise ProtocolError(f"expected FC 0x15, got 0x{fc:02X}")
+    ser_start = 2
+    fw_start = ser_start + REGISTER_SER_LEN
+    hw_start = fw_start + REGISTER_FW_LEN
+    return RegisterFrame(
+        slave=slave,
+        dev_ser_number=_decode_ascii_field(body[ser_start:fw_start]),
+        fw_version=_decode_ascii_field(body[fw_start:hw_start]),
+        hw_version=_decode_ascii_field(body[hw_start : hw_start + REGISTER_HW_LEN]),
+    )
 
 
 def decode_frame_by_funcode(
@@ -227,6 +267,8 @@ def decode_frame_by_funcode(
         return decode_read_holding_response(raw)
     if fc == FC_HEARTBEAT:
         return HeartbeatFrame(slave=slave)
+    if fc == FC_DEVICE_REGISTER:
+        return decode_register_frame(raw)
     if fc == FC_LOW_POWER_REGISTER:
         return LowPowerRegisterFrame(slave=slave, payload=bytes(body[2:]))
     # FC 13 (0x0D) / 26 (0x1A) — B5 task placeholder

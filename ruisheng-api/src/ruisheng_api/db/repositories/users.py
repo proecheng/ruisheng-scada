@@ -98,13 +98,32 @@ async def add_phone(session: AsyncSession, *, user_name: str, phone_number: str)
     return p
 
 
-async def delete_phone(session: AsyncSession, phone_id: int) -> None:
-    stmt = select(UserPhoneNumber).where(UserPhoneNumber.id == phone_id)
+async def load_phone(
+    session: AsyncSession,
+    *,
+    user_name: str,
+    phone_number: str,
+) -> UserPhoneNumber | None:
+    stmt = select(UserPhoneNumber).where(
+        UserPhoneNumber.user_name == user_name,
+        UserPhoneNumber.phone_number == phone_number,
+    )
+    result = await session.execute(stmt)
+    return result.scalars().first()
+
+
+async def delete_phone(session: AsyncSession, *, user_name: str, phone_id: int) -> bool:
+    stmt = select(UserPhoneNumber).where(
+        UserPhoneNumber.id == phone_id,
+        UserPhoneNumber.user_name == user_name,
+    )
     result = await session.execute(stmt)
     p = result.scalar_one_or_none()
-    if p is not None:
-        await session.delete(p)
-        await session.flush()
+    if p is None:
+        return False
+    await session.delete(p)
+    await session.flush()
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -113,31 +132,32 @@ async def delete_phone(session: AsyncSession, phone_id: int) -> None:
 
 
 async def list_emails(session: AsyncSession, user_name: str) -> list[UserEmail]:
-    """
-    NOTE: UserEmail.phone_number is the FK field that links an email record to a
-    phone number (not to a user directly). We join via UserPhoneNumber to resolve
-    the owning user.
-    """
-    stmt = (
-        select(UserEmail)
-        .join(UserPhoneNumber, UserEmail.phone_number == UserPhoneNumber.phone_number)
-        .where(UserPhoneNumber.user_name == user_name)
-    )
+    stmt = select(UserEmail).where(UserEmail.user_name == user_name)
     result = await session.execute(stmt)
     return list(result.scalars())
 
 
-async def add_email(session: AsyncSession, *, phone_number: str, email: str) -> UserEmail:
-    e = UserEmail(phone_number=phone_number, email=email)
+async def add_email(
+    session: AsyncSession,
+    *,
+    user_name: str,
+    phone_number: str,
+    email: str,
+) -> UserEmail | None:
+    if await load_phone(session, user_name=user_name, phone_number=phone_number) is None:
+        return None
+    e = UserEmail(user_name=user_name, phone_number=phone_number, email=email)
     session.add(e)
     await session.flush()
     return e
 
 
-async def delete_email(session: AsyncSession, email_id: int) -> None:
-    stmt = select(UserEmail).where(UserEmail.id == email_id)
+async def delete_email(session: AsyncSession, *, user_name: str, email_id: int) -> bool:
+    stmt = select(UserEmail).where(UserEmail.id == email_id, UserEmail.user_name == user_name)
     result = await session.execute(stmt)
-    e = result.scalar_one_or_none()
-    if e is not None:
-        await session.delete(e)
-        await session.flush()
+    e = result.scalars().first()
+    if e is None:
+        return False
+    await session.delete(e)
+    await session.flush()
+    return True

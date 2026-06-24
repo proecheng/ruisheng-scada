@@ -5,10 +5,25 @@ on:
     branches: [master, feature/plan-3-*]
     paths:
       - 'ruisheng-web/**'
+      - 'ruisheng-api/**'
+      - 'ruisheng-shared/**'
+      - 'alembic/**'
+      - 'seeds/**'
+      - 'docker-compose.dev.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/ci-web.yml'
       - '.github/workflows/ci-web.yml'
   pull_request:
     paths:
       - 'ruisheng-web/**'
+      - 'ruisheng-api/**'
+      - 'ruisheng-shared/**'
+      - 'alembic/**'
+      - 'seeds/**'
+      - 'docker-compose.dev.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
 
 jobs:
   web-unit:
@@ -79,3 +94,72 @@ jobs:
         with:
           name: web-dist
           path: ruisheng-web/dist
+
+  web-real-backend-e2e:
+    runs-on: ubuntu-latest
+    needs: web-unit
+    env:
+      RUISHENG_GW_PASSWORD: dev-gw-change-me
+      RUISHENG_API_PASSWORD: dev-api-change-me
+      DATABASE_URL: postgresql+asyncpg://ruisheng_dev:ruisheng_dev@127.0.0.1:5432/ruisheng
+      API_DB_URL: postgresql+asyncpg://ruisheng_api:dev-api-change-me@127.0.0.1:5432/ruisheng
+      API_GW_DB_URL: postgresql+asyncpg://ruisheng_gw:dev-gw-change-me@127.0.0.1:5432/ruisheng
+      API_REDIS_URL: redis://:dev-redis-pw@127.0.0.1:6379/0
+      API_JWT_SECRET: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      API_ENV: dev
+      API_LISTEN_HOST: 127.0.0.1
+      API_LISTEN_PORT: 8000
+      VITE_API_BASE: http://127.0.0.1:8000/api
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: ruisheng-web/pnpm-lock.yaml
+      - run: uv sync --all-packages
+      - run: docker compose -f docker-compose.dev.yml up -d --wait
+      - run: uv run alembic upgrade head
+      - run: uv run python tools/run_seeds.py
+      - run: pnpm install --frozen-lockfile
+        working-directory: ruisheng-web
+      - run: pnpm exec playwright install chromium --with-deps
+        working-directory: ruisheng-web
+      - name: Start API
+        run: |
+          uv run python -m ruisheng_api > api.log 2>&1 &
+          echo $! > api.pid
+      - name: Wait for API
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:8000/api/health/ready; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat api.log
+          exit 1
+      - run: pnpm exec playwright test e2e/real-backend.spec.ts --project chromium
+        working-directory: ruisheng-web
+        env:
+          E2E_REAL_BACKEND: '1'
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f api.pid ]; then
+            kill "$(cat api.pid)" || true
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: real-backend-e2e-logs
+          path: |
+            api.log
+            ruisheng-web/playwright-report
+          retention-days: 14

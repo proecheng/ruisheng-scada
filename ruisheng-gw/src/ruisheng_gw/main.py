@@ -12,18 +12,23 @@ import asyncio
 import contextlib
 import signal
 import sys
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Coroutine
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
     from ruisheng_gw.config import Config
+    from ruisheng_gw.domain.registry import RegistryEntry
+
+PollerFactory = Callable[[], Coroutine[Any, Any, None]]
 
 
 # hardcoded literal — 与 G7 #28-B 两版本字段分离一致
 # 升 shared 时 gw PR 必须同步改此常量
 REQUIRED_SHARED_SCHEMA_VERSION: int = 20260415
-EXPECTED_ALEMBIC_HEAD: str = "0009_serial_port_unique"
+EXPECTED_ALEMBIC_HEAD: str = "0010_user_emails_user_name"
+_PEER_HOST_PORT_LEN = 2
 
 
 def check_shared_schema_version(required: int = REQUIRED_SHARED_SCHEMA_VERSION) -> None:
@@ -58,18 +63,25 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     6. Wait for shutdown signal
     7. Graceful shutdown (stop batch_writer + tcp server)
     """
+    import redis.asyncio as redis_async  # noqa: PLC0415
     from aiohttp import web  # noqa: PLC0415
     from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
 
     from ruisheng_gw.domain.registry import Registry  # noqa: PLC0415
     from ruisheng_gw.health import HealthState, create_health_app  # noqa: PLC0415
+    from ruisheng_gw.ingest import FrameIngestor  # noqa: PLC0415
     from ruisheng_gw.logging_setup import get_logger  # noqa: PLC0415
     from ruisheng_gw.persistence.batch_writer import BatchWriter  # noqa: PLC0415
     from ruisheng_gw.persistence.repository import Repository  # noqa: PLC0415
     from ruisheng_gw.persistence.wal import Wal  # noqa: PLC0415
+    from ruisheng_gw.protocol.exceptions import ProtocolError  # noqa: PLC0415
+    from ruisheng_gw.protocol.frames import RegisterFrame, decode_frame_by_funcode  # noqa: PLC0415
+    from ruisheng_gw.pubsub.publisher import Publisher  # noqa: PLC0415
     from ruisheng_gw.scheduler.bus_lock import BusLocks  # noqa: PLC0415
     from ruisheng_gw.scheduler.clock import RealClock  # noqa: PLC0415
+    from ruisheng_gw.scheduler.poller import poller_loop  # noqa: PLC0415
     from ruisheng_gw.scheduler.supervisor import Supervisor  # noqa: PLC0415
+    from ruisheng_gw.transport.connection import Connection  # noqa: PLC0415
     from ruisheng_gw.transport.serial_bus import SerialBus  # noqa: PLC0415
     from ruisheng_gw.transport.session import SessionMap  # noqa: PLC0415
     from ruisheng_gw.transport.tcp_server import GwServer  # noqa: PLC0415
@@ -98,6 +110,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     )
     repo = Repository(engine)
     await wal.replay_and_cleanup(sink=repo.flush)
+    redis = redis_async.from_url(config.redis_url, decode_responses=True)
 
     # 3. Load Registry
     registry = await Registry.load_from_db(engine)
@@ -123,21 +136,87 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     bus_locks = BusLocks(timeout_sec=float(config.bus_lock_timeout_sec))
     supervisor = Supervisor(clock=clock)
     session_map = SessionMap()
+    publisher = Publisher(redis=redis)
+    ingestor = FrameIngestor(registry=registry, batch=batch, publisher=publisher)
 
-    # Minimal handler: accept connection and discard (full dispatch in Plan 1.5)
-    async def _noop_handler(
+    def _tcp_bus_id(writer: asyncio.StreamWriter) -> str:
+        peer = writer.get_extra_info("peername")
+        if isinstance(peer, tuple) and len(peer) >= _PEER_HOST_PORT_LEN:
+            return f"tcp:{peer[0]}:{peer[1]}"
+        return f"tcp:{id(writer)}"
+
+    async def _tcp_handler(
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        writer.close()
+        bus_id = _tcp_bus_id(writer)
+        bound_dev_number: str | None = None
 
-    async def _noop_serial_frame(dev_number: str, frame: bytes) -> None:
-        pass
+        async def _on_frame(frame: bytes) -> None:
+            nonlocal bound_dev_number
+            if not frame:
+                return
+            try:
+                decoded = decode_frame_by_funcode(frame)
+            except ProtocolError:
+                return
+            if isinstance(decoded, RegisterFrame):
+                entry = registry.tcp_device_for_dev_ser_number(decoded.dev_ser_number)
+                if entry is None:
+                    log.warning(
+                        "tcp register ignored: unknown or ambiguous serial",
+                        dev_ser_number=decoded.dev_ser_number,
+                    )
+                    return
+                bound_dev_number = entry.device.dev_number
+                session_map.bind(dev_number=bound_dev_number, writer=writer, bus_id=bus_id)
+                await ingestor.process_frame(dev_number=bound_dev_number, frame=frame)
+                return
+            entry = (
+                registry.get(bound_dev_number) if bound_dev_number else None
+            ) or registry.tcp_device_for_modbus_addr(frame[0])
+            if entry is None:
+                log.warning("tcp frame ignored: unknown or ambiguous slave", slave=frame[0])
+                return
+            dev_number = entry.device.dev_number
+            bound_dev_number = dev_number
+            session_map.bind(dev_number=dev_number, writer=writer, bus_id=bus_id)
+            await ingestor.process_frame(dev_number=dev_number, frame=frame)
+
+        conn = Connection(
+            reader=reader,
+            writer=writer,
+            on_frame=_on_frame,
+            heartbeat_timeout_sec=float(config.heartbeat_timeout_sec),
+        )
+        await conn.read_loop()
+
+    async def _serial_frame(dev_number: str, frame: bytes) -> None:
+        await ingestor.process_frame(dev_number=dev_number, frame=frame)
+
+    def _make_poller(entry: RegistryEntry, dev_number: str) -> PollerFactory:
+        async def _run() -> None:
+            await poller_loop(
+                dev_number=dev_number,
+                entry=entry,
+                session=session_map,
+                bus_locks=bus_locks,
+                clock=clock,
+            )
+
+        return _run
+
+    for entry in registry.entries():
+        dev_number = entry.device.dev_number
+        supervisor.start_poller(
+            dev_number=dev_number,
+            coro_factory=_make_poller(entry, dev_number),
+        )
 
     server = GwServer(
         host=config.listen_host,
         port=config.listen_port,
-        handler=_noop_handler,
+        handler=_tcp_handler,
     )
     await server.start()
     log.info("TCP server started", host=config.listen_host, port=config.listen_port)
@@ -151,7 +230,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
             baud_rate=sp_cfg.baud_rate,
             registry=registry,
             session_map=session_map,
-            on_frame=_noop_serial_frame,
+            on_frame=_serial_frame,
         )
         serial_buses.append(bus)
         task = asyncio.create_task(bus.start())
@@ -198,6 +277,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await asyncio.wait_for(batch_task, timeout=5.0)
         await runner.cleanup()
+        await redis.close()
         await engine.dispose()
         # suppress unused-var warnings from type checkers
         _ = registry

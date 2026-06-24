@@ -72,6 +72,16 @@ class MaintainPlanCreateRequest(BaseModel):
     enable: bool = True
 
 
+class MaintainPlanUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan_name: str | None = Field(default=None, max_length=100)
+    description: str | None = Field(default=None, max_length=255)
+    interval_days: int | None = Field(default=None, ge=1, le=3650)
+    next_due_at: datetime | None = None
+    enable: bool | None = None
+
+
 class CompleteMaintenanceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

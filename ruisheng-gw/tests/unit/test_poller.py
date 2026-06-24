@@ -28,7 +28,7 @@ class FakeSession:
             return None
         return _Entry(writer=self, generation=self.generation, bus_id=self.bus_id)
 
-    async def write(self, data: bytes) -> None:
+    def write(self, data: bytes) -> None:
         self.write_log.append(data)
 
     async def drain(self) -> None:
@@ -53,9 +53,11 @@ async def test_poll_once_writes_frame() -> None:
     entry = RegistryEntry(
         device=Device(dev_number="DEV-001", usr_group="ug_A"),
         update_interval_decisec=10,
+        modbus_addr=7,
     )
     await poll_once(dev_number="DEV-001", entry=entry, session=sess, bus_locks=locks)
     assert len(sess.write_log) == 1  # at least one poll frame sent
+    assert sess.write_log[0][0] == 7
 
 
 async def test_poller_loop_respects_interval() -> None:

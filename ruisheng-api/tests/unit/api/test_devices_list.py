@@ -18,6 +18,29 @@ class _FakeDev:
         self.__dict__.update(kw)
 
 
+def _device(**kw):
+    defaults = {
+        "id": 1,
+        "dev_number": "DEV002",
+        "dev_ser_number": "SN-D2",
+        "dev_name": "New",
+        "dev_type": "pump",
+        "modbus_addr": 2,
+        "baud_rate": 9600,
+        "is_online": False,
+        "last_call_at": None,
+        "last_back_at": None,
+        "loss_count": 0,
+        "update_interval_decisec": 100,
+        "group_company": None,
+        "company": None,
+        "department": None,
+        "usr_group": "g1",
+    }
+    defaults.update(kw)
+    return _FakeDev(**defaults)
+
+
 def _install(app, monkeypatch, rows):
     r = fakeredis.aioredis.FakeRedis()
     app.dependency_overrides[get_redis] = lambda: r
@@ -74,3 +97,58 @@ def test_list_devices_requires_auth(monkeypatch):
     r = fakeredis.aioredis.FakeRedis()
     app.dependency_overrides[get_redis] = lambda: r
     assert TestClient(app).get("/api/devices").status_code == 401
+
+
+def test_create_device_validates_contract_and_tenant(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install(app, monkeypatch, [])
+    captured = {}
+
+    async def fake_get(session, dev_number):
+        assert dev_number == "DEV002"
+
+    async def fake_create(session, **fields):
+        captured.update(fields)
+        return _device(**fields)
+
+    monkeypatch.setattr(devices_repo, "get_by_dev_number", fake_get)
+    monkeypatch.setattr(devices_repo, "create_device", fake_create)
+
+    resp = TestClient(app).post(
+        "/api/devices",
+        headers={"Authorization": f"Bearer {_token(role='Company')}"},
+        json={
+            "dev_number": "DEV002",
+            "dev_ser_number": "SN-D2",
+            "modbus_addr": 2,
+            "baud_rate": 9600,
+        },
+    )
+    assert resp.status_code == 200
+    assert captured == {
+        "dev_number": "DEV002",
+        "dev_ser_number": "SN-D2",
+        "modbus_addr": 2,
+        "baud_rate": 9600,
+        "update_interval_decisec": 100,
+        "usr_group": "g1",
+    }
+    assert resp.json()["data"]["dev_ser_number"] == "SN-D2"
+
+
+def test_create_device_rejects_extra_fields(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install(app, monkeypatch, [])
+    resp = TestClient(app).post(
+        "/api/devices",
+        headers={"Authorization": f"Bearer {_token(role='Company')}"},
+        json={
+            "dev_number": "DEV002",
+            "dev_ser_number": "SN-D2",
+            "modbus_addr": 2,
+            "phone": "should-not-pass",
+        },
+    )
+    assert resp.status_code == 400

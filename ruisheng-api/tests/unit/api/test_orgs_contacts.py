@@ -162,6 +162,67 @@ def test_list_phones_other_user_requires_role(monkeypatch):
     assert resp.status_code == 403
 
 
+def test_add_phone_requires_visible_target_user(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install(app, monkeypatch)
+
+    async def fake_load(session, user_name):
+        return None
+
+    monkeypatch.setattr(users_repo, "load_by_user_name", fake_load)
+    resp = TestClient(app).post(
+        "/api/orgs/users/bob/phones",
+        json={"phone_number": "13800000000"},
+        headers={"Authorization": f"Bearer {_tok()}"},
+    )
+    assert resp.status_code == 400
+
+
+def test_add_phone_posts_phone_number(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install(app, monkeypatch)
+
+    async def fake_load(session, user_name):
+        return object()
+
+    async def fake_add_phone(session, *, user_name, phone_number):
+        assert user_name == "bob"
+        assert phone_number == "13800000000"
+        return type("P", (), {"id": 1, "phone_number": phone_number})()
+
+    monkeypatch.setattr(users_repo, "load_by_user_name", fake_load)
+    monkeypatch.setattr(users_repo, "add_phone", fake_add_phone)
+    resp = TestClient(app).post(
+        "/api/orgs/users/bob/phones",
+        json={"phone_number": "13800000000"},
+        headers={"Authorization": f"Bearer {_tok()}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"id": 1, "phone_number": "13800000000"}
+
+
+def test_delete_phone_scopes_to_path_user(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install(app, monkeypatch)
+    seen: dict[str, object] = {}
+
+    async def fake_delete_phone(session, *, user_name, phone_id):
+        seen["user_name"] = user_name
+        seen["phone_id"] = phone_id
+        return True
+
+    monkeypatch.setattr(users_repo, "delete_phone", fake_delete_phone)
+    resp = TestClient(app).delete(
+        "/api/orgs/users/bob/phones/12",
+        headers={"Authorization": f"Bearer {_tok()}"},
+    )
+    assert resp.status_code == 200
+    assert seen == {"user_name": "bob", "phone_id": 12}
+
+
 # ---------------------------------------------------------------------------
 # Emails
 # ---------------------------------------------------------------------------
@@ -201,3 +262,72 @@ def test_list_emails_self_allowed(monkeypatch):
         headers={"Authorization": f"Bearer {_tok(role='User', user_name='alice')}"},
     )
     assert resp.status_code == 200
+
+
+def test_add_email_requires_phone_owned_by_path_user(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install(app, monkeypatch)
+
+    async def fake_load(session, user_name):
+        return object()
+
+    async def fake_add_email(session, *, user_name, phone_number, email):
+        assert user_name == "bob"
+        assert phone_number == "13800000000"
+        assert email == "ops@example.com"
+
+    monkeypatch.setattr(users_repo, "load_by_user_name", fake_load)
+    monkeypatch.setattr(users_repo, "add_email", fake_add_email)
+    resp = TestClient(app).post(
+        "/api/orgs/users/bob/emails",
+        json={"phone_number": "13800000000", "email": "ops@example.com"},
+        headers={"Authorization": f"Bearer {_tok()}"},
+    )
+    assert resp.status_code == 400
+
+
+def test_add_email_posts_phone_number_and_email(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install(app, monkeypatch)
+
+    async def fake_load(session, user_name):
+        return object()
+
+    async def fake_add_email(session, *, user_name, phone_number, email):
+        return type("E", (), {"id": 2, "phone_number": phone_number, "email": email})()
+
+    monkeypatch.setattr(users_repo, "load_by_user_name", fake_load)
+    monkeypatch.setattr(users_repo, "add_email", fake_add_email)
+    resp = TestClient(app).post(
+        "/api/orgs/users/bob/emails",
+        json={"phone_number": "13800000000", "email": "ops@example.com"},
+        headers={"Authorization": f"Bearer {_tok()}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {
+        "id": 2,
+        "phone_number": "13800000000",
+        "email": "ops@example.com",
+    }
+
+
+def test_delete_email_scopes_to_path_user(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install(app, monkeypatch)
+    seen: dict[str, object] = {}
+
+    async def fake_delete_email(session, *, user_name, email_id):
+        seen["user_name"] = user_name
+        seen["email_id"] = email_id
+        return True
+
+    monkeypatch.setattr(users_repo, "delete_email", fake_delete_email)
+    resp = TestClient(app).delete(
+        "/api/orgs/users/bob/emails/9",
+        headers={"Authorization": f"Bearer {_tok()}"},
+    )
+    assert resp.status_code == 200
+    assert seen == {"user_name": "bob", "email_id": 9}

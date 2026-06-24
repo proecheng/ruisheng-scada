@@ -33,6 +33,7 @@ from ..core.security import (
     verify_password,
     verify_token,
 )
+from ..core.token_blacklist import blacklist_jti, is_jti_blacklisted
 from ..db.repositories import users as users_repo
 from ..deps import get_config, get_current_user, get_gw_session, get_redis, get_session
 from ..services import otp as otp_svc
@@ -149,19 +150,13 @@ async def register(
     return ok(data={"user_name": body.user_name})
 
 
-async def _blacklist_jti(r: _Redis, jti: str, remaining: int) -> None:
-    if remaining <= 0:
-        return
-    await r.sadd("jwt_blacklist", jti)
-    await r.setex(f"jwt_blacklist_ttl:{jti}", remaining, "1")
-
-
 @router.post("/refresh", response_model=ApiResponse)
 async def refresh(
     body: RefreshRequest,
     request: Request,
     cfg: Config = Depends(get_config),
     r: _Redis = Depends(get_redis),
+    session: AsyncSession = Depends(get_gw_session),
 ) -> ApiResponse:
     ip = request.client.host if request.client else "unknown"
     ua = request.headers.get("user-agent", "")
@@ -173,14 +168,17 @@ async def refresh(
         expected_typ="refresh",
     )
     old_jti = str(payload["jti"])
-    if await r.sismember("jwt_blacklist", old_jti):
+    if await is_jti_blacklisted(r, old_jti):
         raise BizError(ErrCode.UNAUTHED, "refresh revoked")
     remaining = int(str(payload["exp"])) - int(time.time())
-    await _blacklist_jti(r, old_jti, remaining)
+    await blacklist_jti(r, old_jti, remaining)
     sub = str(payload["sub"])
-    grp = str(payload["usr_group"])
-    role = str(payload["role"])
-    ca = int(str(payload.get("ca") or 0))
+    current = await users_repo.load_by_user_name(session, sub)
+    if current is None:
+        raise BizError(ErrCode.UNAUTHED, "refresh user not found")
+    grp = current.usr_group
+    role = current.authority
+    ca = current.control_authority
     access = issue_access_token(
         sub, grp, role, ca, fp, secret=cfg.jwt_secret, ttl_sec=cfg.jwt_access_ttl_sec
     )
@@ -188,11 +186,15 @@ async def refresh(
         sub, grp, role, ca, fp, secret=cfg.jwt_secret, ttl_sec=cfg.jwt_refresh_ttl_sec
     )
     return ok(
-        data={
-            "access_token": access,
-            "refresh_token": new_refresh,
-            "access_ttl_sec": cfg.jwt_access_ttl_sec,
-        }
+        data=LoginResponseData(
+            access_token=access,
+            refresh_token=new_refresh,
+            access_ttl_sec=cfg.jwt_access_ttl_sec,
+            user_name=current.user_name,
+            role=role,
+            usr_group=grp,
+            control_authority=ca,
+        ).model_dump()
     )
 
 
@@ -204,7 +206,7 @@ async def logout(
     r: _Redis = Depends(get_redis),
     user: CurrentUser = Depends(get_current_user),
 ) -> ApiResponse:
-    await _blacklist_jti(r, user.jti, cfg.jwt_access_ttl_sec)
+    await blacklist_jti(r, user.jti, cfg.jwt_access_ttl_sec)
     if body.refresh_token:
         ip = request.client.host if request.client else "unknown"
         ua = request.headers.get("user-agent", "")
@@ -216,7 +218,7 @@ async def logout(
                 expected_fp=fp,
                 expected_typ="refresh",
             )
-            await _blacklist_jti(r, str(p["jti"]), int(str(p["exp"])) - int(time.time()))
+            await blacklist_jti(r, str(p["jti"]), int(str(p["exp"])) - int(time.time()))
         except BizError:
             pass
     return ok(data={"logout": True})

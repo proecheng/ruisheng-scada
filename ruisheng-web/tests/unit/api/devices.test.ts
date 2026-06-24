@@ -21,11 +21,12 @@ describe('devices api', () => {
     mock.onGet('/devices').reply(200, {
       code: 0,
       message: 'ok',
-      data: [{ dev_number: 'D1', dev_name: 'Pump', state: 'online' }],
+      data: { total: 1, items: [{ dev_number: 'D1', dev_name: 'Pump', is_online: true }] },
     })
     const result = await listDevices()
     expect(result).toHaveLength(1)
     expect(result[0]?.dev_number).toBe('D1')
+    expect(result[0]?.state).toBe('online')
   })
 
   it('getDevice returns single record', async () => {
@@ -38,14 +39,31 @@ describe('devices api', () => {
     expect(d.dev_number).toBe('D1')
   })
 
-  it('createDevice posts payload', async () => {
-    mock.onPost('/devices').reply(200, {
-      code: 0,
-      message: 'ok',
-      data: { dev_number: 'D2', dev_name: 'New' },
+  it('createDevice posts backend schema payload', async () => {
+    mock.onPost('/devices').reply((config) => {
+      expect(JSON.parse(String(config.data))).toEqual({
+        dev_number: 'D2',
+        dev_ser_number: 'SN-D2',
+        modbus_addr: 2,
+        baud_rate: 9600,
+      })
+      return [
+        200,
+        {
+          code: 0,
+          message: 'ok',
+          data: { dev_number: 'D2', dev_ser_number: 'SN-D2', modbus_addr: 2, dev_name: 'New' },
+        },
+      ]
     })
-    const d = await createDevice({ dev_number: 'D2', dev_name: 'New' })
+    const d = await createDevice({
+      dev_number: 'D2',
+      dev_ser_number: 'SN-D2',
+      modbus_addr: 2,
+      baud_rate: 9600,
+    })
     expect(d.dev_number).toBe('D2')
+    expect(d.dev_ser_number).toBe('SN-D2')
   })
 
   it('updateDevice puts to /devices/{n}', async () => {

@@ -76,8 +76,8 @@ async def list_actions(
         SELECT id, dev_number, user_name, action, cmd_id, result,
                acted_at, completed_at, usr_group
         FROM user_control_actions
-        WHERE (:u IS NULL OR user_name = :u)
-          AND (:d IS NULL OR dev_number = :d)
+        WHERE (CAST(:u AS text) IS NULL OR user_name = :u)
+          AND (CAST(:d AS text) IS NULL OR dev_number = :d)
         ORDER BY acted_at DESC
         OFFSET :o LIMIT :l
     """)
@@ -93,11 +93,15 @@ async def list_actions(
     return [dict(r._mapping) for r in rows]
 
 
-async def cancel_action(session: AsyncSession, cmd_id: str) -> bool:
+async def cancel_action(session: AsyncSession, cmd_id: str, *, user_name: str | None) -> bool:
     sql = text("""
         UPDATE user_control_actions
         SET result = 'cancelled', completed_at = now()
         WHERE cmd_id = :c AND result = 'pending'
+          AND (CAST(:u AS text) IS NULL OR user_name = :u)
     """)
-    res: CursorResult[tuple[()]] = await session.execute(sql, {"c": cmd_id})  # type: ignore[assignment]
+    res: CursorResult[tuple[()]] = await session.execute(  # type: ignore[assignment]
+        sql,
+        {"c": cmd_id, "u": user_name},
+    )
     return (res.rowcount or 0) > 0

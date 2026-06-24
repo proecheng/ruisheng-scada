@@ -79,12 +79,13 @@ def test_cancel_not_found(monkeypatch):
     app = create_app()
     _base_install(app, monkeypatch)
 
-    async def fake_cancel(session, cmd_id):
+    async def fake_cancel(session, cmd_id, *, user_name):
+        assert user_name == "alice"
         return False
 
     monkeypatch.setattr(control_repo, "cancel_action", fake_cancel)
     resp = TestClient(app).delete(
         "/api/control/commands/non-existent-cmd",
-        headers={"Authorization": f"Bearer {_tok()}"},
+        headers={"Authorization": f"Bearer {_tok(ca=1)}"},
     )
     assert resp.status_code == 400

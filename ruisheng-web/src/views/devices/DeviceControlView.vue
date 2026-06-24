@@ -23,7 +23,7 @@ const pendingCmdId = ref<string | null>(null)
 async function requestOtp(): Promise<void> {
   if (!auth.user) return
   try {
-    await otpSend({ channel: 'sms', target: auth.user.user_name })
+    await otpSend({ channel: 'sms', action: 'control' })
     toast.info('验证码已发送，5 分钟内有效')
   } catch (e) {
     toast.error(e instanceof Error ? e.message : 'OTP 发送失败')
@@ -38,6 +38,7 @@ async function onSubmit(): Promise<void> {
   try {
     const ack = await sendControl(props.devNumber, {
       action: action.value,
+      high_risk: isHighRisk.value,
       otp: isHighRisk.value ? otp.value : undefined,
     })
     pendingCmdId.value = ack.cmd_id

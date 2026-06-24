@@ -7,7 +7,20 @@ export const MOCK_SESSION = {
   user: {
     user_name: '13800138000',
     authority: 'Administrators',
-    usr_group: 'default',
+    usr_group: 'demo',
+    control_authority: 7,
+  },
+}
+
+export const MOCK_USER_SESSION = {
+  access_token: 'mock-user-access-token',
+  refresh_token: 'mock-user-refresh-token',
+  expires_in: 900,
+  user: {
+    user_name: '13800138002',
+    authority: 'User',
+    usr_group: 'demo',
+    control_authority: 0,
   },
 }
 
@@ -51,11 +64,11 @@ export async function mockDevices(page: Page): Promise<void> {
  * 注入已登录状态：先加载 app（/login），设置 localStorage，
  * 使下次 page.goto() 时 auth.hydrate() 能读到 token。
  */
-export async function injectAuthState(page: Page): Promise<void> {
+export async function injectAuthState(page: Page, session = MOCK_SESSION): Promise<void> {
   await page.goto('/login')
   await page.evaluate((session) => {
     localStorage.setItem('access_token', session.access_token)
     localStorage.setItem('refresh_token', session.refresh_token)
     localStorage.setItem('user', JSON.stringify(session.user))
-  }, MOCK_SESSION)
+  }, session)
 }

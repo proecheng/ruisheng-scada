@@ -56,10 +56,10 @@ async def list_records(
         SELECT id, dev_number, point_id, alarm_name, alarm_msg, alarm_value,
                channels_sent, triggered_at, reset_at, usr_group
         FROM alarm_records
-        WHERE (:d IS NULL OR dev_number = :d)
+        WHERE (CAST(:d AS text) IS NULL OR dev_number = CAST(:d AS text))
           AND (:active = false OR reset_at IS NULL)
-          AND (:f IS NULL OR triggered_at >= :f)
-          AND (:t IS NULL OR triggered_at < :t)
+          AND (CAST(:f AS timestamptz) IS NULL OR triggered_at >= CAST(:f AS timestamptz))
+          AND (CAST(:t AS timestamptz) IS NULL OR triggered_at < CAST(:t AS timestamptz))
         ORDER BY triggered_at DESC
         OFFSET :o LIMIT :l
     """)

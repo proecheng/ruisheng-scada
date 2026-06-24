@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import * as echarts from 'echarts'
 import { getHistory } from '@/api/devices'
 import { useAsync } from '@/composables/useAsync'
 import { useToast } from '@/composables/useToast'
 import LoadingSkeleton from '@/components/LoadingSkeleton.vue'
+
+type ECharts = import('echarts').ECharts
+type EChartsModule = typeof import('echarts')
 
 const props = defineProps<{ devNumber: string }>()
 const route = useRoute()
@@ -17,7 +19,8 @@ const fromDate = ref<string>(new Date(Date.now() - 24 * 3600000).toISOString().s
 const toDate = ref<string>(new Date().toISOString().slice(0, 16))
 
 const chartRef = ref<HTMLDivElement | null>(null)
-let chart: echarts.ECharts | null = null
+let chart: ECharts | null = null
+let echartsModule: EChartsModule | null = null
 
 const loader = useAsync(() =>
   getHistory(props.devNumber, {
@@ -27,11 +30,17 @@ const loader = useAsync(() =>
   }),
 )
 
+async function getEcharts(): Promise<EChartsModule> {
+  echartsModule ??= await import('echarts')
+  return echartsModule
+}
+
 async function load(): Promise<void> {
   try {
     const page = await loader.run()
     await nextTick()
     if (!chart && chartRef.value) {
+      const echarts = await getEcharts()
       chart = echarts.init(chartRef.value)
       window.addEventListener('resize', resize)
     }

@@ -31,6 +31,11 @@ def _must_not_exceed(me: CurrentUser, target_authority: str) -> None:
         raise BizError(ErrCode.FORBIDDEN, "cannot grant authority above your own")
 
 
+async def _require_visible_user(session: AsyncSession, user_name: str) -> None:
+    if await users_repo.load_by_user_name(session, user_name) is None:
+        raise BizError(ErrCode.BAD_PARAM, "user not found")
+
+
 @router.get("/users", response_model=ApiResponse)
 async def list_users(
     offset: int = Query(0, ge=0),
@@ -172,6 +177,7 @@ async def add_phone(
     check_role(user, allowed=("GroupCompany", "Administrators"))
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        await _require_visible_user(session, user_name)
         p = await users_repo.add_phone(session, user_name=user_name, phone_number=body.phone_number)
     return ok(data={"id": p.id, "phone_number": p.phone_number})
 
@@ -186,7 +192,9 @@ async def delete_phone(
     check_role(user, allowed=("GroupCompany", "Administrators"))
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
-        await users_repo.delete_phone(session, phone_id)
+        deleted = await users_repo.delete_phone(session, user_name=user_name, phone_id=phone_id)
+        if not deleted:
+            raise BizError(ErrCode.BAD_PARAM, "phone not found")
     return ok(data={"deleted": phone_id})
 
 
@@ -223,7 +231,15 @@ async def add_email(
     check_role(user, allowed=("GroupCompany", "Administrators"))
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
-        e = await users_repo.add_email(session, phone_number=body.phone_number, email=body.email)
+        await _require_visible_user(session, user_name)
+        e = await users_repo.add_email(
+            session,
+            user_name=user_name,
+            phone_number=body.phone_number,
+            email=body.email,
+        )
+        if e is None:
+            raise BizError(ErrCode.BAD_PARAM, "phone not found")
     return ok(data={"id": e.id, "phone_number": e.phone_number, "email": e.email})
 
 
@@ -237,5 +253,7 @@ async def delete_email(
     check_role(user, allowed=("GroupCompany", "Administrators"))
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
-        await users_repo.delete_email(session, email_id)
+        deleted = await users_repo.delete_email(session, user_name=user_name, email_id=email_id)
+        if not deleted:
+            raise BizError(ErrCode.BAD_PARAM, "email not found")
     return ok(data={"deleted": email_id})

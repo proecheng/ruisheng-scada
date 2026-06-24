@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
-import * as echarts from 'echarts'
 import {
   getLatestWaveform,
   analyzeWaveform,
@@ -11,6 +10,9 @@ import {
 import { useAsync } from '@/composables/useAsync'
 import { useToast } from '@/composables/useToast'
 import LoadingSkeleton from '@/components/LoadingSkeleton.vue'
+
+type ECharts = import('echarts').ECharts
+type EChartsModule = typeof import('echarts')
 
 const toast = useToast()
 
@@ -23,8 +25,9 @@ const analysis = ref<AnalysisResult | null>(null)
 
 const waveChartRef = ref<HTMLDivElement | null>(null)
 const specChartRef = ref<HTMLDivElement | null>(null)
-let waveChart: echarts.ECharts | null = null
-let specChart: echarts.ECharts | null = null
+let waveChart: ECharts | null = null
+let specChart: ECharts | null = null
+let echartsModule: EChartsModule | null = null
 
 const loader = useAsync(async () => {
   const w = await getLatestWaveform(devNumber.value, pointId.value)
@@ -32,11 +35,17 @@ const loader = useAsync(async () => {
   const a = await analyzeWaveform(devNumber.value, pointId.value, analysisType.value)
   analysis.value = a
   await nextTick()
-  renderCharts()
+  await renderCharts()
   return { wave: w, analysis: a }
 })
 
-function renderCharts(): void {
+async function getEcharts(): Promise<EChartsModule> {
+  echartsModule ??= await import('echarts')
+  return echartsModule
+}
+
+async function renderCharts(): Promise<void> {
+  const echarts = await getEcharts()
   if (wave.value && waveChartRef.value) {
     if (!waveChart) waveChart = echarts.init(waveChartRef.value)
     waveChart.setOption({

@@ -82,6 +82,15 @@ async def create_maintain_plan(session: AsyncSession, **fields: object) -> Maint
     return p
 
 
+async def update_maintain_plan(
+    session: AsyncSession, plan: MaintainPlan, updates: dict[str, object]
+) -> MaintainPlan:
+    for k, v in updates.items():
+        setattr(plan, k, v)
+    await session.flush()
+    return plan
+
+
 async def soft_delete_maintain_plan(session: AsyncSession, plan: MaintainPlan) -> None:
     plan.deleted_at = datetime.now(UTC)
     await session.flush()

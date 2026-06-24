@@ -8,7 +8,13 @@ from ruisheng_gw.domain.registry import Registry
 
 def test_build_from_rows() -> None:
     device_rows = [
-        {"dev_number": "DEV-001", "usr_group": "ug_A", "update_interval_decisec": 10},
+        {
+            "dev_number": "DEV-001",
+            "usr_group": "ug_A",
+            "update_interval_decisec": 10,
+            "dev_ser_number": "SN-001",
+            "iccid": "ICCID-1",
+        },
         {"dev_number": "DEV-002", "usr_group": "ug_B", "update_interval_decisec": 50},
     ]
     point_rows = [
@@ -28,6 +34,8 @@ def test_build_from_rows() -> None:
     e1 = reg.get("DEV-001")
     assert e1 is not None
     assert e1.device.usr_group == "ug_A"
+    assert e1.device.dev_ser_number == "SN-001"
+    assert e1.device.iccid == "ICCID-1"
     assert e1.device.state is DeviceState.UNREGISTERED
     assert len(e1.points) == 1
 
@@ -113,3 +121,59 @@ def test_build_preserves_transport_fields() -> None:
     assert entry.transport_type == "serial"
     assert entry.serial_port == "COM3"
     assert entry.modbus_addr == 5
+
+
+def test_tcp_device_for_modbus_addr_requires_unique_match() -> None:
+    reg = Registry.build(
+        device_rows=[
+            {
+                "dev_number": "TCP-001",
+                "usr_group": "ug",
+                "update_interval_decisec": 10,
+                "transport_type": "tcp",
+                "serial_port": None,
+                "modbus_addr": 1,
+            },
+            {
+                "dev_number": "TCP-002",
+                "usr_group": "ug",
+                "update_interval_decisec": 10,
+                "transport_type": "tcp",
+                "serial_port": None,
+                "modbus_addr": 2,
+            },
+        ],
+        point_rows=[],
+    )
+    assert reg.tcp_device_for_modbus_addr(1).device.dev_number == "TCP-001"  # type: ignore[union-attr]
+    assert reg.tcp_device_for_modbus_addr(99) is None
+
+
+def test_tcp_device_for_dev_ser_number_requires_unique_match() -> None:
+    reg = Registry.build(
+        device_rows=[
+            {
+                "dev_number": "TCP-001",
+                "dev_ser_number": "SN-001",
+                "usr_group": "ug",
+                "update_interval_decisec": 10,
+                "transport_type": "tcp",
+                "serial_port": None,
+                "modbus_addr": 1,
+            },
+            {
+                "dev_number": "SER-001",
+                "dev_ser_number": "SN-002",
+                "usr_group": "ug",
+                "update_interval_decisec": 10,
+                "transport_type": "serial",
+                "serial_port": "COM3",
+                "modbus_addr": 1,
+            },
+        ],
+        point_rows=[],
+    )
+    match = reg.tcp_device_for_dev_ser_number("SN-001")
+    assert match is not None
+    assert match.device.dev_number == "TCP-001"
+    assert reg.tcp_device_for_dev_ser_number("SN-002") is None

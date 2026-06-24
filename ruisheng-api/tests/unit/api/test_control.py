@@ -14,9 +14,9 @@ def _env(m):
     m.setenv("API_JWT_SECRET", "x" * 64)
 
 
-def _tok(ca):
+def _tok(ca, *, user_name="alice", role="User"):
     fp = client_fingerprint("testclient", "testclient")
-    return issue_access_token("alice", "g1", "User", ca, fp, secret="x" * 64, ttl_sec=900)
+    return issue_access_token(user_name, "g1", role, ca, fp, secret="x" * 64, ttl_sec=900)
 
 
 class _S:
@@ -100,3 +100,54 @@ def test_control_high_risk_requires_otp(monkeypatch):
         headers={"Authorization": f"Bearer {_tok(ca=0x05)}"},
     )
     assert resp.status_code == 401
+
+
+def test_cancel_command_requires_control_authority(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install_happy(app, monkeypatch)
+    resp = TestClient(app).delete(
+        "/api/control/commands/c1",
+        headers={"Authorization": f"Bearer {_tok(ca=0)}"},
+    )
+    assert resp.status_code == 403
+
+
+def test_cancel_command_filters_plain_user_to_own_commands(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install_happy(app, monkeypatch)
+    seen: dict[str, object] = {}
+
+    async def fake_cancel(session, cmd_id, *, user_name):
+        seen["cmd_id"] = cmd_id
+        seen["user_name"] = user_name
+        return True
+
+    monkeypatch.setattr(control_repo, "cancel_action", fake_cancel)
+    resp = TestClient(app).delete(
+        "/api/control/commands/c1",
+        headers={"Authorization": f"Bearer {_tok(ca=1, user_name='alice')}"},
+    )
+    assert resp.status_code == 200
+    assert seen == {"cmd_id": "c1", "user_name": "alice"}
+
+
+def test_cancel_command_manager_can_cancel_tenant_commands(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install_happy(app, monkeypatch)
+    seen: dict[str, object] = {}
+
+    async def fake_cancel(session, cmd_id, *, user_name):
+        seen["cmd_id"] = cmd_id
+        seen["user_name"] = user_name
+        return True
+
+    monkeypatch.setattr(control_repo, "cancel_action", fake_cancel)
+    resp = TestClient(app).delete(
+        "/api/control/commands/c1",
+        headers={"Authorization": f"Bearer {_tok(ca=1, role='Company')}"},
+    )
+    assert resp.status_code == 200
+    assert seen == {"cmd_id": "c1", "user_name": None}

@@ -39,6 +39,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/devices/DeviceListView.vue'),
       },
       {
+        path: 'devices/new',
+        name: 'device-create',
+        component: () => import('@/views/devices/DeviceCreateView.vue'),
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
+      {
         path: 'devices/:devNumber',
         name: 'device-detail',
         component: () => import('@/views/devices/DeviceDetailView.vue'),

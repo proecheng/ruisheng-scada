@@ -14,10 +14,23 @@ export interface ReadyCheck {
 
 export async function getVersion(): Promise<MetaVersion> {
   const { data } = await apiClient.get('/meta/version')
-  return data.data as MetaVersion
+  const payload = data.data as Partial<MetaVersion> & { version?: string }
+  return {
+    api_version: payload.api_version ?? payload.version ?? 'unknown',
+    build_hash: payload.build_hash ?? 'unknown',
+    build_time: payload.build_time ?? '',
+    db_schema_version: payload.db_schema_version,
+  }
 }
 
 export async function getReady(): Promise<ReadyCheck> {
   const { data } = await apiClient.get('/health/ready')
-  return data.data as ReadyCheck
+  const payload = data.data as Partial<ReadyCheck> & { status?: string }
+  if (payload.components) return payload as ReadyCheck
+  return {
+    ok: payload.status === 'ready',
+    components: {
+      api: { ok: payload.status === 'ready', detail: payload.status },
+    },
+  }
 }

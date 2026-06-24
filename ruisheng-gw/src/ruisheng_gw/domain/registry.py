@@ -56,7 +56,12 @@ class Registry:
     ) -> Registry:
         reg = cls()
         for dr in device_rows:
-            dev = Device(dev_number=dr["dev_number"], usr_group=dr["usr_group"])
+            dev = Device(
+                dev_number=dr["dev_number"],
+                usr_group=dr["usr_group"],
+                dev_ser_number=dr.get("dev_ser_number", ""),
+                iccid=dr.get("iccid"),
+            )
             reg._entries[dr["dev_number"]] = RegistryEntry(
                 device=dev,
                 update_interval_decisec=dr["update_interval_decisec"],
@@ -94,7 +99,8 @@ class Registry:
                     await conn.execute(
                         text(
                             "SELECT dev_number, usr_group, update_interval_decisec, "
-                            "       transport_type, serial_port, modbus_addr "
+                            "       transport_type, serial_port, modbus_addr, "
+                            "       dev_ser_number, iccid "
                             "FROM devices "
                             "WHERE usr_group IS NOT NULL "
                             "  AND deleted_at IS NULL"
@@ -136,3 +142,23 @@ class Registry:
             for e in self._entries.values()
             if e.transport_type == "serial" and e.serial_port == port
         ]
+
+    def tcp_device_for_modbus_addr(self, addr: int) -> RegistryEntry | None:
+        """Return the unique TCP device for a ModBus address, or None if absent/ambiguous."""
+        matches = [
+            e for e in self._entries.values() if e.transport_type == "tcp" and e.modbus_addr == addr
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0]
+
+    def tcp_device_for_dev_ser_number(self, dev_ser_number: str) -> RegistryEntry | None:
+        """Return the unique TCP device for a device serial number."""
+        matches = [
+            e
+            for e in self._entries.values()
+            if e.transport_type == "tcp" and e.device.dev_ser_number == dev_ser_number
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0]

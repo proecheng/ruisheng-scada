@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import ulid
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
+from ruisheng_shared.errors.codes import BizError, ErrCode
 from sqlalchemy import text as _t
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,6 +44,33 @@ async def create_order(
             usr_group=usr_group,
         )
     return ok(data={**order, "out_trade_no": out_trade_no, "prepay_stub": "todo"})
+
+
+@pay_router.get("/orders", response_model=ApiResponse)
+async def list_orders(
+    openid: str | None = Query(None),
+    status: str | None = Query(None),
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        rows = await pay_repo.list_pay_orders(session, openid=openid, status=status)
+    return ok(data={"items": rows})
+
+
+@pay_router.get("/orders/{out_trade_no}", response_model=ApiResponse)
+async def get_order(
+    out_trade_no: str,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        order = await pay_repo.get_pay_order(session, out_trade_no)
+    if order is None:
+        raise BizError(ErrCode.BAD_PARAM, "order not found")
+    return ok(data=order)
 
 
 def _xml_ok() -> Response:

@@ -34,7 +34,7 @@ async def daily_report(
             SELECT dev_number, point_id, rt_value, recorded_at
             FROM point_data_history
             WHERE recorded_at >= :s AND recorded_at < :e
-              AND (:d IS NULL OR dev_number = :d)
+              AND (CAST(:d AS text) IS NULL OR dev_number = CAST(:d AS text))
         """)
         result = await session.execute(
             rows_q,

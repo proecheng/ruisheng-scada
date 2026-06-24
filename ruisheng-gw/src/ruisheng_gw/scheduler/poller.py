@@ -30,12 +30,15 @@ async def poll_once(
     if entry_info is None or entry_info.writer is None:
         return
     bus_id = entry_info.bus_id
-    # simplest first frame: read holding registers for all points (slave id = 1 default)
-    req = ReadHoldingRequest(slave=1, start_addr=0, register_count=max(1, len(entry.points)))
+    req = ReadHoldingRequest(
+        slave=entry.modbus_addr,
+        start_addr=0,
+        register_count=max(1, len(entry.points)),
+    )
     frame = encode_read_holding_request(req)
     try:
         async with bus_locks.acquire(bus_id):
-            await entry_info.writer.write(frame)
+            entry_info.writer.write(frame)
             await entry_info.writer.drain()
     except BusLockTimeout:
         # metric bus_lock_timeout_total{bus} — recorded by caller

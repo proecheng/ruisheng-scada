@@ -30,6 +30,8 @@ _FC3_HEADER_LEN = 3
 _FC3_OVERHEAD = 5
 # exception response fixed length
 _EXCEPTION_FRAME_LEN = 5
+# FC 21 registration fixed length: 0xFE + fc + ser24 + fw5 + hw3 + CRC
+_REGISTER_FRAME_LEN = 36
 # function code for FC 3 (read holding registers)
 _FC_READ_HOLDING = 0x03
 # exception bit mask
@@ -42,6 +44,7 @@ _FIXED_LEN_BY_FC: dict[int, int] = {
     0x05: 8,  # write single coil req/resp
     0x06: 8,  # write single holding req/resp
     0x10: 8,  # write multiple holding response
+    0x15: _REGISTER_FRAME_LEN,  # TCP device registration
     0x19: 4,  # heartbeat (slave fc CRC_lo CRC_hi)
 }
 

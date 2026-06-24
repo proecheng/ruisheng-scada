@@ -15,6 +15,7 @@ from .schemas.plans import (
     CompleteMaintenanceRequest,
     MaintainPlanCreateRequest,
     MaintainPlanOut,
+    MaintainPlanUpdateRequest,
     TimingPlanCreateRequest,
     TimingPlanOut,
     TimingPlanUpdateRequest,
@@ -133,6 +134,26 @@ async def delete_maintain_plan(
             raise BizError(ErrCode.BAD_PARAM, "plan not found")
         await plans_repo.soft_delete_maintain_plan(session, p)
     return ok(data={"deleted": plan_id})
+
+
+@maintenance_router.put("/{plan_id}", response_model=ApiResponse)
+async def update_maintain_plan(
+    plan_id: int,
+    body: MaintainPlanUpdateRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise BizError(ErrCode.BAD_PARAM, "no fields")
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        p = await plans_repo.get_maintain_plan(session, plan_id)
+        if p is None:
+            raise BizError(ErrCode.BAD_PARAM, "plan not found")
+        await plans_repo.update_maintain_plan(session, p, updates)
+    return ok(data=MaintainPlanOut.model_validate(p).model_dump())
 
 
 @maintenance_router.post("/{plan_id}/complete", response_model=ApiResponse)

@@ -52,7 +52,7 @@ async def load_history(
             SELECT dev_number, point_id, org_value, rt_value, recorded_at
             FROM point_data_history
             WHERE dev_number = :d
-              AND (:p IS NULL OR point_id = :p)
+              AND (CAST(:p AS bigint) IS NULL OR point_id = CAST(:p AS bigint))
               AND recorded_at >= :f AND recorded_at < :t
             ORDER BY recorded_at ASC
             OFFSET :o LIMIT :l
@@ -65,7 +65,7 @@ async def load_history(
                    time_bucket(make_interval(secs => :s), recorded_at) AS recorded_at
             FROM point_data_history
             WHERE dev_number = :d
-              AND (:p IS NULL OR point_id = :p)
+              AND (CAST(:p AS bigint) IS NULL OR point_id = CAST(:p AS bigint))
               AND recorded_at >= :f AND recorded_at < :t
             GROUP BY dev_number, point_id, recorded_at
             ORDER BY recorded_at ASC

@@ -23,6 +23,8 @@ class InvalidTransition(RuntimeError):  # noqa: N818
 class Device:
     dev_number: str
     usr_group: str
+    dev_ser_number: str = ""
+    iccid: str | None = None
     state: DeviceState = DeviceState.UNREGISTERED
     last_seen: float = 0.0
     last_offline_reason: str = ""

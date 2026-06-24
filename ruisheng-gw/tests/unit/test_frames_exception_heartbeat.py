@@ -8,6 +8,7 @@ from ruisheng_gw.protocol.frames import (
     ExceptionResponse,
     HeartbeatFrame,
     LowPowerRegisterFrame,
+    RegisterFrame,
     decode_frame_by_funcode,
     encode_heartbeat,
 )
@@ -38,6 +39,22 @@ def test_heartbeat_fc_0x19_round_trip() -> None:
     decoded = decode_frame_by_funcode(frame)
     assert isinstance(decoded, HeartbeatFrame)
     assert decoded.slave == SLAVE_ID
+
+
+def test_fc_21_register_decoded() -> None:
+    body = (
+        bytes([0xFE, 0x15])
+        + b"SN-001".ljust(24, b"\x00")
+        + b"1.2".ljust(5, b"\x00")
+        + b"3".ljust(3, b"\x00")
+    )
+    frame = append_crc_to_frame(body)
+    decoded = decode_frame_by_funcode(frame)
+    assert isinstance(decoded, RegisterFrame)
+    assert decoded.slave == 0xFE
+    assert decoded.dev_ser_number == "SN-001"
+    assert decoded.fw_version == "1.2"
+    assert decoded.hw_version == "3"
 
 
 def test_fc_22_low_power_register_decoded() -> None:

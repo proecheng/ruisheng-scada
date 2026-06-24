@@ -81,5 +81,8 @@ class UserEmail(Base):
     __tablename__ = "user_emails"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_name: Mapped[str | None] = mapped_column(
+        String(50), ForeignKey("users.user_name", ondelete="CASCADE")
+    )
     phone_number: Mapped[str] = mapped_column(String(20), nullable=False)
     email: Mapped[str] = mapped_column(String(100), nullable=False)

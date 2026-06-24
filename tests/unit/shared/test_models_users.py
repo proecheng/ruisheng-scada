@@ -76,4 +76,4 @@ def test_email_tablename() -> None:
 
 def test_email_columns() -> None:
     cols = {c.name for c in UserEmail.__table__.columns}
-    assert cols >= {"id", "phone_number", "email"}
+    assert cols >= {"id", "user_name", "phone_number", "email"}
