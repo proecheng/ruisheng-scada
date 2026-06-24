@@ -181,7 +181,13 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
             dev_number = entry.device.dev_number
             bound_dev_number = dev_number
             session_map.bind(dev_number=dev_number, writer=writer, bus_id=bus_id)
-            await ingestor.process_frame(dev_number=dev_number, frame=frame)
+            pending_read = session_map.get(dev_number).pending_read  # type: ignore[union-attr]
+            await ingestor.process_frame_for_pending(
+                dev_number=dev_number,
+                frame=frame,
+                pending_read=pending_read,
+            )
+            session_map.set_pending_read(dev_number, None)
 
         conn = Connection(
             reader=reader,
@@ -192,7 +198,14 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         await conn.read_loop()
 
     async def _serial_frame(dev_number: str, frame: bytes) -> None:
-        await ingestor.process_frame(dev_number=dev_number, frame=frame)
+        entry = session_map.get(dev_number)
+        pending_read = entry.pending_read if entry else None
+        await ingestor.process_frame_for_pending(
+            dev_number=dev_number,
+            frame=frame,
+            pending_read=pending_read,
+        )
+        session_map.set_pending_read(dev_number, None)
 
     def _make_poller(entry: RegistryEntry, dev_number: str) -> PollerFactory:
         async def _run() -> None:

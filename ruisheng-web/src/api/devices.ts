@@ -6,6 +6,8 @@ export interface Device {
   dev_ser_number?: string
   dev_name: string
   dev_type?: string | null
+  transport_type?: 'tcp' | 'serial'
+  serial_port?: string | null
   modbus_addr?: number
   baud_rate?: number | null
   update_interval_decisec?: number
@@ -26,6 +28,8 @@ export interface DeviceCreatePayload {
   dev_number: string
   dev_ser_number: string
   modbus_addr: number
+  transport_type?: 'tcp' | 'serial'
+  serial_port?: string
   iccid?: string
   dev_name?: string
   dev_type?: string
@@ -39,7 +43,15 @@ export interface DeviceCreatePayload {
 export type DeviceUpdatePayload = Partial<
   Pick<
     DeviceCreatePayload,
-    'dev_name' | 'dev_type' | 'baud_rate' | 'update_interval_decisec' | 'group_company' | 'company' | 'department'
+    | 'dev_name'
+    | 'dev_type'
+    | 'transport_type'
+    | 'serial_port'
+    | 'baud_rate'
+    | 'update_interval_decisec'
+    | 'group_company'
+    | 'company'
+    | 'department'
   >
 >
 
@@ -82,6 +94,8 @@ interface DeviceWire {
   dev_ser_number?: string
   dev_name?: string | null
   dev_type?: string | null
+  transport_type?: 'tcp' | 'serial'
+  serial_port?: string | null
   modbus_addr?: number
   baud_rate?: number | null
   update_interval_decisec?: number

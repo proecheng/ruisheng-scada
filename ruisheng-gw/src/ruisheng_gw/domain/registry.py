@@ -32,6 +32,12 @@ class PointEntry:
     point: Point
     threshold: ThresholdSpec
 
+    @property
+    def register_span(self) -> int:
+        if self.point.value_type == "双字":
+            return 2
+        return 1
+
 
 @dataclass
 class RegistryEntry:
@@ -41,6 +47,7 @@ class RegistryEntry:
     serial_port: str | None = None  # e.g. "COM3"; None for TCP
     modbus_addr: int = 1  # ModBus slave address 1-247
     points: dict[int, PointEntry] = field(default_factory=dict)
+    poll_cursor: int = 0
 
 
 class Registry:
@@ -80,6 +87,11 @@ class Registry:
                 point_offset=pr["point_offset"],
                 user_ratio=pr["user_ratio"],
                 user_point_offset=pr["user_point_offset"],
+                point_number=pr.get("point_number", 0),
+                fun_code=pr.get("fun_code", 3),
+                dev_addr=pr.get("dev_addr", 1),
+                r_bit=pr.get("r_bit"),
+                value_type=pr.get("value_type", "字"),
             )
             threshold = ThresholdSpec(
                 min_val=pr.get("min_val"),
@@ -114,7 +126,8 @@ class Registry:
                 (
                     await conn.execute(
                         text(  # noqa: TNL001 (no usr_group col; filtered via devices.usr_group join)
-                            "SELECT id, dev_number, point_ratio, point_offset, "
+                            "SELECT id, dev_number, point_number, fun_code, dev_addr, "
+                            "       r_bit, value_type, point_ratio, point_offset, "
                             "       user_ratio, user_point_offset, "
                             "       min_value AS min_val, max_value AS max_val "
                             "FROM device_points"

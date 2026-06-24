@@ -20,20 +20,22 @@ import re
 from collections import deque
 from collections.abc import Iterator
 
+from ruisheng_gw.protocol.exceptions import CRCMismatchError, FramingError
+from ruisheng_gw.protocol.modbus_codec import verify_crc16
+
 _DTU_HEARTBEAT_RE = re.compile(rb"\r?\n[!-~]{3,}\r?\n")
 
 # minimum bytes needed before we can dispatch on FC
 _MIN_DISPATCH_LEN = 4
-# FC 3 variable-length: need at least 3 bytes (slave + fc + byte_count)
-_FC3_HEADER_LEN = 3
-# FC 3 variable-length total overhead: slave(1) + fc(1) + byte_count(1) + CRC(2)
-_FC3_OVERHEAD = 5
+# FC 1/2/3/4 variable-length response: need slave + fc + byte_count.
+_READ_RESPONSE_HEADER_LEN = 3
+_READ_RESPONSE_OVERHEAD = 5
 # exception response fixed length
 _EXCEPTION_FRAME_LEN = 5
 # FC 21 registration fixed length: 0xFE + fc + ser24 + fw5 + hw3 + CRC
 _REGISTER_FRAME_LEN = 36
-# function code for FC 3 (read holding registers)
-_FC_READ_HOLDING = 0x03
+# read function codes with variable-length responses
+_READ_FCS = frozenset({0x01, 0x02, 0x03, 0x04})
 # exception bit mask
 _FC_EXCEPTION_BIT = 0x80
 
@@ -92,12 +94,12 @@ class Framer:
             fc = self._buf[1]
             length = self._expected_length(fc)
             if length is None:
-                # variable-length: FC 3 uses bytecount field at buf[2]
-                if fc == _FC_READ_HOLDING:
-                    if len(self._buf) < _FC3_HEADER_LEN:
+                # variable-length: read responses use bytecount field at buf[2]
+                if fc in _READ_FCS:
+                    if len(self._buf) < _READ_RESPONSE_HEADER_LEN:
                         return
                     byte_count = self._buf[2]
-                    length = byte_count + _FC3_OVERHEAD
+                    length = byte_count + _READ_RESPONSE_OVERHEAD
                 elif (fc & _FC_EXCEPTION_BIT) and (fc & ~_FC_EXCEPTION_BIT) in _KNOWN_BASE_FCS:
                     length = _EXCEPTION_FRAME_LEN  # slave fc errcode CRC_lo CRC_hi
                 else:
@@ -108,6 +110,12 @@ class Framer:
             if len(self._buf) < length:
                 return
             frame = bytes(self._buf[:length])
+            try:
+                verify_crc16(frame)
+            except (CRCMismatchError, FramingError):
+                del self._buf[0]
+                self.stats["resync"] += 1
+                continue
             del self._buf[:length]
             self._ready.append(frame)
 

@@ -16,6 +16,9 @@ from ruisheng_gw.protocol.modbus_codec import (
 )
 
 FC_READ_HOLDING_REGISTERS = 0x03
+FC_READ_COILS = 0x01
+FC_READ_DISCRETE_INPUTS = 0x02
+FC_READ_INPUT_REGISTERS = 0x04
 FC_HEARTBEAT = 0x19
 FC_DEVICE_REGISTER = 0x15
 FC_LOW_POWER_REGISTER = 0x16
@@ -34,28 +37,41 @@ REGISTER_HW_LEN = 3
 
 @dataclass(frozen=True)
 class ReadHoldingRequest:
-    """FC 3 request: read holding registers."""
+    """Modbus read request for FC 1/2/3/4."""
 
     slave: int
     start_addr: int
     register_count: int
+    fun_code: int = FC_READ_HOLDING_REGISTERS
 
 
 @dataclass(frozen=True)
 class ReadHoldingResponse:
-    """FC 3 response."""
+    """Modbus read response for FC 1/2/3/4.
+
+    `registers` is populated for FC3/FC4. `bits` is populated for FC1/FC2.
+    """
 
     slave: int
     byte_count: int
-    registers: tuple[int, ...]
+    registers: tuple[int, ...] = ()
+    bits: tuple[int, ...] = ()
+    fun_code: int = FC_READ_HOLDING_REGISTERS
 
 
 def encode_read_holding_request(req: ReadHoldingRequest) -> bytes:
-    """Encode FC 3 request as 8-byte RTU frame (6 body + 2 CRC)."""
+    """Encode FC 1/2/3/4 read request as 8-byte RTU frame."""
+    if req.fun_code not in (
+        FC_READ_COILS,
+        FC_READ_DISCRETE_INPUTS,
+        FC_READ_HOLDING_REGISTERS,
+        FC_READ_INPUT_REGISTERS,
+    ):
+        raise ProtocolError(f"unsupported read FC 0x{req.fun_code:02X}")
     body = bytes(
         [
             req.slave & 0xFF,
-            FC_READ_HOLDING_REGISTERS,
+            req.fun_code & 0xFF,
             (req.start_addr >> 8) & 0xFF,
             req.start_addr & 0xFF,
             (req.register_count >> 8) & 0xFF,
@@ -66,25 +82,36 @@ def encode_read_holding_request(req: ReadHoldingRequest) -> bytes:
 
 
 def decode_read_holding_response(raw: bytes) -> ReadHoldingResponse:
-    """Decode FC 3 response frame; raises CRCMismatchError or ProtocolError on bad input."""
+    """Decode FC 1/2/3/4 response frame; raises on bad input."""
     verify_crc16(raw)
     body = raw[:-2]
     if len(body) < MIN_RESPONSE_BODY_LEN:
-        raise ProtocolError("FC3 resp too short")
+        raise ProtocolError("read response too short")
     slave = body[0]
     fc = body[1]
-    if fc != FC_READ_HOLDING_REGISTERS:
-        raise ProtocolError(f"expected FC 0x03, got 0x{fc:02X}")
+    if fc not in (
+        FC_READ_COILS,
+        FC_READ_DISCRETE_INPUTS,
+        FC_READ_HOLDING_REGISTERS,
+        FC_READ_INPUT_REGISTERS,
+    ):
+        raise ProtocolError(f"expected read FC 0x01/0x02/0x03/0x04, got 0x{fc:02X}")
     byte_count = body[2]
     if len(body) != MIN_RESPONSE_BODY_LEN + byte_count:
-        raise ProtocolError(
-            f"FC3 byte_count={byte_count} but body len={len(body) - MIN_RESPONSE_BODY_LEN}"
-        )
+        raise ProtocolError(f"read byte_count={byte_count} but body len={len(body) - 3}")
     data = body[3:]
+    if fc in (FC_READ_COILS, FC_READ_DISCRETE_INPUTS):
+        bits = tuple((byte >> bit) & 0x01 for byte in data for bit in range(8))
+        return ReadHoldingResponse(slave=slave, fun_code=fc, byte_count=byte_count, bits=bits)
     if len(data) % 2 != 0:
-        raise ProtocolError("FC3 data length not even")
+        raise ProtocolError("read register data length not even")
     registers = tuple((data[i] << 8) | data[i + 1] for i in range(0, len(data), 2))
-    return ReadHoldingResponse(slave=slave, byte_count=byte_count, registers=registers)
+    return ReadHoldingResponse(
+        slave=slave,
+        fun_code=fc,
+        byte_count=byte_count,
+        registers=registers,
+    )
 
 
 @dataclass(frozen=True)
@@ -263,7 +290,12 @@ def decode_frame_by_funcode(
             original_fc=fc & FC_MASK,
             error_code=body[2],
         )
-    if fc == FC_READ_HOLDING_REGISTERS:
+    if fc in (
+        FC_READ_COILS,
+        FC_READ_DISCRETE_INPUTS,
+        FC_READ_HOLDING_REGISTERS,
+        FC_READ_INPUT_REGISTERS,
+    ):
         return decode_read_holding_response(raw)
     if fc == FC_HEARTBEAT:
         return HeartbeatFrame(slave=slave)

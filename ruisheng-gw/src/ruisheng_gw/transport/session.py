@@ -12,7 +12,11 @@ discussion). 1 DTU = 1 RS485 bus assumption; Plan 1.5 may revisit.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ruisheng_gw.domain.registry import PointEntry
 
 
 @dataclass(frozen=True)
@@ -20,6 +24,16 @@ class SessionEntry:
     writer: asyncio.StreamWriter
     generation: int
     bus_id: str
+    pending_read: PendingRead | None = None
+
+
+@dataclass(frozen=True)
+class PendingRead:
+    dev_number: str
+    fun_code: int
+    start_addr: int
+    quantity: int
+    points: tuple[PointEntry, ...] = field(default_factory=tuple)
 
 
 class SessionMap:
@@ -42,6 +56,7 @@ class SessionMap:
                 writer=writer,
                 generation=existing.generation + 1,
                 bus_id=existing.bus_id,
+                pending_read=existing.pending_read,
             )
         self._map[dev_number] = entry
         return entry
@@ -51,6 +66,21 @@ class SessionMap:
 
     def remove(self, dev_number: str) -> None:
         self._map.pop(dev_number, None)
+
+    def set_pending_read(
+        self,
+        dev_number: str,
+        pending_read: PendingRead | None,
+    ) -> None:
+        entry = self._map.get(dev_number)
+        if entry is None:
+            return
+        self._map[dev_number] = SessionEntry(
+            writer=entry.writer,
+            generation=entry.generation,
+            bus_id=entry.bus_id,
+            pending_read=pending_read,
+        )
 
     def __len__(self) -> int:
         return len(self._map)

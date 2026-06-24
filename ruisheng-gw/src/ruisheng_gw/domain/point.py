@@ -28,6 +28,11 @@ class Point:
     point_offset: float
     user_ratio: float
     user_point_offset: float
+    point_number: int = 0
+    fun_code: int = 3
+    dev_addr: int = 1
+    r_bit: int | None = None
+    value_type: str = "字"
 
 
 def apply_scaling(p: Point, *, raw: float) -> tuple[float, float]:

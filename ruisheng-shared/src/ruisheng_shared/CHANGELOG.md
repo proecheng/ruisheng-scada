@@ -11,6 +11,7 @@
 ## 2026-06-24
 
 - feature: UserEmail 增加可空 user_name 归属字段，用于通讯录邮箱新增/删除归属校验；已有邮箱迁移回填，非 breaking，SHARED_SCHEMA_VERSION 不变。
+- feature: Device ORM 补齐 transport_type 和 serial_port 字段及串口唯一索引声明，对齐既有数据库迁移与网关串口接入能力；非 breaking，SHARED_SCHEMA_VERSION 不变。
 
 ## 2026-04-17
 

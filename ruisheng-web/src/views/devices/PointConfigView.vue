@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   listPoints,
@@ -26,6 +26,17 @@ const isNew = ref(false)
 const deleteTarget = ref<PointConfig | null>(null)
 const showDeleteDialog = ref(false)
 
+const functionLabels: Record<PointConfig['fun_code'], string> = {
+  1: 'FC1 线圈',
+  2: 'FC2 离散输入',
+  3: 'FC3 保持寄存器',
+  4: 'FC4 输入寄存器',
+}
+
+const requiresRegisterBit = computed(
+  () => editing.value?.data_type === 'bit' && editing.value.fun_code !== 1 && editing.value.fun_code !== 2,
+)
+
 async function reload(): Promise<void> {
   points.value = await loader.run()
 }
@@ -33,7 +44,24 @@ async function reload(): Promise<void> {
 onMounted(() => reload())
 
 function startNew(): void {
-  editing.value = { point_id: 0, point_name: '', ratio: 1, offset: 0, unit: '', precision: 2 }
+  editing.value = {
+    point_id: 0,
+    point_name: '',
+    register_address: 0,
+    fun_code: 3,
+    dev_addr: 1,
+    r_bit: null,
+    data_type: '字',
+    raw_ratio: 1,
+    raw_offset: 0,
+    ratio: 1,
+    offset: 0,
+    unit: '',
+    precision: 2,
+    min_value: null,
+    max_value: null,
+    show: true,
+  }
   isNew.value = true
 }
 
@@ -45,6 +73,7 @@ function startEdit(p: PointConfig): void {
 async function save(): Promise<void> {
   if (!editing.value) return
   try {
+    normalizeEditing()
     if (isNew.value) {
       await createPoint(props.devNumber, editing.value)
       toast.success('已新增')
@@ -56,6 +85,48 @@ async function save(): Promise<void> {
     await reload()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '保存失败')
+  }
+}
+
+function normalizeEditing(): void {
+  if (!editing.value) return
+  if (editing.value.fun_code === 1 || editing.value.fun_code === 2) {
+    editing.value.data_type = 'bit'
+    editing.value.r_bit = null
+  }
+  if (editing.value.data_type !== 'bit') {
+    editing.value.r_bit = null
+  }
+  if (requiresRegisterBit.value && (editing.value.r_bit === null || editing.value.r_bit === undefined)) {
+    throw new Error('寄存器 bit 点必须填写位号 0-15')
+  }
+  if (
+    editing.value.min_value !== null &&
+    editing.value.min_value !== undefined &&
+    editing.value.max_value !== null &&
+    editing.value.max_value !== undefined &&
+    editing.value.min_value > editing.value.max_value
+  ) {
+    throw new Error('最小值不能大于最大值')
+  }
+}
+
+function onFunCodeChange(): void {
+  if (!editing.value) return
+  if (editing.value.fun_code === 1 || editing.value.fun_code === 2) {
+    editing.value.data_type = 'bit'
+    editing.value.r_bit = null
+  } else if (editing.value.data_type === 'bit') {
+    editing.value.r_bit ??= 0
+  }
+}
+
+function onDataTypeChange(): void {
+  if (!editing.value) return
+  if (editing.value.data_type === 'bit' && editing.value.fun_code !== 1 && editing.value.fun_code !== 2) {
+    editing.value.r_bit ??= 0
+  } else {
+    editing.value.r_bit = null
   }
 }
 
@@ -97,17 +168,27 @@ async function confirmDelete(): Promise<void> {
     <table v-else class="point-table">
       <thead>
         <tr>
-          <th>ID</th><th>名称</th><th>Ratio</th><th>Offset</th><th>单位</th><th>精度</th><th>操作</th>
+          <th>ID</th>
+          <th>名称</th>
+          <th>寄存器类型</th>
+          <th>地址</th>
+          <th>数据类型</th>
+          <th>位号</th>
+          <th>倍率/偏移</th>
+          <th>单位</th>
+          <th>操作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="p in points" :key="p.point_id">
           <td>{{ p.point_id }}</td>
           <td>{{ p.point_name }}</td>
-          <td>{{ p.ratio }}</td>
-          <td>{{ p.offset }}</td>
+          <td>{{ functionLabels[p.fun_code] }}</td>
+          <td>{{ p.register_address }}</td>
+          <td>{{ p.data_type }}</td>
+          <td>{{ p.r_bit ?? '—' }}</td>
+          <td>{{ p.raw_ratio }} / {{ p.raw_offset }}；{{ p.ratio }} / {{ p.offset }}</td>
           <td>{{ p.unit ?? '—' }}</td>
-          <td>{{ p.precision ?? 2 }}</td>
           <td>
             <button @click="startEdit(p)">编辑</button>
             <button class="danger" @click="askDelete(p)">删除</button>
@@ -120,14 +201,74 @@ async function confirmDelete(): Promise<void> {
       <h3>{{ isNew ? '新增点位' : `编辑点位 ${editing.point_id}` }}</h3>
       <form @submit.prevent="save">
         <label v-if="isNew">
-          Point ID
-          <input v-model.number="editing.point_id" type="number" required />
+          点位 ID
+          <input v-model.number="editing.point_id" type="number" min="0" required />
         </label>
-        <label>名称 <input v-model="editing.point_name" type="text" required /></label>
-        <label>Ratio <input v-model.number="editing.ratio" type="number" step="0.0001" /></label>
-        <label>Offset <input v-model.number="editing.offset" type="number" step="0.0001" /></label>
-        <label>单位 <input v-model="editing.unit" type="text" /></label>
-        <label>精度 <input v-model.number="editing.precision" type="number" min="0" max="6" /></label>
+        <label>
+          点位名称
+          <input v-model="editing.point_name" type="text" required />
+        </label>
+        <label>
+          寄存器类型
+          <select v-model.number="editing.fun_code" @change="onFunCodeChange">
+            <option :value="1">FC1 线圈</option>
+            <option :value="2">FC2 离散输入</option>
+            <option :value="3">FC3 保持寄存器</option>
+            <option :value="4">FC4 输入寄存器</option>
+          </select>
+        </label>
+        <label>
+          寄存器/线圈地址
+          <input v-model.number="editing.register_address" type="number" min="0" max="65535" required />
+        </label>
+        <label>
+          从站地址
+          <input v-model.number="editing.dev_addr" type="number" min="1" max="247" required />
+        </label>
+        <label>
+          数据类型
+          <select v-model="editing.data_type" :disabled="editing.fun_code === 1 || editing.fun_code === 2" @change="onDataTypeChange">
+            <option value="字">字</option>
+            <option value="双字">双字</option>
+            <option value="bit">bit</option>
+          </select>
+        </label>
+        <label v-if="requiresRegisterBit">
+          位号
+          <input v-model.number="editing.r_bit" type="number" min="0" max="15" required />
+        </label>
+        <label>
+          原始倍率
+          <input v-model.number="editing.raw_ratio" type="number" step="0.0001" />
+        </label>
+        <label>
+          原始偏移
+          <input v-model.number="editing.raw_offset" type="number" step="0.0001" />
+        </label>
+        <label>
+          显示倍率
+          <input v-model.number="editing.ratio" type="number" step="0.0001" />
+        </label>
+        <label>
+          显示偏移
+          <input v-model.number="editing.offset" type="number" step="0.0001" />
+        </label>
+        <label>
+          单位
+          <input v-model="editing.unit" type="text" />
+        </label>
+        <label>
+          最小值
+          <input v-model.number="editing.min_value" type="number" step="0.0001" />
+        </label>
+        <label>
+          最大值
+          <input v-model.number="editing.max_value" type="number" step="0.0001" />
+        </label>
+        <label class="checkbox">
+          <input v-model="editing.show" type="checkbox" />
+          显示
+        </label>
         <div class="actions">
           <button type="button" @click="editing = null">取消</button>
           <button type="submit" class="primary">保存</button>
@@ -159,10 +300,15 @@ h2 { flex: 1; font-size: 18px; }
   background: #fff; box-shadow: -2px 0 8px rgba(0,0,0,0.15); padding: 20px; overflow-y: auto; z-index: 500;
 }
 .drawer h3 { font-size: 16px; margin-bottom: 16px; }
-.drawer form { display: flex; flex-direction: column; gap: 12px; }
+.drawer form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .drawer label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
-.drawer input { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; }
-.actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.drawer input, .drawer select { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.drawer .checkbox { flex-direction: row; align-items: center; }
+.drawer .checkbox input { width: auto; }
+.actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .actions button { padding: 6px 14px; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; }
 .primary { background: var(--color-primary); color: white; border-color: var(--color-primary); }
+@media (max-width: 640px) {
+  .drawer form { grid-template-columns: 1fr; }
+}
 </style>

@@ -88,6 +88,8 @@ async def update_device(
     check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
     check_ca(user, bit=0x02)
     updates = body.model_dump(exclude_none=True)
+    if body.transport_type == "tcp":
+        updates["serial_port"] = None
     if not updates:
         raise BizError(ErrCode.BAD_PARAM, "no fields to update")
     async with session.begin():
@@ -95,6 +97,8 @@ async def update_device(
         d = await devices_repo.get_by_dev_number(session, dev_number)
         if d is None:
             raise BizError(ErrCode.BAD_PARAM, "device not found")
+        if body.serial_port is not None and body.transport_type is None and d.transport_type != "serial":
+            raise BizError(ErrCode.BAD_PARAM, "serial_port can only be set on serial devices")
         await devices_repo.update_device_fields(session, d, updates)
         await session.execute(
             text("UPDATE devices SET update_flag = 1 WHERE dev_number = :d"),

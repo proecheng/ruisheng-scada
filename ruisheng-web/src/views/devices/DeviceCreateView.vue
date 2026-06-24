@@ -13,6 +13,8 @@ const devNumber = ref('')
 const serialNumber = ref('')
 const devName = ref('')
 const devType = ref('')
+const transportType = ref<'tcp' | 'serial'>('tcp')
+const serialPort = ref('')
 const modbusAddr = ref<string | number>('1')
 const baudRate = ref<string | number>('9600')
 const updateInterval = ref<string | number>('100')
@@ -58,9 +60,16 @@ function buildPayload(): DeviceCreatePayload {
     throw new Error('上报间隔范围为 10-1000 分秒')
   }
 
+  const port = optionalText(serialPort.value)
+  if (transportType.value === 'serial' && port === undefined) {
+    throw new Error('串口设备必须填写串口号')
+  }
+
   return {
     dev_number: devNumber.value.trim(),
     dev_ser_number: serialNumber.value.trim(),
+    transport_type: transportType.value,
+    serial_port: transportType.value === 'serial' ? port : undefined,
     modbus_addr: addr,
     iccid: optionalText(iccid.value),
     dev_name: optionalText(devName.value),
@@ -134,6 +143,17 @@ async function submit(): Promise<void> {
       <fieldset>
         <legend>通信参数</legend>
         <label>
+          通信方式
+          <select v-model="transportType">
+            <option value="tcp">TCP</option>
+            <option value="serial">串口</option>
+          </select>
+        </label>
+        <label v-if="transportType === 'serial'">
+          串口号
+          <input v-model="serialPort" type="text" required autocomplete="off" placeholder="COM3 或 /dev/ttyUSB0" />
+        </label>
+        <label>
           Modbus 地址
           <input v-model="modbusAddr" type="number" min="1" max="247" required />
         </label>
@@ -182,8 +202,8 @@ h2 { font-size: 18px; }
 fieldset { border: 1px solid #e5e7eb; border-radius: 6px; padding: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 legend { padding: 0 6px; font-size: 13px; font-weight: 600; color: var(--color-text-secondary); }
 label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--color-text-secondary); }
-input { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; color: var(--color-text); }
-input:focus { outline: 2px solid rgba(22, 119, 255, 0.18); border-color: var(--color-primary); }
+input, select { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; color: var(--color-text); background: #fff; }
+input:focus, select:focus { outline: 2px solid rgba(22, 119, 255, 0.18); border-color: var(--color-primary); }
 .actions { display: flex; justify-content: flex-end; gap: 8px; }
 .actions button { padding: 7px 16px; border-radius: 4px; border: none; background: var(--color-primary); color: #fff; cursor: pointer; }
 .actions button:disabled { opacity: 0.55; cursor: not-allowed; }

@@ -17,6 +17,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -41,12 +42,28 @@ class Device(Base, TimestampMixin, SoftDeleteMixin):
             "baud_rate IN (9600, 19200, 38400, 57600, 115200)",
             name="baud_rate",  # → ck_devices_baud_rate
         ),
+        CheckConstraint(
+            "transport_type IN ('tcp', 'serial')",
+            name="transport_type",  # → ck_devices_transport_type
+        ),
+        CheckConstraint(
+            "(transport_type = 'serial' AND serial_port IS NOT NULL)"
+            " OR (transport_type = 'tcp' AND serial_port IS NULL)",
+            name="serial_port_consistency",  # → ck_devices_serial_port_consistency
+        ),
         Index("idx_devices_tenant", "usr_group"),
         Index("idx_devices_admin", "administrators"),
         Index(
             "idx_devices_online",
             "is_online",
             postgresql_where="deleted_at IS NULL",
+        ),
+        Index(
+            "uq_devices_serial_port_modbus_addr",
+            "serial_port",
+            "modbus_addr",
+            unique=True,
+            postgresql_where=text("transport_type = 'serial'"),
         ),
     )
 
@@ -56,6 +73,13 @@ class Device(Base, TimestampMixin, SoftDeleteMixin):
     iccid: Mapped[str | None] = mapped_column(String(50))
     dev_name: Mapped[str | None] = mapped_column(String(100))
     dev_type: Mapped[str | None] = mapped_column(String(50))
+    transport_type: Mapped[str] = mapped_column(
+        String(10),
+        nullable=False,
+        default="tcp",
+        server_default="tcp",
+    )
+    serial_port: Mapped[str | None] = mapped_column(String(50))
     modbus_addr: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     baud_rate: Mapped[int | None] = mapped_column(Integer)
     group_company: Mapped[str | None] = mapped_column(String(100))

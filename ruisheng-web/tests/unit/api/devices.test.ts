@@ -45,6 +45,8 @@ describe('devices api', () => {
         dev_number: 'D2',
         dev_ser_number: 'SN-D2',
         modbus_addr: 2,
+        transport_type: 'serial',
+        serial_port: 'COM3',
         baud_rate: 9600,
       })
       return [
@@ -60,6 +62,8 @@ describe('devices api', () => {
       dev_number: 'D2',
       dev_ser_number: 'SN-D2',
       modbus_addr: 2,
+      transport_type: 'serial',
+      serial_port: 'COM3',
       baud_rate: 9600,
     })
     expect(d.dev_number).toBe('D2')

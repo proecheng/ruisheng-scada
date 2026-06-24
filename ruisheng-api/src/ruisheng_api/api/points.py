@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from fastapi import APIRouter, Depends
 from ruisheng_shared.errors.codes import BizError, ErrCode
 from sqlalchemy import text
@@ -13,7 +15,12 @@ from ..core.tenant import apply_tenant_context
 from ..db.repositories import devices as devices_repo
 from ..db.repositories import points as points_repo
 from ..deps import get_current_user, get_session
-from .schemas.points import PointCreateRequest, PointOut, PointUpdateRequest
+from .schemas.points import (
+    PointCreateRequest,
+    PointOut,
+    PointUpdateRequest,
+    validate_point_contract,
+)
 
 router = APIRouter(prefix="/api/devices", tags=["points"])
 
@@ -73,7 +80,7 @@ async def update_point(
 ) -> ApiResponse:
     check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
     check_ca(user, bit=0x02)
-    updates = body.model_dump(exclude_none=True)
+    updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise BizError(ErrCode.BAD_PARAM, "no fields to update")
     async with session.begin():
@@ -81,6 +88,16 @@ async def update_point(
         p = await points_repo.get_point(session, point_id)
         if p is None or p.dev_number != dev_number:
             raise BizError(ErrCode.BAD_PARAM, "point not found")
+        try:
+            validate_point_contract(
+                fun_code=cast(int, updates.get("fun_code", p.fun_code)),
+                value_type=str(updates.get("value_type", p.value_type)),
+                r_bit=cast(int | None, updates.get("r_bit", p.r_bit)),
+                min_value=cast(float | None, updates.get("min_value", p.min_value)),
+                max_value=cast(float | None, updates.get("max_value", p.max_value)),
+            )
+        except ValueError as exc:
+            raise BizError(ErrCode.BAD_PARAM, str(exc)) from exc
         await points_repo.update_point(session, p, updates)
         await _bump_flag(session, dev_number)
     return ok(data=PointOut.model_validate(p).model_dump())
