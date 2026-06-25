@@ -23,7 +23,6 @@ def upgrade() -> None:
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
     )
     op.create_index("idx_devices_enabled", "devices", ["is_enabled"], unique=False)
-    op.alter_column("devices", "is_enabled", server_default=None)
 
 
 def downgrade() -> None:
