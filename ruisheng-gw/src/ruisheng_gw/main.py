@@ -27,7 +27,7 @@ PollerFactory = Callable[[], Coroutine[Any, Any, None]]
 # hardcoded literal — 与 G7 #28-B 两版本字段分离一致
 # 升 shared 时 gw PR 必须同步改此常量
 REQUIRED_SHARED_SCHEMA_VERSION: int = 20260415
-EXPECTED_ALEMBIC_HEAD: str = "0010_user_emails_user_name"
+EXPECTED_ALEMBIC_HEAD: str = "0011_device_enable_flag"
 _PEER_HOST_PORT_LEN = 2
 
 
@@ -145,38 +145,60 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
             return f"tcp:{peer[0]}:{peer[1]}"
         return f"tcp:{id(writer)}"
 
+    def _tcp_peer_ip(writer: asyncio.StreamWriter) -> str | None:
+        peer = writer.get_extra_info("peername")
+        if isinstance(peer, tuple) and len(peer) >= _PEER_HOST_PORT_LEN:
+            return str(peer[0])
+        return None
+
     async def _tcp_handler(
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
         bus_id = _tcp_bus_id(writer)
+        peer_ip = _tcp_peer_ip(writer)
         bound_dev_number: str | None = None
 
-        async def _on_frame(frame: bytes) -> None:
+        def _is_allowed_tcp_source(entry: RegistryEntry) -> bool:
+            return entry.dev_ip is None or peer_ip == entry.dev_ip
+
+        def _log_and_check_tcp_source(entry: RegistryEntry, *, event: str) -> bool:
+            if _is_allowed_tcp_source(entry):
+                return True
+            log.warning(
+                event,
+                dev_number=entry.device.dev_number,
+                peer_ip=peer_ip,
+                expected_ip=entry.dev_ip,
+            )
+            return False
+
+        async def _handle_register_frame(frame: bytes, decoded: RegisterFrame) -> None:
             nonlocal bound_dev_number
-            if not frame:
+            entry = registry.tcp_device_for_dev_ser_number(decoded.dev_ser_number)
+            if entry is None:
+                log.warning(
+                    "tcp register ignored: unknown or ambiguous serial",
+                    dev_ser_number=decoded.dev_ser_number,
+                )
                 return
-            try:
-                decoded = decode_frame_by_funcode(frame)
-            except ProtocolError:
+            if not _log_and_check_tcp_source(
+                entry, event="tcp register ignored: source ip mismatch"
+            ):
                 return
-            if isinstance(decoded, RegisterFrame):
-                entry = registry.tcp_device_for_dev_ser_number(decoded.dev_ser_number)
-                if entry is None:
-                    log.warning(
-                        "tcp register ignored: unknown or ambiguous serial",
-                        dev_ser_number=decoded.dev_ser_number,
-                    )
-                    return
-                bound_dev_number = entry.device.dev_number
-                session_map.bind(dev_number=bound_dev_number, writer=writer, bus_id=bus_id)
-                await ingestor.process_frame(dev_number=bound_dev_number, frame=frame)
-                return
+            bound_dev_number = entry.device.dev_number
+            session_map.bind(dev_number=bound_dev_number, writer=writer, bus_id=bus_id)
+            await ingestor.process_frame(dev_number=bound_dev_number, frame=frame)
+
+        async def _handle_data_frame(frame: bytes) -> None:
+            nonlocal bound_dev_number
             entry = (
                 registry.get(bound_dev_number) if bound_dev_number else None
             ) or registry.tcp_device_for_modbus_addr(frame[0])
             if entry is None:
                 log.warning("tcp frame ignored: unknown or ambiguous slave", slave=frame[0])
+                return
+            if not _log_and_check_tcp_source(entry, event="tcp frame ignored: source ip mismatch"):
                 return
             dev_number = entry.device.dev_number
             bound_dev_number = dev_number
@@ -188,6 +210,18 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
                 pending_read=pending_read,
             )
             session_map.set_pending_read(dev_number, None)
+
+        async def _on_frame(frame: bytes) -> None:
+            if not frame:
+                return
+            try:
+                decoded = decode_frame_by_funcode(frame)
+            except ProtocolError:
+                return
+            if isinstance(decoded, RegisterFrame):
+                await _handle_register_frame(frame, decoded)
+            else:
+                await _handle_data_frame(frame)
 
         conn = Connection(
             reader=reader,

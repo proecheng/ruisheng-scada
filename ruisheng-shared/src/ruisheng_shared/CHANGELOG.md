@@ -8,6 +8,10 @@
 - `fix:` — 错误修正
 - `chore:` — 重构、重命名、注释（无语义变化）
 
+## 2026-06-25
+
+- feature: Device ORM 增加 is_enabled 业务启停字段，用于网关只加载启用设备、前端设备启停控制；非 breaking，SHARED_SCHEMA_VERSION 不变。
+
 ## 2026-06-24
 
 - feature: UserEmail 增加可空 user_name 归属字段，用于通讯录邮箱新增/删除归属校验；已有邮箱迁移回填，非 breaking，SHARED_SCHEMA_VERSION 不变。

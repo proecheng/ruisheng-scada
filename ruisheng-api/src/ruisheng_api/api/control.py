@@ -20,7 +20,7 @@ from ..db.repositories import devices as devices_repo
 from ..deps import get_current_user, get_redis, get_session
 from ..pubsub.publisher import xadd_control_cmd
 from ..services import otp as otp_svc
-from .schemas.control import ControlAction, ControlResponseData
+from .schemas.control import ControlAction, ControlActionPreset, ControlResponseData
 
 if TYPE_CHECKING:
     from typing import Any
@@ -30,9 +30,46 @@ if TYPE_CHECKING:
 router = APIRouter(prefix="/api/devices", tags=["control"])
 query_router = APIRouter(prefix="/api/control", tags=["control"])
 
+CONTROL_ACTION_PRESETS: tuple[ControlActionPreset, ...] = (
+    ControlActionPreset(
+        key="start",
+        label="启动",
+        fun_code=6,
+        reg=0,
+        value=1,
+        description="写单个保持寄存器：寄存器 0 = 1",
+    ),
+    ControlActionPreset(
+        key="stop",
+        label="停止",
+        fun_code=6,
+        reg=0,
+        value=0,
+        high_risk=True,
+        description="写单个保持寄存器：寄存器 0 = 0",
+    ),
+    ControlActionPreset(
+        key="reset",
+        label="复位",
+        fun_code=6,
+        reg=1,
+        value=1,
+        high_risk=True,
+        description="写单个保持寄存器：寄存器 1 = 1",
+    ),
+)
+
 
 def _action_key(a: ControlAction) -> str:
     return hashlib.sha256(f"{a.fun_code}:{a.reg}:{a.value}".encode()).hexdigest()[:16]
+
+
+@query_router.get("/actions", response_model=ApiResponse)
+async def list_control_actions(
+    user: CurrentUser = Depends(get_current_user),
+) -> ApiResponse:
+    check_ca(user, bit=0x01)
+    return ok(data={"items": [a.model_dump() for a in CONTROL_ACTION_PRESETS]})
 
 
 @router.post("/{dev_number}/control", response_model=ApiResponse)

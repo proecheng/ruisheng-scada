@@ -7,11 +7,17 @@ import { useDiagStore } from '@/stores/diag'
 const BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
 let authToken: string | null = null
+const AUTH_EXPIRED_EVENT = 'ruisheng:auth-expired'
 export function setAuthToken(token: string | null): void {
   authToken = token
 }
 export function getAuthToken(): string | null {
   return authToken
+}
+function notifyAuthExpired(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT))
+  }
 }
 
 export const apiClient: AxiosInstance = axios.create({
@@ -41,6 +47,7 @@ apiClient.interceptors.response.use(
       e.code = body.code
       e.hint = err.hint
       e.traceId = body.trace_id
+      if (body.code === -101) notifyAuthExpired()
       throw e
     }
     return response
@@ -53,8 +60,10 @@ apiClient.interceptors.response.use(
       e.code = body.code
       e.hint = err.hint
       e.traceId = body.trace_id
+      if (body.code === -101 || error.response?.status === 401) notifyAuthExpired()
       return Promise.reject(e)
     }
+    if (error.response?.status === 401) notifyAuthExpired()
     return Promise.reject(error)
   },
 )

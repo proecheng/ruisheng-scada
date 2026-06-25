@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC
 
-from ruisheng_shared.models.devices import Device
+from ruisheng_shared.models.devices import Device, DeviceTemplate
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,4 +69,35 @@ async def soft_delete(session: AsyncSession, device: Device) -> None:
     from datetime import datetime
 
     device.deleted_at = datetime.now(UTC)
+    await session.flush()
+
+
+async def list_templates(session: AsyncSession) -> list[DeviceTemplate]:
+    stmt = select(DeviceTemplate).order_by(DeviceTemplate.name)
+    return list((await session.execute(stmt)).scalars())
+
+
+async def get_template(session: AsyncSession, template_id: int) -> DeviceTemplate | None:
+    stmt = select(DeviceTemplate).where(DeviceTemplate.id == template_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def create_template(session: AsyncSession, **fields: object) -> DeviceTemplate:
+    t = DeviceTemplate(**fields)
+    session.add(t)
+    await session.flush()
+    return t
+
+
+async def update_template_fields(
+    session: AsyncSession, template: DeviceTemplate, updates: dict[str, object]
+) -> DeviceTemplate:
+    for k, v in updates.items():
+        setattr(template, k, v)
+    await session.flush()
+    return template
+
+
+async def delete_template(session: AsyncSession, template: DeviceTemplate) -> None:
+    await session.delete(template)
     await session.flush()

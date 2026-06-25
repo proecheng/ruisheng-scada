@@ -29,6 +29,8 @@ def _device(**kw):
         "serial_port": None,
         "modbus_addr": 2,
         "baud_rate": 9600,
+        "dev_ip": None,
+        "is_enabled": True,
         "is_online": False,
         "last_call_at": None,
         "last_back_at": None,

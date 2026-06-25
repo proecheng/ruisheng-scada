@@ -8,9 +8,11 @@ export interface Device {
   dev_type?: string | null
   transport_type?: 'tcp' | 'serial'
   serial_port?: string | null
+  dev_ip?: string | null
   modbus_addr?: number
   baud_rate?: number | null
   update_interval_decisec?: number
+  is_enabled?: boolean
   state: 'online' | 'offline' | 'warning'
   is_online?: boolean
   group_company?: string | null
@@ -30,6 +32,7 @@ export interface DeviceCreatePayload {
   modbus_addr: number
   transport_type?: 'tcp' | 'serial'
   serial_port?: string
+  dev_ip?: string
   iccid?: string
   dev_name?: string
   dev_type?: string
@@ -40,20 +43,20 @@ export interface DeviceCreatePayload {
   department?: string
 }
 
-export type DeviceUpdatePayload = Partial<
-  Pick<
-    DeviceCreatePayload,
-    | 'dev_name'
-    | 'dev_type'
-    | 'transport_type'
-    | 'serial_port'
-    | 'baud_rate'
-    | 'update_interval_decisec'
-    | 'group_company'
-    | 'company'
-    | 'department'
-  >
->
+export interface DeviceUpdatePayload {
+  dev_name?: string
+  dev_type?: string
+  transport_type?: 'tcp' | 'serial'
+  serial_port?: string | null
+  dev_ip?: string | null
+  modbus_addr?: number
+  baud_rate?: number
+  update_interval_decisec?: number
+  is_enabled?: boolean
+  group_company?: string
+  company?: string
+  department?: string
+}
 
 export interface RealtimePoint {
   point_id: number
@@ -69,7 +72,8 @@ export interface RealtimeSnapshot {
 }
 
 export interface HistoryQuery {
-  point_id: number
+  point_id?: number
+  point_ids?: number[]
   from: string
   to: string
   sample_interval_s?: number
@@ -77,7 +81,7 @@ export interface HistoryQuery {
 }
 
 export interface HistoryPage {
-  points: Array<{ ts: string; value: number }>
+  points: Array<{ ts: string; value: number; point_id?: number }>
   next_cursor: string | null
   downsampled?: boolean
   sample_interval_s?: number
@@ -96,9 +100,11 @@ interface DeviceWire {
   dev_type?: string | null
   transport_type?: 'tcp' | 'serial'
   serial_port?: string | null
+  dev_ip?: string | null
   modbus_addr?: number
   baud_rate?: number | null
   update_interval_decisec?: number
+  is_enabled?: boolean
   state?: Device['state']
   is_online?: boolean
   group_company?: string | null
@@ -121,12 +127,13 @@ interface RealtimePointWire extends Partial<RealtimePoint> {
 
 interface HistoryWire {
   rows?: Array<{
+    point_id?: number
     ts?: string
     recorded_at?: string
     value?: number
     rt_value?: number
   }>
-  points?: Array<{ ts: string; value: number }>
+  points?: Array<{ ts: string; value: number; point_id?: number }>
   next_offset?: number | null
   next_cursor?: string | null
   downsampled?: boolean
@@ -180,6 +187,11 @@ export async function updateDevice(dev_number: string, payload: DeviceUpdatePayl
   return toDevice(data.data as DeviceWire)
 }
 
+export async function setDeviceEnabled(dev_number: string, is_enabled: boolean): Promise<Device> {
+  const { data } = await apiClient.put(`/devices/${dev_number}/enabled`, { is_enabled })
+  return toDevice(data.data as DeviceWire)
+}
+
 export async function deleteDevice(dev_number: string): Promise<void> {
   await apiClient.delete(`/devices/${dev_number}`)
 }
@@ -194,13 +206,18 @@ export async function getRealtime(dev_number: string): Promise<RealtimeSnapshot>
 }
 
 export async function getHistory(dev_number: string, q: HistoryQuery): Promise<HistoryPage> {
-  const { data } = await apiClient.get(`/devices/${dev_number}/history`, { params: q })
+  const params = {
+    ...q,
+    point_ids: q.point_ids?.join(','),
+  }
+  const { data } = await apiClient.get(`/devices/${dev_number}/history`, { params })
   const page = data.data as HistoryWire
   const points =
     page.points ??
     (page.rows ?? []).map((p) => ({
       ts: String(p.ts ?? p.recorded_at ?? new Date(0).toISOString()),
       value: Number(p.value ?? p.rt_value ?? 0),
+      point_id: p.point_id === undefined ? undefined : Number(p.point_id),
     }))
   return {
     points,

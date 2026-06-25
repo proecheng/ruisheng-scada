@@ -17,3 +17,13 @@ class ControlResponseData(BaseModel):
     cmd_id: str
     status: str
     acted_at: datetime
+
+
+class ControlActionPreset(BaseModel):
+    key: str
+    label: str
+    fun_code: int
+    reg: int
+    value: int
+    high_risk: bool = False
+    description: str

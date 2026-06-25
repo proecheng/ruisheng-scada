@@ -130,3 +130,19 @@ export async function updatePoint(
 export async function deletePoint(devNumber: string, pointId: number): Promise<void> {
   await apiClient.delete(`/devices/${devNumber}/points/${pointId}`)
 }
+
+export async function exportPointsCsv(devNumber: string): Promise<Blob> {
+  const { data } = await apiClient.get(`/devices/${devNumber}/points/export`, {
+    responseType: 'blob',
+  })
+  return data as Blob
+}
+
+export async function importPointsCsv(devNumber: string, file: File): Promise<PointConfig[]> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await apiClient.post(`/devices/${devNumber}/points/import`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return itemsOf((data.data as { items?: PointWire[] }).items).map(toPoint)
+}

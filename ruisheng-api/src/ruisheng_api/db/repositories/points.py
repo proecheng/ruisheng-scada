@@ -23,6 +23,15 @@ async def create_point(session: AsyncSession, *, dev_number: str, **fields: obje
     return p
 
 
+async def create_points(
+    session: AsyncSession, *, dev_number: str, rows: list[dict[str, object]]
+) -> list[DevicePoint]:
+    points = [DevicePoint(dev_number=dev_number, **row) for row in rows]
+    session.add_all(points)
+    await session.flush()
+    return points
+
+
 async def update_point(
     session: AsyncSession, point: DevicePoint, updates: dict[str, object]
 ) -> DevicePoint:

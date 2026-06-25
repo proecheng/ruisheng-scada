@@ -8,8 +8,10 @@ const device = {
   id: 1,
   dev_ser_number: 'SN-DEV001',
   is_online: true,
+  is_enabled: true,
   transport_type: 'tcp',
   serial_port: null,
+  dev_ip: '192.168.1.20',
   modbus_addr: 1,
   baud_rate: 9600,
   update_interval_decisec: 100,
@@ -36,6 +38,50 @@ const points = [
     min_value: null,
     max_value: 80,
     show: 1,
+  },
+  {
+    id: 12,
+    dev_number: 'DEV001',
+    point_name: 'pressure',
+    user_point_name: '压力',
+    point_number: 2,
+    fun_code: 4,
+    dev_addr: 1,
+    r_bit: null,
+    value_type: '双字',
+    point_unit: 'MPa',
+    point_ratio: 1,
+    point_offset: 0,
+    user_ratio: 1,
+    user_point_offset: 0,
+    min_value: null,
+    max_value: 1.6,
+    show: 1,
+  },
+]
+
+const templates = [
+  {
+    id: 101,
+    name: '泵站模板',
+    dev_type: 'pump',
+    payload: {
+      points: [
+        {
+          point_name: 'flow',
+          user_point_name: '流量',
+          point_number: 12,
+          fun_code: 4,
+          dev_addr: 1,
+          value_type: '双字',
+          point_ratio: 1,
+          point_offset: 0,
+          user_ratio: 1,
+          user_point_offset: 0,
+          show: 1,
+        },
+      ],
+    },
   },
 ]
 
@@ -115,6 +161,7 @@ export async function mockFullApi(page: Page): Promise<void> {
         const created = {
           id: createdId(10),
           is_online: false,
+          is_enabled: true,
           state: 'offline',
           loss_count: 0,
           update_interval_decisec: body.update_interval_decisec ?? 100,
@@ -125,6 +172,14 @@ export async function mockFullApi(page: Page): Promise<void> {
         return ok(route, created)
       }
       if (path === '/api/devices/DEV001' && method === 'GET') return ok(route, device)
+      if (path === '/api/devices/DEV001' && method === 'PUT') {
+        Object.assign(device, req.postDataJSON())
+        return ok(route, device)
+      }
+      if (path === '/api/devices/DEV001/enabled' && method === 'PUT') {
+        Object.assign(device, req.postDataJSON(), { is_online: req.postDataJSON().is_enabled ? device.is_online : false })
+        return ok(route, device)
+      }
       const createdDeviceMatch = path.match(/^\/api\/devices\/([^/]+)$/)
       if (createdDeviceMatch && method === 'GET') {
         const devNumber = decodeURIComponent(createdDeviceMatch[1] ?? '')
@@ -143,10 +198,20 @@ export async function mockFullApi(page: Page): Promise<void> {
       if (path === '/api/devices/DEV001/history') {
         return ok(route, {
           rows: [
-            { recorded_at: '2026-04-29T08:00:00Z', rt_value: 25.1 },
-            { recorded_at: '2026-04-29T09:00:00Z', rt_value: 26.5 },
+            { point_id: 11, recorded_at: '2026-04-29T08:00:00Z', rt_value: 25.1 },
+            { point_id: 12, recorded_at: '2026-04-29T08:00:00Z', rt_value: 0.42 },
+            { point_id: 11, recorded_at: '2026-04-29T09:00:00Z', rt_value: 26.5 },
+            { point_id: 12, recorded_at: '2026-04-29T09:00:00Z', rt_value: 0.45 },
           ],
           next_offset: null,
+        })
+      }
+      if (path === '/api/control/actions') {
+        return ok(route, {
+          items: [
+            { key: 'start', label: '启动', fun_code: 6, reg: 0, value: 1, high_risk: false, description: '寄存器 0 = 1' },
+            { key: 'stop', label: '停止', fun_code: 6, reg: 0, value: 0, high_risk: true, description: '寄存器 0 = 0' },
+          ],
         })
       }
       if (path === '/api/devices/DEV001/control' && method === 'POST') {
@@ -159,6 +224,15 @@ export async function mockFullApi(page: Page): Promise<void> {
       if (path === '/api/devices/DEV001/points' && method === 'GET') {
         return ok(route, { items: points })
       }
+      if (path === '/api/devices/DEV001/points/export') {
+        return route.fulfill({
+          body: 'point_name,user_point_name,point_number,fun_code,dev_addr,value_type\nflow,流量,12,4,1,双字\n',
+          headers: { 'content-type': 'text/csv' },
+        })
+      }
+      if (path === '/api/devices/DEV001/points/import' && method === 'POST') {
+        return ok(route, { imported: 1, items: [{ ...points[0], id: createdId(300), user_point_name: '导入点位' }] })
+      }
       if (path === '/api/devices/DEV001/points' && method === 'POST') {
         const body = req.postDataJSON()
         return ok(route, { ...points[0], id: createdId(100), ...body })
@@ -169,6 +243,19 @@ export async function mockFullApi(page: Page): Promise<void> {
       }
       if (path.startsWith('/api/devices/DEV001/points/') && method === 'DELETE') {
         return ok(route, { deleted: 11 })
+      }
+
+      if (path === '/api/device-templates' && method === 'GET') return ok(route, { items: templates })
+      if (path === '/api/device-templates' && method === 'POST') {
+        const created = { id: createdId(1000), ...req.postDataJSON() }
+        templates.push(created)
+        return ok(route, created)
+      }
+      if (path.startsWith('/api/device-templates/') && method === 'PUT') {
+        return ok(route, { id: Number(path.split('/').pop()), ...req.postDataJSON() })
+      }
+      if (path.startsWith('/api/device-templates/') && method === 'DELETE') {
+        return ok(route, { deleted: Number(path.split('/').pop()) })
       }
 
       if (path === '/api/devices/DEV001/alarms/configs' && method === 'GET') {

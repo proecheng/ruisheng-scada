@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from ipaddress import IPv4Address, IPv6Address
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -15,8 +16,10 @@ class DeviceOut(BaseModel):
     dev_type: str | None
     transport_type: Literal["tcp", "serial"]
     serial_port: str | None
+    dev_ip: IPv4Address | IPv6Address | None
     modbus_addr: int
     baud_rate: int | None
+    is_enabled: bool
     is_online: bool
     last_call_at: datetime | None
     last_back_at: datetime | None
@@ -37,6 +40,7 @@ class DeviceCreateRequest(BaseModel):
     dev_type: str | None = Field(default=None, max_length=50)
     transport_type: Literal["tcp", "serial"] = "tcp"
     serial_port: str | None = Field(default=None, min_length=1, max_length=50)
+    dev_ip: IPv4Address | IPv6Address | None = None
     modbus_addr: int = Field(..., ge=1, le=247)
     baud_rate: int | None = Field(default=None)
     update_interval_decisec: int = Field(default=100, ge=10, le=1000)
@@ -61,8 +65,11 @@ class DeviceUpdateRequest(BaseModel):
     dev_type: str | None = None
     transport_type: Literal["tcp", "serial"] | None = None
     serial_port: str | None = Field(default=None, min_length=1, max_length=50)
+    dev_ip: IPv4Address | IPv6Address | None = None
+    modbus_addr: int | None = Field(default=None, ge=1, le=247)
     baud_rate: int | None = None
     update_interval_decisec: int | None = Field(default=None, ge=10, le=1000)
+    is_enabled: bool | None = None
     group_company: str | None = None
     company: str | None = None
     department: str | None = None
@@ -76,6 +83,11 @@ class DeviceUpdateRequest(BaseModel):
         if self.transport_type == "tcp" and self.serial_port is not None:
             raise ValueError("serial_port must be omitted when switching to tcp")
         return self
+
+
+class DeviceEnabledRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    is_enabled: bool
 
 
 class DeviceListQuery(BaseModel):

@@ -57,6 +57,13 @@ const routes: RouteRecordRaw[] = [
         props: true,
       },
       {
+        path: 'devices/:devNumber/edit',
+        name: 'device-edit',
+        component: () => import('@/views/devices/DeviceEditView.vue'),
+        props: true,
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
+      },
+      {
         path: 'devices/:devNumber/control',
         name: 'device-control',
         component: () => import('@/views/devices/DeviceControlView.vue'),
@@ -124,6 +131,12 @@ const routes: RouteRecordRaw[] = [
         path: 'settings/contacts',
         name: 'contacts',
         component: () => import('@/views/settings/ContactView.vue'),
+      },
+      {
+        path: 'settings/device-templates',
+        name: 'device-templates',
+        component: () => import('@/views/settings/DeviceTemplateView.vue'),
+        meta: { roles: ['Administrators', 'GroupCompany', 'Company'] },
       },
       {
         path: 'pay',

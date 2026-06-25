@@ -17,6 +17,7 @@ from ..db.repositories import timeseries as ts_repo
 from ..deps import get_current_user, get_session
 from .schemas.devices import (
     DeviceCreateRequest,
+    DeviceEnabledRequest,
     DeviceOut,
     DeviceUpdateRequest,
 )
@@ -80,9 +81,10 @@ async def create_device(
             )
             if endpoint is not None:
                 raise BizError(ErrCode.BAD_PARAM, "serial_port and modbus_addr already in use")
-        d = await devices_repo.create_device(
-            session, **body.model_dump(exclude_none=True), usr_group=user.usr_group
-        )
+        create_fields = body.model_dump(exclude_none=True)
+        if "dev_ip" in create_fields:
+            create_fields["dev_ip"] = str(create_fields["dev_ip"])
+        d = await devices_repo.create_device(session, **create_fields, usr_group=user.usr_group)
     return ok(data=DeviceOut.model_validate(d).model_dump())
 
 
@@ -95,7 +97,9 @@ async def update_device(
 ) -> ApiResponse:
     check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
     check_ca(user, bit=0x02)
-    updates = body.model_dump(exclude_none=True)
+    updates = body.model_dump(exclude_unset=True)
+    if updates.get("dev_ip") is not None:
+        updates["dev_ip"] = str(updates["dev_ip"])
     if body.transport_type == "tcp":
         updates["serial_port"] = None
     if not updates:
@@ -113,12 +117,12 @@ async def update_device(
             raise BizError(ErrCode.BAD_PARAM, "serial_port can only be set on serial devices")
         target_transport = updates.get("transport_type", d.transport_type)
         target_serial_port = updates.get("serial_port", d.serial_port)
-        target_modbus_addr = d.modbus_addr
+        target_modbus_addr = updates.get("modbus_addr", d.modbus_addr)
         if target_transport == "serial" and isinstance(target_serial_port, str):
             endpoint = await devices_repo.get_serial_endpoint(
                 session,
                 serial_port=target_serial_port,
-                modbus_addr=target_modbus_addr,
+                modbus_addr=int(target_modbus_addr),
             )
             if endpoint is not None and endpoint.dev_number != dev_number:
                 raise BizError(ErrCode.BAD_PARAM, "serial_port and modbus_addr already in use")
@@ -126,6 +130,32 @@ async def update_device(
         await session.execute(
             text("UPDATE devices SET update_flag = 1 WHERE dev_number = :d"),
             {"d": dev_number},
+        )
+    return ok(data=DeviceOut.model_validate(d).model_dump())
+
+
+@router.put("/{dev_number}/enabled", response_model=ApiResponse)
+async def set_device_enabled(
+    dev_number: str,
+    body: DeviceEnabledRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse:
+    check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
+    check_ca(user, bit=0x02)
+    async with session.begin():
+        await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        d = await devices_repo.get_by_dev_number(session, dev_number)
+        if d is None:
+            raise BizError(ErrCode.BAD_PARAM, "device not found")
+        await devices_repo.update_device_fields(
+            session,
+            d,
+            {
+                "is_enabled": body.is_enabled,
+                "is_online": d.is_online if body.is_enabled else False,
+                "update_flag": 1,
+            },
         )
     return ok(data=DeviceOut.model_validate(d).model_dump())
 
@@ -168,6 +198,7 @@ async def history(
     from_ts: datetime = Query(..., alias="from"),
     to_ts: datetime = Query(..., alias="to"),
     point_id: int | None = Query(None),
+    point_ids: str | None = Query(None),
     sample_interval_s: int | None = Query(None, ge=1, le=86_400),
     offset: int = Query(0, ge=0),
     limit: int = Query(1000, ge=1, le=ts_repo.MAX_HISTORY_ROWS),
@@ -176,6 +207,16 @@ async def history(
 ) -> ApiResponse:
     if to_ts <= from_ts:
         raise BizError(ErrCode.BAD_PARAM, "to must be > from")
+    selected_point_ids: list[int] | None = None
+    if point_ids:
+        try:
+            selected_point_ids = [int(p.strip()) for p in point_ids.split(",") if p.strip()]
+        except ValueError as exc:
+            raise BizError(ErrCode.BAD_PARAM, "point_ids must be comma-separated integers") from exc
+        if not selected_point_ids:
+            raise BizError(ErrCode.BAD_PARAM, "point_ids is empty")
+    elif point_id is not None:
+        selected_point_ids = [point_id]
     duration = int((to_ts - from_ts).total_seconds())
     interval = sample_interval_s or ts_repo.pick_sample_interval(duration)
     async with session.begin():
@@ -186,7 +227,7 @@ async def history(
         rows = await ts_repo.load_history(
             session,
             dev_number=dev_number,
-            point_id=point_id,
+            point_ids=selected_point_ids,
             from_ts=from_ts,
             to_ts=to_ts,
             sample_interval_s=interval,

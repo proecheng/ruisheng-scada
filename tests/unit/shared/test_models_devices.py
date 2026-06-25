@@ -36,6 +36,7 @@ def test_devices_columns() -> None:
         "last_back_at",
         "loss_count",
         "is_online",
+        "is_enabled",
         "last_state",
         "update_flag",
         "usr_group",

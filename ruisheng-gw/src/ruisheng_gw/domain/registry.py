@@ -45,6 +45,7 @@ class RegistryEntry:
     update_interval_decisec: int
     transport_type: str = "tcp"  # 'tcp' | 'serial'
     serial_port: str | None = None  # e.g. "COM3"; None for TCP
+    dev_ip: str | None = None
     modbus_addr: int = 1  # ModBus slave address 1-247
     points: dict[int, PointEntry] = field(default_factory=dict)
     poll_cursor: int = 0
@@ -74,6 +75,7 @@ class Registry:
                 update_interval_decisec=dr["update_interval_decisec"],
                 transport_type=dr.get("transport_type", "tcp"),
                 serial_port=dr.get("serial_port"),
+                dev_ip=dr.get("dev_ip"),
                 modbus_addr=dr.get("modbus_addr", 1),
             )
         for pr in point_rows:
@@ -111,11 +113,12 @@ class Registry:
                     await conn.execute(
                         text(
                             "SELECT dev_number, usr_group, update_interval_decisec, "
-                            "       transport_type, serial_port, modbus_addr, "
+                            "       transport_type, serial_port, dev_ip, modbus_addr, "
                             "       dev_ser_number, iccid "
                             "FROM devices "
                             "WHERE usr_group IS NOT NULL "
-                            "  AND deleted_at IS NULL"
+                            "  AND deleted_at IS NULL "
+                            "  AND is_enabled IS TRUE"
                         )
                     )
                 )

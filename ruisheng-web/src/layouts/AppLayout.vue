@@ -34,6 +34,7 @@ const navItems = computed<Array<{ to: string; label: string; icon: string; badge
   { to: '/plans/maintenance', label: '保养', icon: '🔧' },
   { to: '/scenes', label: '组态', icon: '🗺' },
   { to: '/pay', label: '充值', icon: '💳' },
+  { to: '/settings/device-templates', label: '模板', icon: '📋' },
   { to: '/settings/users', label: '用户', icon: '👥' },
 ])
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { sendControl, cancelCommand } from '@/api/control'
+import { sendControl, cancelCommand, listControlActions, type ControlActionPreset } from '@/api/control'
 import { otpSend } from '@/api/auth'
 import { useToast } from '@/composables/useToast'
 import { useWsStore } from '@/stores/ws'
@@ -19,6 +19,23 @@ const isHighRisk = ref(false)
 const showConfirm = ref(false)
 const otp = ref('')
 const pendingCmdId = ref<string | null>(null)
+const presets = ref<ControlActionPreset[]>([])
+
+const selectedPreset = computed(() => presets.value.find((p) => p.key === action.value))
+
+onMounted(async () => {
+  try {
+    presets.value = await listControlActions()
+    action.value = presets.value[0]?.key ?? 'start'
+    isHighRisk.value = presets.value[0]?.high_risk ?? false
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '加载控制动作失败')
+  }
+})
+
+watch(selectedPreset, (preset) => {
+  if (preset) isHighRisk.value = preset.high_risk
+})
 
 async function requestOtp(): Promise<void> {
   if (!auth.user) return
@@ -38,6 +55,9 @@ async function onSubmit(): Promise<void> {
   try {
     const ack = await sendControl(props.devNumber, {
       action: action.value,
+      fun_code: selectedPreset.value?.fun_code,
+      reg: selectedPreset.value?.reg,
+      value: selectedPreset.value?.value,
       high_risk: isHighRisk.value,
       otp: isHighRisk.value ? otp.value : undefined,
     })
@@ -84,12 +104,18 @@ watch(
       <label>
         操作
         <select v-model="action">
-          <option value="start">启动</option>
-          <option value="stop">停止</option>
-          <option value="reset">复位</option>
-          <option value="set_speed">调速</option>
+          <option v-for="preset in presets" :key="preset.key" :value="preset.key">
+            {{ preset.label }}
+          </option>
         </select>
       </label>
+
+      <dl v-if="selectedPreset" class="preset">
+        <dt>控制配置</dt>
+        <dd>{{ selectedPreset.description }}</dd>
+        <dt>Modbus</dt>
+        <dd>功能码 {{ selectedPreset.fun_code }}，寄存器 {{ selectedPreset.reg }}，写入值 {{ selectedPreset.value }}</dd>
+      </dl>
 
       <label class="high-risk">
         <input v-model="isHighRisk" type="checkbox" />
@@ -128,6 +154,9 @@ h2 { display: inline; font-size: 18px; }
 .form { display: flex; flex-direction: column; gap: 16px; }
 .form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .form select, .form input { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+.preset { display: grid; grid-template-columns: 80px 1fr; gap: 6px 10px; margin: 0; padding: 10px; border: 1px solid #e5e7eb; border-radius: 4px; font-size: 13px; }
+.preset dt { color: var(--color-text-secondary); }
+.preset dd { margin: 0; }
 .high-risk { flex-direction: row !important; align-items: center; gap: 8px; }
 .otp-box { display: flex; gap: 8px; }
 .otp-box input { flex: 1; }

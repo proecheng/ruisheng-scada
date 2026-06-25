@@ -63,6 +63,7 @@ async function visitMainPages(page: Page): Promise<void> {
     ['/plans/maintenance', '保养计划'],
     ['/scenes', '组态画面'],
     ['/pay', '设备充值'],
+    ['/settings/device-templates', '设备模板'],
     ['/settings/users', '用户管理'],
     ['/settings/contacts', '通讯录'],
   ] as const
@@ -104,6 +105,11 @@ async function exerciseDevices(page: Page): Promise<string> {
 
   await expect(page).toHaveURL(new RegExp(`/devices/${devNumber}$`))
   await expect(page.getByRole('heading', { name: new RegExp(`${devNumber}.*E2E 串口泵站`) })).toBeVisible()
+  await page.getByRole('button', { name: '编辑' }).click()
+  await expect(page).toHaveURL(new RegExp(`/devices/${devNumber}/edit$`))
+  await page.getByLabel('轮询间隔（秒）').fill('10')
+  await page.getByRole('button', { name: '保存' }).click()
+  await expect(page).toHaveURL(new RegExp(`/devices/${devNumber}$`))
   return devNumber
 }
 
@@ -142,11 +148,17 @@ async function exerciseDeviceSubPages(page: Page, devNumber: string): Promise<nu
 
   await page.goto(`/devices/${devNumber}/history?point_id=${pointId}`)
   await expect(page.getByRole('heading', { name: `${devNumber} — 历史数据` })).toBeVisible()
+  await expect(page.locator('.chart')).toBeVisible()
+  await expect(page.getByRole('columnheader', { name: '变量' })).toBeVisible()
+  await page.getByRole('button', { name: '表格', exact: true }).click()
   await page.getByRole('button', { name: '查询' }).click()
+  await expect(page.getByRole('columnheader', { name: '变量' })).toBeVisible()
+  await page.getByRole('button', { name: '图表', exact: true }).click()
   await expect(page.locator('.chart')).toBeVisible()
 
   await page.goto(`/devices/${devNumber}/control`)
   await expect(page.getByRole('heading', { name: `${devNumber} — 远程控制` })).toBeVisible()
+  await expect(page.getByText('Modbus')).toBeVisible()
   await page.getByRole('button', { name: '下发命令' }).click()
   await page.locator('.type-to-confirm input').fill(devNumber)
   await page.getByRole('button', { name: '确认' }).click()

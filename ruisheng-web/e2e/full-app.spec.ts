@@ -19,6 +19,7 @@ test.describe('全功能页面巡检', () => {
       ['/plans/maintenance', '保养计划'],
       ['/scenes', '组态画面'],
       ['/pay', '设备充值'],
+      ['/settings/device-templates', '设备模板'],
       ['/settings/users', '用户管理'],
       ['/settings/contacts', '通讯录'],
       ['/__diag', '诊断页'],
@@ -38,10 +39,25 @@ test.describe('全功能页面巡检', () => {
     await expect(page).toHaveURL(/\/devices\/DEV001$/)
     await expect(page.getByText(/DEV001/).first()).toBeVisible()
     await expect(page.getByText('温度')).toBeVisible()
+    await expect(page.getByText(/TCP/)).toBeVisible()
+    await page.getByRole('button', { name: '编辑' }).click()
+    await expect(page).toHaveURL('/devices/DEV001/edit')
+    await page.getByLabel('设备来源 IP').fill('192.168.1.21')
+    await page.getByRole('button', { name: '保存' }).click()
+    await expect(page).toHaveURL(/\/devices\/DEV001$/)
 
     await page.goto('/devices/DEV001/history?point_id=11')
     await expect(page.getByText('DEV001 — 历史数据')).toBeVisible()
+    await page.getByLabel('点位变量').selectOption(['11', '12'])
     await page.getByRole('button', { name: '查询' }).click()
+    await expect(page.locator('.chart')).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: '变量' })).toBeVisible()
+    await expect(page.getByRole('cell', { name: /温度/ }).first()).toBeVisible()
+    await expect(page.getByRole('cell', { name: /压力/ }).first()).toBeVisible()
+    await page.getByRole('button', { name: '表格', exact: true }).click()
+    await page.getByRole('button', { name: '查询' }).click()
+    await expect(page.getByRole('columnheader', { name: '变量' })).toBeVisible()
+    await page.getByRole('button', { name: '图表', exact: true }).click()
     await expect(page.locator('.chart')).toBeVisible()
 
     await page.goto('/devices/DEV001/control')
@@ -62,6 +78,7 @@ test.describe('全功能页面巡检', () => {
     await page.getByLabel('设备号', { exact: true }).fill('DEV900')
     await page.getByLabel('设备序列号').fill('SN-DEV900')
     await page.getByLabel('设备名称').fill('新增泵站')
+    await page.getByLabel('设备模板').selectOption('101')
     await page.getByLabel('设备类型').fill('pump')
     await page.getByLabel('通信方式').selectOption('serial')
     await page.getByLabel('串口号').fill('COM3')
@@ -150,7 +167,14 @@ test.describe('权限巡检', () => {
   })
 
   test('普通用户无法进入管理和控制入口', async ({ page }) => {
-    for (const path of ['/devices/new', '/devices/DEV001/control', '/devices/DEV001/points', '/settings/users']) {
+    for (const path of [
+      '/devices/new',
+      '/devices/DEV001/edit',
+      '/devices/DEV001/control',
+      '/devices/DEV001/points',
+      '/settings/users',
+      '/settings/device-templates',
+    ]) {
       await page.goto(path)
       await expect(page).toHaveURL('/dashboard')
     }

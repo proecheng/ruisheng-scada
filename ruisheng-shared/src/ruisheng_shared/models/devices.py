@@ -94,6 +94,7 @@ class Device(Base, TimestampMixin, SoftDeleteMixin):
     last_back_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     loss_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_online: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     update_flag: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     usr_group: Mapped[str] = mapped_column(

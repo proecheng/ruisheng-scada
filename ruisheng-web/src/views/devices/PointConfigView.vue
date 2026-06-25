@@ -6,6 +6,8 @@ import {
   createPoint,
   updatePoint,
   deletePoint,
+  exportPointsCsv,
+  importPointsCsv,
   type PointConfig,
 } from '@/api/points'
 import { useAsync } from '@/composables/useAsync'
@@ -25,6 +27,7 @@ const editing = ref<PointConfig | null>(null)
 const isNew = ref(false)
 const deleteTarget = ref<PointConfig | null>(null)
 const showDeleteDialog = ref(false)
+const fileInput = ref<HTMLInputElement | null>(null)
 
 const functionLabels: Record<PointConfig['fun_code'], string> = {
   1: 'FC1 线圈',
@@ -147,6 +150,34 @@ async function confirmDelete(): Promise<void> {
     deleteTarget.value = null
   }
 }
+
+async function downloadCsv(): Promise<void> {
+  try {
+    const blob = await exportPointsCsv(props.devNumber)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${props.devNumber}-points.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '导出失败')
+  }
+}
+
+async function onImportFile(e: Event): Promise<void> {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  try {
+    const imported = await importPointsCsv(props.devNumber, file)
+    toast.success(`已导入 ${imported.length} 个点位`)
+    await reload()
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : '导入失败')
+  } finally {
+    if (fileInput.value) fileInput.value.value = ''
+  }
+}
 </script>
 
 <template>
@@ -154,6 +185,9 @@ async function confirmDelete(): Promise<void> {
     <header>
       <button class="back" @click="router.back()">← 返回</button>
       <h2>{{ devNumber }} — 点位配置</h2>
+      <button class="secondary" @click="downloadCsv">导出 CSV</button>
+      <button class="secondary" @click="fileInput?.click()">导入 CSV</button>
+      <input ref="fileInput" class="file-input" type="file" accept=".csv,text/csv" @change="onImportFile" />
       <button class="add" @click="startNew">+ 新增点位</button>
     </header>
 
@@ -291,6 +325,8 @@ header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .back { background: none; border: 1px solid #ccc; padding: 4px 10px; border-radius: 4px; cursor: pointer; }
 h2 { flex: 1; font-size: 18px; }
 .add { background: var(--color-primary); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+.secondary { background: #fff; color: var(--color-text); border: 1px solid #ccc; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+.file-input { display: none; }
 .point-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .point-table th, .point-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; }
 .point-table button { margin-right: 6px; padding: 3px 8px; border: 1px solid #ccc; background: #fff; border-radius: 3px; cursor: pointer; font-size: 12px; }

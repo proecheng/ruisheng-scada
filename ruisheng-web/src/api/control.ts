@@ -15,6 +15,16 @@ export interface ControlAck {
   status: 'pending' | 'duplicate'
 }
 
+export interface ControlActionPreset {
+  key: string
+  label: string
+  fun_code: number
+  reg: number
+  value: number
+  high_risk: boolean
+  description: string
+}
+
 function toControlPayload(req: ControlRequest): {
   fun_code: number
   reg: number
@@ -51,6 +61,11 @@ export async function sendControl(devNumber: string, req: ControlRequest): Promi
     headers,
   })
   return data.data as ControlAck
+}
+
+export async function listControlActions(): Promise<ControlActionPreset[]> {
+  const { data } = await apiClient.get('/control/actions')
+  return ((data.data as { items?: ControlActionPreset[] }).items ?? []) as ControlActionPreset[]
 }
 
 export async function cancelCommand(cmdId: string): Promise<void> {

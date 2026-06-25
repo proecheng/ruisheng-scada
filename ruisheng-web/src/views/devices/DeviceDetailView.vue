@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getDevice, getRealtime, type Device, type RealtimePoint } from '@/api/devices'
+import { getDevice, getRealtime, setDeviceEnabled, type Device, type RealtimePoint } from '@/api/devices'
 import { useWsStore } from '@/stores/ws'
 import { useRecent } from '@/composables/useRecent'
 import { useAsync } from '@/composables/useAsync'
+import { useToast } from '@/composables/useToast'
 import LoadingSkeleton from '@/components/LoadingSkeleton.vue'
 
 const props = defineProps<{ devNumber: string }>()
 const router = useRouter()
+const toast = useToast()
 const wsStore = useWsStore()
 const recent = useRecent<string>('devices', 5)
 
@@ -57,6 +59,16 @@ function openHistory(p: RealtimePoint): void {
   })
 }
 
+async function toggleEnabled(): Promise<void> {
+  if (!device.value) return
+  try {
+    device.value = await setDeviceEnabled(props.devNumber, !(device.value.is_enabled ?? true))
+    toast.success(device.value.is_enabled ? '设备已启用' : '设备已停用')
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '切换失败')
+  }
+}
+
 const ageLabel = computed(
   () => (ts: string) => {
     const diff = (Date.now() - new Date(ts).getTime()) / 1000
@@ -73,11 +85,20 @@ const ageLabel = computed(
       <button class="back" @click="router.back()">← 返回</button>
       <h2 v-if="device">{{ device.dev_number }} — {{ device.dev_name }}</h2>
       <LoadingSkeleton v-else :lines="1" />
+      <div v-if="device" class="summary">
+        <span :data-enabled="device.is_enabled !== false">{{ device.is_enabled === false ? '已停用' : '已启用' }}</span>
+        <span>{{ device.transport_type === 'serial' ? `串口 ${device.serial_port}` : `TCP ${device.dev_ip || '不限来源 IP'}` }}</span>
+        <span>Modbus {{ device.modbus_addr ?? '—' }}</span>
+      </div>
       <nav class="tabs">
         <button @click="router.push(`/devices/${devNumber}`)">实时</button>
         <button @click="router.push(`/devices/${devNumber}/history`)">历史</button>
         <button @click="router.push(`/devices/${devNumber}/control`)">控制</button>
         <button @click="router.push(`/devices/${devNumber}/points`)">点位配置</button>
+        <button v-permission="['Administrators','GroupCompany','Company']" @click="router.push(`/devices/${devNumber}/edit`)">编辑</button>
+        <button v-permission="['Administrators','GroupCompany','Company']" @click="toggleEnabled">
+          {{ device?.is_enabled === false ? '启用' : '停用' }}
+        </button>
       </nav>
     </header>
 
@@ -105,6 +126,10 @@ const ageLabel = computed(
 header { margin-bottom: 16px; }
 .back { background: none; border: 1px solid #ccc; padding: 4px 10px; border-radius: 4px; cursor: pointer; margin-right: 8px; }
 h2 { display: inline; font-size: 18px; }
+.summary { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--color-text-secondary); }
+.summary span { border: 1px solid #e5e7eb; border-radius: 4px; padding: 3px 7px; }
+.summary span[data-enabled='true'] { color: var(--color-success); border-color: rgba(82, 196, 26, 0.35); }
+.summary span[data-enabled='false'] { color: var(--color-error); border-color: rgba(245, 34, 45, 0.35); }
 .tabs { margin-top: 12px; display: flex; gap: 4px; border-bottom: 1px solid #eee; }
 .tabs button {
   background: none; border: none; padding: 8px 14px; cursor: pointer;

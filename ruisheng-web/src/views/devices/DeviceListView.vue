@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { listDevices, deleteDevice, type Device } from '@/api/devices'
+import { listDevices, deleteDevice, setDeviceEnabled, type Device } from '@/api/devices'
 import { useDevicesStore } from '@/stores/devices'
 import { useToast } from '@/composables/useToast'
 import { useAsync } from '@/composables/useAsync'
@@ -75,6 +75,18 @@ async function confirmDelete(): Promise<void> {
     deleteTarget.value = null
   }
 }
+
+async function toggleEnabled(d: Device): Promise<void> {
+  try {
+    const updated = await setDeviceEnabled(d.dev_number, !(d.is_enabled ?? true))
+    const list = (loader.data.value ?? []).map((x) => (x.dev_number === updated.dev_number ? updated : x))
+    loader.data.value = list
+    devicesStore.setList(list.map((x) => ({ ...x })))
+    toast.success(updated.is_enabled ? '设备已启用' : '设备已停用')
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '切换失败')
+  }
+}
 </script>
 
 <template>
@@ -119,7 +131,9 @@ async function confirmDelete(): Promise<void> {
         <tr>
           <th>设备号</th>
           <th>名称</th>
+          <th>启用</th>
           <th>状态</th>
+          <th>通信</th>
           <th>公司</th>
           <th>部门</th>
           <th>操作</th>
@@ -129,14 +143,28 @@ async function confirmDelete(): Promise<void> {
         <tr v-for="d in filtered" :key="d.dev_number" data-testid="device-row" @click="openDetail(d)">
           <td><code data-testid="device-number">{{ d.dev_number }}</code></td>
           <td>{{ d.dev_name }}</td>
+          <td>{{ d.is_enabled === false ? '停用' : '启用' }}</td>
           <td>
             <span class="pill" :data-state="d.state">{{
               d.state === 'online' ? '在线' : d.state === 'offline' ? '离线' : '告警'
             }}</span>
           </td>
+          <td>{{ d.transport_type === 'serial' ? `串口 ${d.serial_port ?? '—'}` : `TCP ${d.dev_ip ?? '不限 IP'}` }}</td>
           <td>{{ d.company ?? '—' }}</td>
           <td>{{ d.department ?? '—' }}</td>
           <td @click.stop>
+            <button
+              v-permission="['Administrators','GroupCompany','Company']"
+              @click="router.push(`/devices/${d.dev_number}/edit`)"
+            >
+              编辑
+            </button>
+            <button
+              v-permission="['Administrators','GroupCompany','Company']"
+              @click="toggleEnabled(d)"
+            >
+              {{ d.is_enabled === false ? '启用' : '停用' }}
+            </button>
             <button
               v-permission="['Administrators','GroupCompany','Company']"
               class="danger"
