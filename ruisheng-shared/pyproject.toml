@@ -17,3 +17,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ruisheng_shared"]
+
+[tool.mutmut]
+source_paths = ["src/ruisheng_shared"]
+pytest_add_cli_args_test_selection = ["tests"]
+pytest_add_cli_args = ["-q", "-c", "mutmut-pytest.ini"]
+also_copy = ["mutmut-pytest.ini"]

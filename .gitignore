@@ -40,6 +40,7 @@ dist/
 .ruff_cache/
 .coverage
 htmlcov/
+mutants/
 
 # ----- Node / 前端 -----
 node_modules/

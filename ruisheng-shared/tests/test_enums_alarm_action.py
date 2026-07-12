@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from ruisheng_shared.enums import AlarmAction
 
 
@@ -29,3 +30,30 @@ def test_encode_phone_alarm() -> None:
         reset_action=AlarmAction.ALL_OFF,
     )
     assert v == 0x2103
+
+
+@pytest.mark.parametrize(
+    ("call_on_trigger", "call_on_reset"),
+    [
+        (False, False),
+        (True, False),
+        (False, True),
+        (True, True),
+    ],
+)
+def test_phone_alarm_round_trip(
+    call_on_trigger: bool,
+    call_on_reset: bool,
+) -> None:
+    encoded = AlarmAction.encode_phone_alarm(
+        call_on_trigger=call_on_trigger,
+        call_on_reset=call_on_reset,
+        trigger_action=AlarmAction.CHANNEL_ON,
+        reset_action=AlarmAction.CHANNEL_OFF,
+    )
+
+    assert AlarmAction.decode_phone_alarm(encoded) == (
+        AlarmAction.CHANNEL_ON,
+        AlarmAction.CHANNEL_OFF,
+    )
+    assert AlarmAction.decode_flags(encoded) == (call_on_trigger, call_on_reset)

@@ -11,28 +11,42 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
-      - run: uv sync --all-packages
-      - run: |
-          uv pip install mutmut
-          uv run mutmut run \
-            --paths-to-mutate ruisheng-shared/src/ruisheng_shared \
-            --runner "pytest tests/unit/shared -q"
-      - run: uv run mutmut results
+      - name: Install dependencies
+        run: uv sync --all-packages --frozen --no-install-package ruisheng-shared
+      - name: Run mutation tests
+        run: uv run --no-sync mutmut run
+        working-directory: ruisheng-shared
+      - name: Show surviving mutants
+        run: uv run --no-sync mutmut results
+        working-directory: ruisheng-shared
+      - name: Export mutation statistics
+        run: uv run --no-sync mutmut export-cicd-stats
+        working-directory: ruisheng-shared
       - name: Fail if survival rate > 10%
+        working-directory: ruisheng-shared
         run: |
-          python - <<'PY'
-          import re, subprocess, sys
-          out = subprocess.check_output(["uv", "run", "mutmut", "results"], text=True)
-          def count(label: str) -> int:
-              m = re.search(rf"^{label} \((\d+)\)", out, re.MULTILINE)
-              return int(m.group(1)) if m else 0
-          alive = count("survived")
-          total = alive + count("killed") + count("timeout") + count("suspicious")
-          print(f"alive={alive} total={total}")
+          uv run --no-sync python - <<'PY'
+          import json
+          import sys
+
+          with open("mutants/mutmut-cicd-stats.json", encoding="utf-8") as stats_file:
+              stats = json.load(stats_file)
+
+          survived = stats["survived"]
+          no_tests = stats["no_tests"]
+          alive = survived + no_tests
+          total = sum(
+              stats[key]
+              for key in ("killed", "survived", "no_tests", "timeout", "suspicious")
+          )
           if total == 0:
-              print("No mutants analyzed — treating as neutral (exit 0).")
-              sys.exit(0)
+              print("No mutants analyzed; failing because the mutation run is invalid.")
+              sys.exit(1)
+
           rate = alive / total
-          print(f"survival_rate={rate:.2%}")
+          print(
+              f"survived={survived} no_tests={no_tests} "
+              f"total={total} survival_rate={rate:.2%}"
+          )
           sys.exit(1 if rate > 0.10 else 0)
           PY
