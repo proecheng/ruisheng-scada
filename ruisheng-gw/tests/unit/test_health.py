@@ -43,6 +43,20 @@ async def test_ready_returns_503_when_db_down() -> None:
         assert resp.status == 503  # noqa: PLR2004  # HTTP status literal
 
 
+async def test_ready_returns_503_after_batch_flush_failure() -> None:
+    state = HealthState()
+    state.set_db_ok(True)
+    state.set_redis_ok(True)
+    state.mark_flush_failed()
+    app = create_health_app(state)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/ready")
+        assert resp.status == 503  # noqa: PLR2004  # HTTP status literal
+
+    state.mark_flush_ok()
+    assert state.is_ready()
+
+
 async def test_metrics_prometheus_format(client: TestClient) -> None:
     resp = await client.get("/metrics")
     assert resp.status == 200  # noqa: PLR2004  # HTTP status literal

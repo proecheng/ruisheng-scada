@@ -42,7 +42,7 @@ SLAVE_DEFAULT = 1
 
 
 def main() -> None:
-    out_dir = _REPO_ROOT / "corpus" / "generated"
+    out_dir = _REPO_ROOT / "tools" / "pcap_gen" / "corpus" / "generated"
     out_dir.mkdir(parents=True, exist_ok=True)
     for i in range(DEVICE_TYPE_COUNT):
         for j, seed in enumerate(SEEDS):

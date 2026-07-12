@@ -102,3 +102,4 @@ coverage.xml
 alembic/__pycache__/
 .embedded_pg/
 corpus/generated/
+tools/pcap_gen/corpus/generated/

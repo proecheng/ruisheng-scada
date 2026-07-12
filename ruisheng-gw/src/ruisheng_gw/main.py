@@ -111,6 +111,8 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     repo = Repository(engine)
     await wal.replay_and_cleanup(sink=repo.flush)
     redis = redis_async.from_url(config.redis_url, decode_responses=True)
+    await redis.ping()
+    health_state.set_redis_ok(True)
 
     # 3. Load Registry
     registry = await Registry.load_from_db(engine)
@@ -120,7 +122,12 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
 
     class _Sink:
         async def flush(self, rows: list) -> None:  # type: ignore[type-arg]
-            await repo.flush(rows)
+            try:
+                await repo.flush(rows)
+            except Exception:
+                health_state.mark_flush_failed()
+                raise
+            health_state.mark_flush_ok()
 
     batch = BatchWriter(
         sink=_Sink(),
@@ -324,7 +331,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await asyncio.wait_for(batch_task, timeout=5.0)
         await runner.cleanup()
-        await redis.close()
+        await redis.aclose()  # type: ignore[attr-defined]
         await engine.dispose()
         # suppress unused-var warnings from type checkers
         _ = registry
@@ -337,6 +344,7 @@ async def run_gw_service_for_test(
     redis_url: str,
     wal_dir: str,
     port: int,
+    health_port: int,
 ) -> None:
     """Test harness: create a minimal Config and call run_server().
 
@@ -351,6 +359,7 @@ async def run_gw_service_for_test(
         database_url=postgres_url,
         redis_url=redis_url,
         wal_dir=wal_dir,
+        health_port=health_port,
         wal_single_file_mb=10,
         wal_total_gb=1,
         batch_flush_rows=500,

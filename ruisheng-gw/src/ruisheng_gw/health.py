@@ -1,13 +1,12 @@
 """gw health & metrics HTTP endpoints (aiohttp on :9090).
 
 - /health   — liveness (进程存活 = 200)
-- /ready    — readiness (db+redis+batch flush < 5s = 200 else 503)
+- /ready    — readiness (DB, Redis, and latest batch flush are healthy)
 - /metrics  — Prometheus text format
 """
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 
 from aiohttp import web
@@ -19,8 +18,7 @@ class HealthState:
 
     _db_ok: bool = False
     _redis_ok: bool = False
-    _last_flush_ts: float = 0.0
-    ready_max_flush_age_sec: float = 5.0
+    _batch_ok: bool = True
 
     def set_db_ok(self, ok: bool) -> None:
         self._db_ok = ok
@@ -29,12 +27,16 @@ class HealthState:
         self._redis_ok = ok
 
     def mark_flush_ok(self) -> None:
-        self._last_flush_ts = time.monotonic()
+        self._batch_ok = True
 
-    def is_ready(self, now: float | None = None) -> bool:
-        now = now if now is not None else time.monotonic()
-        flush_fresh = (now - self._last_flush_ts) < self.ready_max_flush_age_sec
-        return self._db_ok and self._redis_ok and flush_fresh
+    def mark_flush_failed(self) -> None:
+        self._batch_ok = False
+
+    def is_ready(self) -> bool:
+        return self._db_ok and self._redis_ok and self._batch_ok
+
+
+HEALTH_STATE_KEY = web.AppKey("health_state", HealthState)
 
 
 async def _health_handler(request: web.Request) -> web.Response:  # noqa: ARG001
@@ -42,7 +44,7 @@ async def _health_handler(request: web.Request) -> web.Response:  # noqa: ARG001
 
 
 async def _ready_handler(request: web.Request) -> web.Response:
-    state: HealthState = request.app["health_state"]
+    state = request.app[HEALTH_STATE_KEY]
     if state.is_ready():
         return web.json_response({"ready": True})
     return web.json_response({"ready": False}, status=503)
@@ -60,7 +62,7 @@ async def _metrics_handler(request: web.Request) -> web.Response:  # noqa: ARG00
 
 def create_health_app(state: HealthState) -> web.Application:
     app = web.Application()
-    app["health_state"] = state
+    app[HEALTH_STATE_KEY] = state
     app.router.add_get("/health", _health_handler)
     app.router.add_get("/ready", _ready_handler)
     app.router.add_get("/metrics", _metrics_handler)

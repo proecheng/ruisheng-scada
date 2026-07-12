@@ -60,7 +60,7 @@ async def test_realtime_broadcasts_to_tenant():
                 )
         finally:
             await pubsub.unsubscribe("channel:realtime:60270012")
-            await pubsub.close()
+            await pubsub.aclose()
 
     task = asyncio.create_task(_loop_exact_subscribe(r, ws, stop))
     await asyncio.sleep(0.05)
@@ -129,7 +129,7 @@ async def test_realtime_malformed_json_skipped():
                 )
         finally:
             await pubsub.unsubscribe("channel:realtime:bad")
-            await pubsub.close()
+            await pubsub.aclose()
 
     task = asyncio.create_task(_loop_exact_subscribe(r, ws, stop))
     await asyncio.sleep(0.05)

@@ -16,6 +16,8 @@ from .modbus_frames import (
     encode_register_frame,
 )
 
+DEFAULT_GATEWAY_PORT = 5020
+
 
 def gen_normal_session(
     *,
@@ -41,7 +43,7 @@ def gen_normal_session(
     client_ip = "10.0.0.1"
     server_ip = "10.0.0.2"
     sport = 10000 + rng.randint(0, 1000)
-    dport = 6000
+    dport = DEFAULT_GATEWAY_PORT
 
     # 注册帧
     reg = encode_register_frame(dev_ser_number=dev_ser)

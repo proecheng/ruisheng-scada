@@ -19,7 +19,7 @@ def extract_tcp_payloads_with_timing(pcap_path: Path, *, port: int = 5020) -> li
         if TCP not in pkt:
             continue
         tcp = pkt[TCP]
-        if port not in (tcp.dport, tcp.sport):
+        if tcp.dport != port:
             continue
         if Raw not in pkt:
             continue
