@@ -25,16 +25,26 @@ def is_windows() -> bool:
     return sys.platform == "win32"
 
 
-# 按 docker-compose.dev.yml POSTGRES_USER/POSTGRES_PASSWORD（都是 "ruisheng_dev"）；CI 可从 env 覆盖
+# 集成测试必须使用独立测试库；账号沿用 docker-compose.dev.yml，CI 可从 env 覆盖。
 _DEV_DSN = os.environ.get(
     "DEV_DATABASE_URL",
-    "postgresql+asyncpg://ruisheng_dev:ruisheng_dev@127.0.0.1:5432/ruisheng",
+    "postgresql+asyncpg://ruisheng_dev:ruisheng_dev@127.0.0.1:5432/ruisheng_test",
 )
 
 
 def _dsn_host_port(dsn: str) -> tuple[str, int]:
     url = make_url(dsn)
     return url.host or "127.0.0.1", int(url.port or 5432)
+
+
+def require_test_database(dsn: str) -> None:
+    """Reject destructive migration work unless the database is explicitly test-named."""
+    database = (make_url(dsn).database or "").lower()
+    if not (database.startswith("test_") or database.endswith("_test")):
+        raise RuntimeError(
+            "destructive migration requires an explicit test database name "
+            f"(test_* or *_test), got {database!r}"
+        )
 
 
 def _role_dsn(username: str, password: str) -> str:

@@ -9,6 +9,8 @@ import pytest
 from ruisheng_gw.persistence.batch_writer import BatchRow
 from ruisheng_gw.persistence.repository import Repository
 
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
 
 @pytest.mark.benchmark(group="flush")
 def test_mean_flush_under_500ms(benchmark, postgres_url: str) -> None:

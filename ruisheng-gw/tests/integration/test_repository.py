@@ -9,6 +9,8 @@ from ruisheng_gw.persistence.repository import Repository
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 async def engine(postgres_url: str):

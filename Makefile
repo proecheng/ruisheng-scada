@@ -1,4 +1,4 @@
-.PHONY: up down logs test cov lint fmt migrate seed
+.PHONY: up down logs test test-integration test-replay test-benchmark test-all cov lint fmt migrate seed
 
 up:
 	uv run task up
@@ -8,6 +8,18 @@ down:
 
 test:
 	uv run task test
+
+test-integration:
+	uv run task test-integration
+
+test-replay:
+	uv run task test-replay
+
+test-benchmark:
+	uv run task test-benchmark
+
+test-all:
+	uv run task test-all
 
 cov:
 	uv run task cov

@@ -14,10 +14,14 @@ CORPUS_DIR = (
 
 _CORPUS_PCAPS = sorted(CORPUS_DIR.glob("*.pcap")) if CORPUS_DIR.exists() else []
 
-pytestmark = pytest.mark.skipif(
-    len(_CORPUS_PCAPS) == 0,
-    reason="pcap corpus is empty — run tools/pcap_gen/scripts/gen_initial_corpus.py first",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.slow,
+    pytest.mark.skipif(
+        len(_CORPUS_PCAPS) == 0,
+        reason="pcap corpus is empty — run tools/pcap_gen/scripts/gen_initial_corpus.py first",
+    ),
+]
 
 
 @pytest.fixture(params=_CORPUS_PCAPS)

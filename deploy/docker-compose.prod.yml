@@ -31,23 +31,24 @@ services:
     restart: unless-stopped
 
   migrate:
-    build:
-      context: .
-      dockerfile: ruisheng-api/Dockerfile
+    image: ${API_IMAGE:-ruisheng-prod-api:latest}
+    pull_policy: never
     entrypoint: ["bash", "scripts/entrypoint-migrate.sh"]
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/ruisheng
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       RUISHENG_GW_PASSWORD: ${RUISHENG_GW_PASSWORD}
       RUISHENG_API_PASSWORD: ${RUISHENG_API_PASSWORD}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
     restart: "no"
 
   api:
-    build:
-      context: .
-      dockerfile: ruisheng-api/Dockerfile
+    image: ${API_IMAGE:-ruisheng-prod-api:latest}
+    pull_policy: never
     container_name: ruisheng-api
     depends_on:
       migrate:
@@ -64,9 +65,8 @@ services:
     restart: unless-stopped
 
   gw:
-    build:
-      context: .
-      dockerfile: ruisheng-gw/Dockerfile
+    image: ${GW_IMAGE:-ruisheng-prod-gw:latest}
+    pull_policy: never
     container_name: ruisheng-gw
     depends_on:
       migrate:
@@ -78,15 +78,17 @@ services:
       GW_LISTEN_PORT: "5020"
       GW_DATABASE_URL: postgresql+asyncpg://ruisheng_gw:${RUISHENG_GW_PASSWORD}@postgres:5432/ruisheng
       GW_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      GW_WAL_DIR: /var/lib/ruisheng-gw/wal
+    volumes:
+      - ruisheng-gw-wal:/var/lib/ruisheng-gw/wal
     ports:
       - "5020:5020"
       - "9090:9090"
     restart: unless-stopped
 
   web:
-    build:
-      context: ruisheng-web
-      dockerfile: Dockerfile
+    image: ${WEB_IMAGE:-ruisheng-prod-web:latest}
+    pull_policy: never
     container_name: ruisheng-web
     depends_on:
       - api
@@ -97,3 +99,4 @@ services:
 volumes:
   ruisheng-pgdata:
   ruisheng-redisdata:
+  ruisheng-gw-wal:

@@ -1,7 +1,10 @@
 """API readiness against real PostgreSQL and Redis services."""
 
+import pytest
 from fastapi.testclient import TestClient
 from ruisheng_api.main import create_app
+
+pytestmark = pytest.mark.integration
 
 
 def test_ready_checks_postgres_and_redis() -> None:

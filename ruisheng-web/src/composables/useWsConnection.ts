@@ -8,20 +8,29 @@ import { useDiagStore } from '@/stores/diag'
 import { getAuthToken } from '@/api/client'
 
 let singleton: WSClient | null = null
+let stateSyncTimer: ReturnType<typeof setInterval> | null = null
+
+function stopStateSync(): void {
+  if (stateSyncTimer !== null) {
+    clearInterval(stateSyncTimer)
+    stateSyncTimer = null
+  }
+}
 
 export function useWsConnection() {
   const wsStore = useWsStore()
   const alarms = useAlarmsStore()
   const devices = useDevicesStore()
   const diag = useDiagStore()
+  let ownsConnection = false
 
   onMounted(() => {
     if (singleton) return
     const base = import.meta.env.VITE_WS_BASE ?? '/ws'
     const token = getAuthToken()
     const url = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${base}${token ? `?token=${encodeURIComponent(token)}` : ''}`
-    singleton = new WSClient(url)
-    singleton.on((m: WSMessage) => {
+    const client = new WSClient(url)
+    client.on((m: WSMessage) => {
       wsStore.pushMessage(m)
       diag.record({
         at: new Date().toISOString(),
@@ -43,19 +52,36 @@ export function useWsConnection() {
         devices.updateState(m.dev_number, m.state)
       }
     })
-    setInterval(() => wsStore.setState(singleton!.state), 500)
-    singleton.connect()
+    try {
+      client.connect()
+    } catch {
+      client.close()
+      wsStore.setState('closed')
+      return
+    }
+    singleton = client
+    ownsConnection = true
+    stopStateSync()
+    stateSyncTimer = setInterval(() => wsStore.setState(client.state), 500)
   })
 
   onUnmounted(() => {
-    /* keep singleton alive for app lifetime */
+    if (!ownsConnection) return
+    stopStateSync()
+    singleton?.close()
+    singleton = null
+    ownsConnection = false
+    wsStore.setState('closed')
   })
 
   return {
     send: (msg: unknown) => singleton?.send(msg),
     close: () => {
+      stopStateSync()
       singleton?.close()
       singleton = null
+      ownsConnection = false
+      wsStore.setState('closed')
     },
   }
 }

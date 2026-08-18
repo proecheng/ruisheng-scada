@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
 from sqlalchemy import text
+
+from conftest import _DEV_DSN, require_test_database
 
 
 @pytest.mark.integration
@@ -17,8 +20,17 @@ async def test_upgrade_down_and_up_again():
     异步化要么 asyncio.create_subprocess_exec 要么 to_thread，都是
     不必要的复杂化，故在此抑制 ASYNC221。
     """
-    subprocess.check_call(["uv", "run", "alembic", "downgrade", "base"])  # noqa: ASYNC221
-    subprocess.check_call(["uv", "run", "alembic", "upgrade", "head"])  # noqa: ASYNC221
+    migration_dsn = os.environ.get("DATABASE_URL", _DEV_DSN)
+    require_test_database(migration_dsn)
+    migration_env = {**os.environ, "DATABASE_URL": migration_dsn}
+    subprocess.check_call(  # noqa: ASYNC221
+        ["uv", "run", "alembic", "downgrade", "base"],
+        env=migration_env,
+    )
+    subprocess.check_call(  # noqa: ASYNC221
+        ["uv", "run", "alembic", "upgrade", "head"],
+        env=migration_env,
+    )
 
 
 @pytest.mark.integration

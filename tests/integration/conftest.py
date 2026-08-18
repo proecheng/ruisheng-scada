@@ -2,10 +2,18 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
+from conftest import _DEV_DSN, require_test_database
+
 
 @pytest.fixture(autouse=True)
-def require_dev_database(dev_database_ready, role_passwords_ready):
-    """Skip this suite unless the dev DB and role passwords are configured."""
+def require_test_database_target() -> None:
+    """Reject unsafe targets before evaluating any readiness/skip fixtures."""
+    require_test_database(_DEV_DSN)
+
+
+@pytest.fixture(autouse=True)
+def require_dev_database(require_test_database_target, dev_database_ready, role_passwords_ready):
+    """Skip this suite unless the protected test DB and role passwords are configured."""
 
 
 @pytest_asyncio.fixture

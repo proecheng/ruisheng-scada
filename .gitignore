@@ -48,6 +48,8 @@ node_modules/
 .vite-cache/
 .nuxt/
 .output/
+ruisheng-web/playwright-report/
+ruisheng-web/test-results/
 
 # ----- IDE / 编辑器 -----
 .vscode/

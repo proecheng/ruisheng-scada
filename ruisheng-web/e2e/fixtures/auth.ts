@@ -1,27 +1,48 @@
 import { type Page } from '@playwright/test'
 
+function mockAccessToken(user: {
+  user_name: string
+  authority: string
+  usr_group: string
+  control_authority: number
+}): string {
+  const encode = (value: Record<string, unknown>) =>
+    Buffer.from(JSON.stringify(value)).toString('base64url')
+  return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({
+    sub: user.user_name,
+    role: user.authority,
+    usr_group: user.usr_group,
+    ca: user.control_authority,
+    typ: 'access',
+  })}.mock-signature`
+}
+
+const MOCK_ADMIN = {
+  user_name: '13800138000',
+  authority: 'Administrators',
+  usr_group: 'demo',
+  control_authority: 7,
+}
+
 export const MOCK_SESSION = {
-  access_token: 'mock-access-token',
+  access_token: mockAccessToken(MOCK_ADMIN),
   refresh_token: 'mock-refresh-token',
   expires_in: 900,
-  user: {
-    user_name: '13800138000',
-    authority: 'Administrators',
-    usr_group: 'demo',
-    control_authority: 7,
-  },
+  user: MOCK_ADMIN,
+}
+
+const MOCK_USER = {
+  user_name: '13800138002',
+  authority: 'User',
+  usr_group: 'demo',
+  control_authority: 0,
 }
 
 export const MOCK_USER_SESSION = {
-  access_token: 'mock-user-access-token',
+  access_token: mockAccessToken(MOCK_USER),
   refresh_token: 'mock-user-refresh-token',
   expires_in: 900,
-  user: {
-    user_name: '13800138002',
-    authority: 'User',
-    usr_group: 'demo',
-    control_authority: 0,
-  },
+  user: MOCK_USER,
 }
 
 export const MOCK_DEVICES = [

@@ -47,15 +47,16 @@ cp .env.prod.example .env.prod
 | `REDIS_PASSWORD` | Redis 访问密码 |
 | `JWT_SECRET` | JWT 签名密钥（≥32 字符随机字符串） |
 
+数据库和 Redis 密码只能使用 URL-safe 字符：`A-Z a-z 0-9 . _ ~ -`。启动时会拒绝占位值和其他字符，避免连接字符串被特殊字符破坏。
+
 **生成随机密码（Linux/Mac）：**
 ```bash
-openssl rand -base64 24
+openssl rand -hex 24
 ```
 
 **生成随机密码（Windows PowerShell）：**
 ```powershell
-Add-Type -AssemblyName System.Web
-[System.Web.Security.Membership]::GeneratePassword(24, 4)
+-join ((1..48) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
 ```
 
 ### 3. 首次启动

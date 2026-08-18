@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
 from ruisheng_gw.persistence.batch_writer import BatchRow
 from ruisheng_gw.persistence.repository import Repository
 from ruisheng_gw.persistence.wal import Wal
 from ruisheng_gw.scheduler.clock import RealClock
 from sqlalchemy.ext.asyncio import create_async_engine
+
+pytestmark = pytest.mark.integration
 
 
 async def test_startup_wires_wal_replay(postgres_url: str, tmp_path: Path) -> None:

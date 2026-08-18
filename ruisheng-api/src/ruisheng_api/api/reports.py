@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
@@ -27,14 +27,16 @@ async def daily_report(
     session: AsyncSession = Depends(get_session),
 ) -> object:
     start = datetime.combine(body.day, time.min, tzinfo=UTC)
-    end = datetime.combine(body.day, time.max, tzinfo=UTC)
+    end = start + timedelta(days=1)
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
         rows_q = text("""
-            SELECT dev_number, point_id, rt_value, recorded_at
-            FROM point_data_history
-            WHERE recorded_at >= :s AND recorded_at < :e
-              AND (CAST(:d AS text) IS NULL OR dev_number = CAST(:d AS text))
+            SELECT h.dev_number, h.point_id, h.rt_value, h.recorded_at
+            FROM point_data_history AS h
+            JOIN devices AS d
+              ON d.dev_number = h.dev_number
+            WHERE h.recorded_at >= :s AND h.recorded_at < :e
+              AND (CAST(:d AS text) IS NULL OR h.dev_number = CAST(:d AS text))
         """)
         result = await session.execute(
             rows_q,

@@ -48,11 +48,14 @@ async def get_waveform_history(
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
         sql = text("""
-            SELECT dev_number, point_id, sample_time_decisec, packet_count, recorded_at
-            FROM waveform_history
-            WHERE dev_number = :d AND point_id = :p
-              AND recorded_at >= :f AND recorded_at < :t
-            ORDER BY recorded_at DESC
+            SELECT w.dev_number, w.point_id, w.sample_time_decisec,
+                   w.packet_count, w.recorded_at
+            FROM waveform_history AS w
+            JOIN devices AS d
+              ON d.dev_number = w.dev_number
+            WHERE w.dev_number = :d AND w.point_id = :p
+              AND w.recorded_at >= :f AND w.recorded_at < :t
+            ORDER BY w.recorded_at DESC
             LIMIT 100
         """)
         result = await session.execute(
@@ -81,11 +84,13 @@ async def analyze_waveform(
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
         sql = text("""
-            SELECT data_array, sample_time_decisec, packet_count
-            FROM waveform_history
-            WHERE dev_number = :d AND point_id = :p
-              AND recorded_at >= :f AND recorded_at < :t
-            ORDER BY recorded_at DESC
+            SELECT w.data_array, w.sample_time_decisec, w.packet_count
+            FROM waveform_history AS w
+            JOIN devices AS d
+              ON d.dev_number = w.dev_number
+            WHERE w.dev_number = :d AND w.point_id = :p
+              AND w.recorded_at >= :f AND w.recorded_at < :t
+            ORDER BY w.recorded_at DESC
             LIMIT 1
         """)
         result = await session.execute(

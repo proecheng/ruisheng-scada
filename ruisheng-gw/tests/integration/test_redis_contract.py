@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 import redis.asyncio as aioredis
 from ruisheng_gw.pubsub.publisher import Publisher
 from ruisheng_gw.pubsub.schemas import RealtimeEvent
+
+pytestmark = pytest.mark.integration
 
 
 async def test_published_messages_validate_as_schema(redis_url: str) -> None:

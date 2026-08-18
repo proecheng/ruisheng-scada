@@ -20,6 +20,8 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 
+from sqlalchemy import text
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -46,26 +48,29 @@ def upgrade() -> None:
     """Upgrade schema."""
     gw_pw = _require_env("RUISHENG_GW_PASSWORD")
     api_pw = _require_env("RUISHENG_API_PASSWORD")
+    bind = op.get_bind()
+    quoted_gw_pw = bind.execute(
+        text("SELECT quote_literal(:password)"), {"password": gw_pw}
+    ).scalar_one()
+    quoted_api_pw = bind.execute(
+        text("SELECT quote_literal(:password)"), {"password": api_pw}
+    ).scalar_one()
 
     # --- 幂等创建角色（已存在则重置密码，支持密码轮换） ---
-    op.execute(f"""
-        DO $$ BEGIN
-          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='ruisheng_gw') THEN
-            CREATE ROLE ruisheng_gw BYPASSRLS LOGIN PASSWORD '{gw_pw}';
-          ELSE
-            ALTER ROLE ruisheng_gw WITH LOGIN PASSWORD '{gw_pw}';
-          END IF;
-        END $$;
-    """)
-    op.execute(f"""
-        DO $$ BEGIN
-          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='ruisheng_api') THEN
-            CREATE ROLE ruisheng_api LOGIN PASSWORD '{api_pw}';
-          ELSE
-            ALTER ROLE ruisheng_api WITH LOGIN PASSWORD '{api_pw}';
-          END IF;
-        END $$;
-    """)
+    gw_exists = bind.execute(
+        text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='ruisheng_gw')")
+    ).scalar_one()
+    api_exists = bind.execute(
+        text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='ruisheng_api')")
+    ).scalar_one()
+    if gw_exists:
+        op.execute(f"ALTER ROLE ruisheng_gw WITH LOGIN PASSWORD {quoted_gw_pw}")
+    else:
+        op.execute(f"CREATE ROLE ruisheng_gw BYPASSRLS LOGIN PASSWORD {quoted_gw_pw}")
+    if api_exists:
+        op.execute(f"ALTER ROLE ruisheng_api WITH LOGIN PASSWORD {quoted_api_pw}")
+    else:
+        op.execute(f"CREATE ROLE ruisheng_api LOGIN PASSWORD {quoted_api_pw}")
 
     # --- schema 级 GRANT（对现存 26 张表 + 未来新表） ---
     op.execute("GRANT USAGE ON SCHEMA public TO ruisheng_gw, ruisheng_api;")
