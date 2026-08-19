@@ -1,3 +1,4 @@
+import smtplib
 from unittest.mock import MagicMock
 
 import pytest
@@ -40,3 +41,25 @@ async def test_email_send_failure(monkeypatch):
     monkeypatch.setattr("smtplib.SMTP", fail_smtp)
     result = await notifier.send(_notif())
     assert result is False
+
+
+async def test_email_transport_failure_is_retryable(monkeypatch):
+    notifier = EmailNotifier(host="smtp.test", port=587, user="u@test.com", password="pw")
+
+    def fail_smtp(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("smtplib.SMTP", fail_smtp)
+    outcome = await notifier.send_outcome(_notif())
+    assert outcome.retryable
+    assert outcome.error_class == "transport"
+
+
+async def test_email_auth_failure_is_permanent(monkeypatch):
+    notifier = EmailNotifier(host="smtp.test", port=587, user="u@test.com", password="pw")
+    mock_smtp = MagicMock()
+    mock_smtp.return_value.login.side_effect = smtplib.SMTPAuthenticationError(535, b"bad")
+    monkeypatch.setattr("smtplib.SMTP", mock_smtp)
+    outcome = await notifier.send_outcome(_notif())
+    assert not outcome.retryable
+    assert outcome.error_class == "authentication"

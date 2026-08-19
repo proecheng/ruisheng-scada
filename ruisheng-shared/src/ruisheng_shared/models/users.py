@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     SmallInteger,
     String,
@@ -54,8 +56,10 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
 
 class UserWxBinding(Base):
     __tablename__ = "user_wx_bindings"
+    __table_args__ = (UniqueConstraint("contact_id", name="contact_id"),)
 
     openid: Mapped[str] = mapped_column(String(100), primary_key=True)
+    contact_id: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False)
     user_name: Mapped[str] = mapped_column(
         String(50),
         ForeignKey("users.user_name", ondelete="CASCADE"),

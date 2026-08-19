@@ -40,6 +40,8 @@ class Config(BaseSettings):
 
     heartbeat_timeout_sec: int = Field(default=90, ge=1)  # 3× 30s 默认
     bus_lock_timeout_sec: int = Field(default=15, ge=1)
+    alarm_reload_interval_sec: int = Field(default=5, ge=1, le=60)
+    relation_value_max_age_sec: int = Field(default=300, ge=1, le=3600)
 
     serial_ports: list[SerialPortConfig] = Field(
         default_factory=list,

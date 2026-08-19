@@ -44,6 +44,44 @@ class Config(BaseSettings):
 
     wechat_api_v3_key: str = Field(default="")
 
+    notification_wechat_enabled: bool = False
+    notification_email_enabled: bool = False
+    notification_email_host: str = ""
+    notification_email_port: int = Field(default=587, ge=1, le=65535)
+    notification_email_user: str = ""
+    notification_email_password: str = ""
+    notification_email_tls: bool = True
+    notification_sms_enabled: bool = False
+    notification_sms_endpoint: str = ""
+    notification_sms_api_key: str = ""
+    notification_voice_enabled: bool = False
+    notification_voice_endpoint: str = ""
+    notification_voice_api_key: str = ""
+    notification_worker_batch: int = Field(default=20, ge=1, le=100)
+    notification_worker_concurrency: int = Field(default=5, ge=1, le=20)
+    notification_lease_sec: int = Field(default=60, ge=10, le=600)
+    notification_provider_timeout_sec: int = Field(default=20, ge=1, le=120)
+    notification_max_attempts: int = Field(default=5, ge=1, le=20)
+    notification_event_max_age_sec: int = Field(default=7 * 24 * 3600, ge=3600, le=180 * 86400)
+
+    @model_validator(mode="after")
+    def _validate_enabled_notification_providers(self) -> Config:
+        if self.notification_email_enabled and not (
+            self.notification_email_host
+            and self.notification_email_user
+            and self.notification_email_password
+        ):
+            raise ValueError("enabled email notification requires host, user and password")
+        if self.notification_sms_enabled and not self.notification_sms_endpoint:
+            raise ValueError("enabled SMS notification requires endpoint")
+        if self.notification_voice_enabled and not self.notification_voice_endpoint:
+            raise ValueError("enabled voice notification requires endpoint")
+        if self.notification_lease_sec < self.notification_provider_timeout_sec + 5:
+            raise ValueError(
+                "notification lease must exceed provider timeout by at least 5 seconds"
+            )
+        return self
+
     env: Literal["dev", "test", "prod"] = Field(default="dev")
 
     @model_validator(mode="before")

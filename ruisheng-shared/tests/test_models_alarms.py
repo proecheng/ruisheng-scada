@@ -1,6 +1,14 @@
 """Spec §3.8 alarms: device_waring_cfgs / alarm_records / alarm_outbox"""
 
-from ruisheng_shared.models.alarms import AlarmOutbox, AlarmRecord, DeviceWaringCfg
+from ruisheng_shared.models.alarms import (
+    AlarmNotificationSubscription,
+    AlarmOutbox,
+    AlarmRecord,
+    DeviceWaringCfg,
+    NotificationDelivery,
+    NotificationDeliveryAttempt,
+    NotificationDispatch,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 
 
@@ -69,11 +77,14 @@ def test_alarm_records_columns() -> None:
     cols = {c.name for c in AlarmRecord.__table__.columns}
     assert cols >= {
         "id",
+        "alarm_cfg_id",
         "dev_number",
         "point_id",
         "alarm_name",
         "alarm_msg",
         "alarm_value",
+        "alarm_type",
+        "limit_value",
         "channels_sent",
         "triggered_at",
         "reset_at",
@@ -163,3 +174,35 @@ def test_alarm_outbox_partial_index() -> None:
         if ix.name == "idx_alarm_outbox_unpublished":
             assert ix.dialect_options.get("postgresql", {}).get("where") is not None
             break
+
+
+def test_notification_runtime_models_are_tenant_scoped() -> None:
+    assert AlarmNotificationSubscription.__tablename__ == "alarm_notification_subscriptions"
+    assert NotificationDispatch.__tablename__ == "notification_dispatches"
+    assert NotificationDelivery.__tablename__ == "notification_deliveries"
+    assert NotificationDeliveryAttempt.__tablename__ == "notification_delivery_attempts"
+    for model in (
+        AlarmNotificationSubscription,
+        NotificationDispatch,
+        NotificationDelivery,
+        NotificationDeliveryAttempt,
+    ):
+        assert "usr_group" in model.__table__.columns
+
+
+def test_delivery_persists_only_irreversible_contact_reference() -> None:
+    columns = {column.name for column in NotificationDelivery.__table__.columns}
+    assert {"contact_ref", "contact_fingerprint"} <= columns
+    assert not {"contact", "openid", "phone_number", "email"} & columns
+    assert {"leased_until", "lease_owner", "lease_version"} <= columns
+
+
+def test_dispatch_and_delivery_idempotency_constraints() -> None:
+    dispatch_uniques = {
+        constraint.name for constraint in NotificationDispatch.__table__.constraints
+    }
+    delivery_uniques = {
+        constraint.name for constraint in NotificationDelivery.__table__.constraints
+    }
+    assert "uq_notification_dispatches_alarm_identity" in dispatch_uniques
+    assert "uq_notification_deliveries_logical_target" in delivery_uniques

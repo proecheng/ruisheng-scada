@@ -62,3 +62,15 @@ async def test_metrics_prometheus_format(client: TestClient) -> None:
     assert resp.status == 200  # noqa: PLR2004  # HTTP status literal
     body = await resp.text()
     assert "# TYPE" in body
+    assert "ruisheng_gw_alarm_outbox_relay_failures_total 0" in body
+
+
+def test_readiness_fails_after_repeated_outbox_errors_and_recovers() -> None:
+    state = HealthState(_db_ok=True, _redis_ok=True, _batch_ok=True)
+    state.mark_outbox_relay_failed()
+    state.mark_outbox_relay_failed()
+    assert state.is_ready()
+    state.mark_outbox_relay_failed()
+    assert not state.is_ready()
+    state.mark_outbox_relay_ok()
+    assert state.is_ready()

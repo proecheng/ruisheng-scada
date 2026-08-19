@@ -21,6 +21,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
+    UniqueConstraint,
     func,
     text,
 )
@@ -90,11 +91,14 @@ class AlarmRecord(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    alarm_cfg_id: Mapped[int | None] = mapped_column(BigInteger)
     dev_number: Mapped[str] = mapped_column(String(50), nullable=False)
     point_id: Mapped[int | None] = mapped_column(BigInteger)
     alarm_name: Mapped[str | None] = mapped_column(String(100))
     alarm_msg: Mapped[str | None] = mapped_column(String(255))
     alarm_value: Mapped[float | None] = mapped_column(Double)
+    alarm_type: Mapped[str | None] = mapped_column(String(4))
+    limit_value: Mapped[float | None] = mapped_column(Double)
     channels_sent: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     triggered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, primary_key=True
@@ -126,5 +130,152 @@ class AlarmOutbox(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AlarmNotificationSubscription(Base, TimestampMixin):
+    """A tenant-owned explicit alarm recipient and channel selection."""
+
+    __tablename__ = "alarm_notification_subscriptions"
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('wechat','email','sms_custom_http','voice_custom_http')",
+            name="channel",
+        ),
+        Index(
+            "uq_alarm_notification_subscriptions_active_target",
+            "alarm_cfg_id",
+            "user_name",
+            "channel",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_alarm_notification_subscriptions_tenant_cfg", "usr_group", "alarm_cfg_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    alarm_cfg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    channel: Mapped[str] = mapped_column(String(30), nullable=False)
+    usr_group: Mapped[str] = mapped_column(String(50), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class NotificationDispatch(Base):
+    """Idempotent materialization result for one immutable alarm identity."""
+
+    __tablename__ = "notification_dispatches"
+    __table_args__ = (
+        CheckConstraint("status IN ('materialized','no_subscription')", name="status"),
+        UniqueConstraint(
+            "alarm_id",
+            "alarm_triggered_at",
+            "alarm_cfg_id",
+            name="alarm_identity",
+        ),
+        Index("ix_notification_dispatches_tenant_created", "usr_group", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    alarm_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    alarm_triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    alarm_cfg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    usr_group: Mapped[str] = mapped_column(String(50), nullable=False)
+    trace_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class NotificationDelivery(Base):
+    """A logical notification target with a database-clock lease and fencing version."""
+
+    __tablename__ = "notification_deliveries"
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('wechat','email','sms_custom_http','voice_custom_http')",
+            name="channel",
+        ),
+        CheckConstraint(
+            "status IN ('pending','retry','leased','sent','failed','skipped')",
+            name="status",
+        ),
+        CheckConstraint("lease_version >= 0", name="lease_version"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count"),
+        UniqueConstraint(
+            "dispatch_id",
+            "user_name",
+            "channel",
+            "contact_ref",
+            name="logical_target",
+        ),
+        Index(
+            "ix_notification_deliveries_ready",
+            "next_attempt_at",
+            "leased_until",
+            postgresql_where=text("status IN ('pending','retry','leased')"),
+        ),
+        Index("ix_notification_deliveries_tenant_created", "usr_group", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dispatch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("notification_dispatches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    usr_group: Mapped[str] = mapped_column(String(50), nullable=False)
+    user_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    channel: Mapped[str] = mapped_column(String(30), nullable=False)
+    contact_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    contact_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_owner: Mapped[str | None] = mapped_column(String(100))
+    lease_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    last_error_class: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class NotificationDeliveryAttempt(Base):
+    """Sanitized delivery audit record; never stores target or provider payload."""
+
+    __tablename__ = "notification_delivery_attempts"
+    __table_args__ = (
+        CheckConstraint("outcome IN ('sent','retry','failed','skipped','stale')", name="outcome"),
+        UniqueConstraint("delivery_id", "attempt_no", name="delivery_attempt"),
+        Index("ix_notification_delivery_attempts_tenant_finished", "usr_group", "finished_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    delivery_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("notification_deliveries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    usr_group: Mapped[str] = mapped_column(String(50), nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_class: Mapped[str | None] = mapped_column(String(40))
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    retry_after_sec: Mapped[int | None] = mapped_column(Integer)
+    detail: Mapped[str | None] = mapped_column(String(200))
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Request
+from fastapi.responses import PlainTextResponse
 
 from ..core.response import ok
 
@@ -45,3 +46,23 @@ async def readiness(request: Request) -> Any:
             content=fail(ErrCode.INTERNAL, f"not ready: {errors}").model_dump(),
         )
     return ok(data={"status": "ready"}).model_dump()
+
+
+@router.get("/metrics", response_class=PlainTextResponse)
+async def metrics(request: Request) -> PlainTextResponse:
+    state = request.app.state.notification_metrics
+    lines = [
+        "# TYPE ruisheng_api_notification_materialize_failures_total counter",
+        f"ruisheng_api_notification_materialize_failures_total {state.materialize_failures}",
+        "# TYPE ruisheng_api_notification_pending gauge",
+        f"ruisheng_api_notification_pending {state.pending}",
+        "# TYPE ruisheng_api_notification_oldest_age_seconds gauge",
+        f"ruisheng_api_notification_oldest_age_seconds {state.oldest_age_sec}",
+        "# TYPE ruisheng_api_notification_stale_completions_total counter",
+        f"ruisheng_api_notification_stale_completions_total {state.stale_completions}",
+    ]
+    for error_class, count in sorted(state.failures.items()):
+        lines.append(
+            'ruisheng_api_notification_failures_total{error_class="' + error_class + f'"}} {count}'
+        )
+    return PlainTextResponse("\n".join(lines) + "\n")
