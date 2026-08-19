@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import signal
 import sys
 from collections.abc import Callable, Coroutine
@@ -27,7 +28,7 @@ PollerFactory = Callable[[], Coroutine[Any, Any, None]]
 # hardcoded literal — 与 G7 #28-B 两版本字段分离一致
 # 升 shared 时 gw PR 必须同步改此常量
 REQUIRED_SHARED_SCHEMA_VERSION: int = 20260415
-EXPECTED_ALEMBIC_HEAD: str = "0011_device_enable_flag"
+EXPECTED_ALEMBIC_HEAD: str = "0012_alarm_notification_runtime"
 _PEER_HOST_PORT_LEN = 2
 
 
@@ -108,11 +109,11 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         single_file_mb=float(config.wal_single_file_mb),
         total_gb=float(config.wal_total_gb),
     )
-    repo = Repository(engine)
-    await wal.replay_and_cleanup(sink=repo.flush)
     redis = redis_async.from_url(config.redis_url, decode_responses=True)
     await redis.ping()
     health_state.set_redis_ok(True)
+    repo = Repository(engine, redis=redis)
+    await wal.replay_and_cleanup(sink=repo.flush)
 
     # 3. Load Registry
     registry = await Registry.load_from_db(engine)
@@ -144,7 +145,80 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     supervisor = Supervisor(clock=clock)
     session_map = SessionMap()
     publisher = Publisher(redis=redis)
-    ingestor = FrameIngestor(registry=registry, batch=batch, publisher=publisher)
+    ingestor = FrameIngestor(
+        registry=registry,
+        batch=batch,
+        publisher=publisher,
+        alarm_repository=repo,
+        relation_value_max_age_sec=float(config.relation_value_max_age_sec),
+    )
+    config_reload_lock = asyncio.Lock()
+
+    async def _reload_alarm_rules(dev_numbers: set[str]) -> set[str]:
+        async with config_reload_lock:
+            refreshed = await registry.reload_alarm_rules(engine, dev_numbers)
+            await repo.reset_lx_counters_for_devices(refreshed)
+            return refreshed
+
+    async def _alarm_registry_loop() -> None:
+        while True:
+            try:
+                async with config_reload_lock:
+                    refreshed = await registry.reload_alarm_rules_if_changed(engine)
+                    await repo.reset_lx_counters_for_devices(refreshed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("alarm registry reload failed")
+            await asyncio.sleep(config.alarm_reload_interval_sec)
+
+    registry_task = asyncio.create_task(_alarm_registry_loop())
+
+    async def _config_changed_loop() -> None:
+        while True:
+            try:
+                async with redis.pubsub() as pubsub:
+                    await pubsub.subscribe("channel:config:changed")
+                    while True:
+                        message = await pubsub.get_message(
+                            ignore_subscribe_messages=True,
+                            timeout=1.0,
+                        )
+                        if message is None:
+                            continue
+                        raw = message.get("data")
+                        payload = json.loads(raw) if isinstance(raw, str | bytes) else {}
+                        dev_number = payload.get("dev_number")
+                        version = payload.get("version")
+                        if isinstance(dev_number, str) and dev_number and isinstance(version, int):
+                            async with config_reload_lock:
+                                if not registry.needs_config_reload(dev_number, version):
+                                    continue
+                                refreshed = await registry.reload_alarm_rules(engine, {dev_number})
+                                await repo.reset_lx_counters_for_devices(refreshed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("config change subscriber failed")
+                await asyncio.sleep(2)
+
+    config_task = asyncio.create_task(_config_changed_loop())
+
+    async def _outbox_loop() -> None:
+        while True:
+            try:
+                count = await repo.relay_alarm_outbox_once(redis)
+                health_state.set_outbox_pending(await repo.count_pending_alarm_outbox())
+                health_state.mark_outbox_relay_ok()
+                await asyncio.sleep(0 if count else 1)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                health_state.mark_outbox_relay_failed()
+                log.exception("alarm outbox relay iteration failed")
+                await asyncio.sleep(2)
+
+    outbox_task = asyncio.create_task(_outbox_loop())
 
     def _tcp_bus_id(writer: asyncio.StreamWriter) -> str:
         peer = writer.get_extra_info("peername")
@@ -327,6 +401,15 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         if serial_tasks:
             await asyncio.gather(*serial_tasks, return_exceptions=True)
         batch.stop()
+        outbox_task.cancel()
+        registry_task.cancel()
+        config_task.cancel()
+        await asyncio.gather(
+            outbox_task,
+            registry_task,
+            config_task,
+            return_exceptions=True,
+        )
         await server.shutdown()
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await asyncio.wait_for(batch_task, timeout=5.0)

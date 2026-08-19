@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import socket
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -17,6 +19,11 @@ from .logging_setup import configure_logging
 from .pubsub.alarm_consumer import AlarmConsumerConfig, consumer_loop
 from .pubsub.realtime_bridge import realtime_loop
 from .pubsub.ws_manager import WSManager
+from .services.notification.runtime import (
+    NotificationMetrics,
+    cleanup_notification_audit,
+    delivery_worker_loop,
+)
 from .tasks.pay_expire import expire_stale_pay_orders
 from .tasks.pay_seen_cleanup import cleanup_old_pay_seen
 from .tasks.scheduler import build_scheduler
@@ -36,10 +43,41 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.ws_manager = ws_manager
     stop_event = asyncio.Event()
     app.state.stop_event = stop_event
-    consumer_cfg = AlarmConsumerConfig(consumer_name=f"api-{cfg.listen_port}")
+    instance_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:12]}"
+    consumer_cfg = AlarmConsumerConfig(
+        consumer_name=f"api-{instance_id}",
+        max_event_age_sec=cfg.notification_event_max_age_sec,
+    )
+    notification_metrics = NotificationMetrics()
+    app.state.notification_metrics = notification_metrics
+    provider_enabled = {
+        "wechat": cfg.notification_wechat_enabled,
+        "email": cfg.notification_email_enabled,
+        "sms_custom_http": cfg.notification_sms_enabled,
+        "voice_custom_http": cfg.notification_voice_enabled,
+    }
     tasks = [
-        asyncio.create_task(consumer_loop(app.state.redis, consumer_cfg, ws_manager, stop_event)),
+        asyncio.create_task(
+            consumer_loop(
+                app.state.redis,
+                consumer_cfg,
+                ws_manager,
+                stop_event,
+                app.state.session_factory,
+                cfg.jwt_secret,
+                provider_enabled,
+                notification_metrics,
+            )
+        ),
         asyncio.create_task(realtime_loop(app.state.redis, ws_manager, stop_event)),
+        asyncio.create_task(
+            delivery_worker_loop(
+                app.state.session_factory,
+                cfg,
+                stop_event,
+                notification_metrics,
+            )
+        ),
     ]
     scheduler = build_scheduler()
     app.state.scheduler = scheduler
@@ -77,6 +115,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         minute=0,
         args=[gw_session_factory],
         id="vacuum_hot",
+    )
+    scheduler.add_job(
+        cleanup_notification_audit,
+        "cron",
+        hour=2,
+        minute=30,
+        args=[app.state.session_factory],
+        id="notification_audit_cleanup",
     )
     scheduler.start()
     try:

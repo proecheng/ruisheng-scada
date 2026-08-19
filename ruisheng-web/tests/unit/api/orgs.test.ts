@@ -5,6 +5,7 @@ import {
   addEmail,
   addPhone,
   createUser,
+  listAllUsers,
   listEmails,
   listPhones,
   listUsers,
@@ -38,6 +39,39 @@ describe("orgs api", () => {
     const users = await listUsers();
     expect(users).toHaveLength(1);
     expect(users[0]?.user_name).toBe("alice");
+  });
+
+  it("can request the full notification user page", async () => {
+    mock.onGet("/orgs/users", { params: { limit: 500 } }).reply(200, {
+      code: 0,
+      data: { total: 0, items: [] },
+    });
+    await expect(listUsers({ limit: 500 })).resolves.toEqual([]);
+  });
+
+  it("loads every notification user page", async () => {
+    const firstPage = Array.from({ length: 500 }, (_, index) => ({
+      user_name: `user-${index}`,
+      authority: "User",
+      usr_group: "g1",
+      control_authority: 0,
+    }));
+    mock.onGet("/orgs/users", { params: { offset: 0, limit: 500, q: undefined } }).reply(200, {
+      code: 0,
+      data: { total: 501, items: firstPage },
+    });
+    mock.onGet("/orgs/users", { params: { offset: 500, limit: 500, q: undefined } }).reply(200, {
+      code: 0,
+      data: {
+        total: 501,
+        items: [{ user_name: "last-user", authority: "User", usr_group: "g1", control_authority: 0 }],
+      },
+    });
+
+    const users = await listAllUsers();
+
+    expect(users).toHaveLength(501);
+    expect(users.at(-1)?.user_name).toBe("last-user");
   });
 
   it("unwraps wx groups from backend items envelope", async () => {

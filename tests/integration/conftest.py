@@ -17,12 +17,13 @@ def require_dev_database(require_test_database_target, dev_database_ready, role_
 
 
 @pytest_asyncio.fixture
-async def seed_tenants(gw_engine):
+async def seed_tenants(dev_engine):
     """D9 最小 tenant 种子：ug_A + ug_B 两个 wx_groups + user_of_ugB 用户。
-    gw_engine BYPASSRLS + ON CONFLICT DO NOTHING 幂等；不 teardown（dev 容器整体 reset）。
+    dev_engine 以管理员会话 + ON CONFLICT DO NOTHING 幂等；不 teardown（dev 容器整体 reset）。
     fixture 为 function scope（见 tests/conftest.py engine fixture 注释）。
     """
-    async with gw_engine.connect() as conn, conn.begin():
+    async with dev_engine.connect() as conn, conn.begin():
+        await conn.execute(text("SELECT set_config('app.role', 'Administrators', true)"))
         await conn.execute(
             text("""
                 INSERT INTO wx_groups (usr_group, company_name)

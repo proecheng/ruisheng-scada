@@ -69,7 +69,7 @@ async def test_functions_are_invoker(dev_engine):
 
 @pytest.mark.integration
 async def test_updated_at_triggers_count(dev_engine):
-    """13 张表各有 trg_<table>_updated (post Plan bug #3)"""
+    """原 13 张表及通知订阅/投递表都有 updated_at 触发器。"""
     async with dev_engine.connect() as conn:
         n = await conn.scalar(
             text("""
@@ -77,7 +77,7 @@ async def test_updated_at_triggers_count(dev_engine):
               WHERE tgname LIKE 'trg_%_updated' AND NOT tgisinternal;
         """)
         )
-    assert n == 13
+    assert n == 15
 
 
 @pytest.mark.integration
@@ -105,8 +105,8 @@ async def test_scene_triggers_exist(dev_engine):
 
 
 @pytest.mark.integration
-async def test_rls_forced_on_12_tables(dev_engine):
-    """12 张 RLS 表必须同时 ENABLE + FORCE (post Plan bug #4)"""
+async def test_rls_forced_on_16_tables(dev_engine):
+    """原 12 张及 4 张通知表必须同时 ENABLE + FORCE。"""
     async with dev_engine.connect() as conn:
         rows = await conn.execute(
             text("""
@@ -117,12 +117,12 @@ async def test_rls_forced_on_12_tables(dev_engine):
         """)
         )
         rls_tables = {r.relname for r in rows}
-    assert len(rls_tables) == 12
+    assert len(rls_tables) == 16
 
 
 @pytest.mark.integration
 async def test_policies_exist(dev_engine):
-    """12 张表各 1 条 tenant_isolation policy"""
+    """16 张租户表各 1 条 tenant_isolation policy。"""
     async with dev_engine.connect() as conn:
         rows = await conn.execute(
             text("""
@@ -131,7 +131,7 @@ async def test_policies_exist(dev_engine):
         """)
         )
         tables = {r.tbl for r in rows}
-    assert len(tables) == 12
+    assert len(tables) == 16
 
 
 @pytest.mark.integration

@@ -2,7 +2,15 @@
 每次新增或修改模型必须在 CHANGELOG.md 登记；如为 breaking 需升级 SHARED_SCHEMA_VERSION。
 """
 
-from .alarms import AlarmOutbox, AlarmRecord, DeviceWaringCfg
+from .alarms import (
+    AlarmNotificationSubscription,
+    AlarmOutbox,
+    AlarmRecord,
+    DeviceWaringCfg,
+    NotificationDelivery,
+    NotificationDeliveryAttempt,
+    NotificationDispatch,
+)
 from .base import Base, SoftDeleteMixin, TimestampMixin
 from .control import UserControlAction
 from .devices import Device, DevicePoint, DeviceStaticData, DeviceTemplate, SimCard
@@ -18,6 +26,7 @@ from .users import User, UserEmail, UserPhoneNumber, UserWxBinding
 
 __all__ = [
     "AlarmOutbox",
+    "AlarmNotificationSubscription",
     "AlarmRecord",
     "Base",
     "Device",
@@ -27,6 +36,9 @@ __all__ = [
     "DeviceWaringCfg",
     "MaintainAction",
     "MaintainPlan",
+    "NotificationDelivery",
+    "NotificationDeliveryAttempt",
+    "NotificationDispatch",
     "PayOrder",
     "PayOrderSeen",
     "PointDataHistory",

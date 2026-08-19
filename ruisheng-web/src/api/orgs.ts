@@ -63,9 +63,23 @@ function itemsOf<T>(payload: T[] | ListEnvelope<T> | undefined): T[] {
   return payload?.items ?? [];
 }
 
-export async function listUsers(): Promise<OrgUser[]> {
-  const { data } = await apiClient.get("/orgs/users");
+export async function listUsers(params?: { offset?: number; limit?: number; q?: string }): Promise<OrgUser[]> {
+  const { data } = await apiClient.get("/orgs/users", { params });
   return itemsOf(data.data as ListEnvelope<OrgUser>);
+}
+
+export async function listAllUsers(q?: string): Promise<OrgUser[]> {
+  const limit = 500
+  const users: OrgUser[] = []
+  let offset = 0
+  for (;;) {
+    const { data } = await apiClient.get('/orgs/users', { params: { offset, limit, q } })
+    const page = data.data as ListEnvelope<OrgUser>
+    const items = itemsOf(page)
+    users.push(...items)
+    if (items.length === 0 || users.length >= (page.total ?? users.length)) return users
+    offset += items.length
+  }
 }
 
 export async function createUser(u: OrgUserCreatePayload): Promise<OrgUser> {

@@ -109,13 +109,13 @@ def upgrade() -> None:
         if "usr_group" in t.columns and t.name != "wx_groups"
     }
     plan_tenant = set(RLS_TABLES)
-    diff = orm_tenant.symmetric_difference(plan_tenant)
-    if diff:
+    missing = plan_tenant - orm_tenant
+    if missing:
         raise RuntimeError(
-            f"RLS_TABLES drift from ORM: {sorted(diff)}\n"
+            f"RLS_TABLES missing from ORM: {sorted(missing)}\n"
             f"  ORM 含 usr_group: {sorted(orm_tenant)}\n"
             f"  plan RLS_TABLES: {sorted(plan_tenant)}\n"
-            f"  修法：对齐列表或调整 ORM 对应表的 usr_group 列"
+            f"  修法：恢复历史迁移依赖的租户表；未来新增表由后续迁移启用 RLS"
         )
 
     # --- 块 A：scene_* 3 个专用触发器（字母序 enforce → fill → updated） ---

@@ -30,7 +30,27 @@ def test_build_from_rows() -> None:
             "alarm_level": 1,
         },
     ]
-    reg = Registry.build(device_rows=device_rows, point_rows=point_rows)
+    alarm_rows = [
+        {
+            "id": 7,
+            "point_id": 10,
+            "reg_bit": 3,
+            "alarm_name": "high",
+            "alarm_type": ">",
+            "limit_value": 80.0,
+            "alarm_msg": "too high",
+            "waring_flag": False,
+            "relation_point_id": 11,
+            "relation_reg_bit": 2,
+            "relation_alarm_type": "=",
+            "relation_limit_value": 1.0,
+        }
+    ]
+    reg = Registry.build(
+        device_rows=device_rows,
+        point_rows=point_rows,
+        alarm_rows=alarm_rows,
+    )
     e1 = reg.get("DEV-001")
     assert e1 is not None
     assert e1.device.usr_group == "ug_A"
@@ -38,6 +58,11 @@ def test_build_from_rows() -> None:
     assert e1.device.iccid == "ICCID-1"
     assert e1.device.state is DeviceState.UNREGISTERED
     assert len(e1.points) == 1
+    assert e1.points[10].alarms[0].id == 7
+    assert e1.points[10].alarms[0].reg_bit == 3
+    assert e1.points[10].alarms[0].alarm_name == "high"
+    assert e1.points[10].alarms[0].relation_point_id == 11
+    assert e1.points[10].alarms[0].relation_reg_bit == 2
 
 
 def test_get_returns_none_for_unknown() -> None:
@@ -177,3 +202,109 @@ def test_tcp_device_for_dev_ser_number_requires_unique_match() -> None:
     assert match is not None
     assert match.device.dev_number == "TCP-001"
     assert reg.tcp_device_for_dev_ser_number("SN-002") is None
+
+
+def test_replace_alarm_rules_is_visible_without_rebuilding_registry() -> None:
+    reg = Registry.build(
+        device_rows=[{"dev_number": "D1", "usr_group": "g1", "update_interval_decisec": 10}],
+        point_rows=[
+            {
+                "id": 1,
+                "dev_number": "D1",
+                "point_ratio": 1.0,
+                "point_offset": 0.0,
+                "user_ratio": 1.0,
+                "user_point_offset": 0.0,
+            }
+        ],
+    )
+    original_entry = reg.get("D1")
+    reg.replace_alarm_rules(
+        dev_numbers={"D1"},
+        alarm_rows=[
+            {
+                "id": 9,
+                "point_id": 1,
+                "alarm_name": "hot",
+                "alarm_type": ">",
+                "limit_value": 80,
+            }
+        ],
+    )
+    assert reg.get("D1") is original_entry
+    assert original_entry is not None
+    assert original_entry.points[1].alarms[0].id == 9
+
+
+async def test_config_version_poll_is_non_consuming_and_clears_deleted_rules() -> None:
+    reg = Registry.build(
+        device_rows=[
+            {
+                "dev_number": "D1",
+                "usr_group": "g1",
+                "update_interval_decisec": 10,
+                "update_flag": 1,
+            }
+        ],
+        point_rows=[
+            {
+                "id": 1,
+                "dev_number": "D1",
+                "point_ratio": 1.0,
+                "point_offset": 0.0,
+                "user_ratio": 1.0,
+                "user_point_offset": 0.0,
+            }
+        ],
+        alarm_rows=[
+            {
+                "id": 9,
+                "point_id": 1,
+                "alarm_name": "old",
+                "alarm_type": ">",
+                "limit_value": 80,
+            }
+        ],
+    )
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    class Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def mappings(self):
+            return self
+
+        def all(self):
+            return self._rows
+
+    class Conn:
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            calls.append((sql, params))
+            if "FROM device_waring_cfgs" in sql:
+                return Result([])
+            return Result([{"dev_number": "D1", "update_flag": 2}])
+
+    class Begin:
+        async def __aenter__(self):
+            return Conn()
+
+        async def __aexit__(self, *args):
+            return None
+
+    class Engine:
+        def begin(self):
+            return Begin()
+
+    assert await reg.reload_alarm_rules_if_changed(Engine()) == {"D1"}
+    assert reg.get("D1").config_version == 2  # type: ignore[union-attr]
+    assert reg.get("D1").points[1].alarms == ()  # type: ignore[union-attr]
+    assert not any("UPDATE devices" in statement for statement, _ in calls)
+    assert all("usr_group" in statement for statement, _ in calls)
+    assert calls[0][1] == {"tenants": ["g1"]}
+    assert calls[1][1] == {"dev_numbers": ["D1"], "tenants": ["g1"]}
+    assert calls[2][1] == {"dev_numbers": ["D1"], "tenants": ["g1"]}
+    assert not reg.needs_config_reload("D1", 2)
+    assert not reg.needs_config_reload("D1", 1)
+    assert reg.needs_config_reload("D1", 3)

@@ -56,7 +56,11 @@ def test_wx_binding_pk() -> None:
 
 def test_wx_binding_columns() -> None:
     cols = {c.name for c in UserWxBinding.__table__.columns}
-    assert cols >= {"openid", "user_name", "usr_group", "bound_at"}
+    assert cols >= {"openid", "contact_id", "user_name", "usr_group", "bound_at"}
+
+
+def test_wx_binding_contact_id_is_server_generated() -> None:
+    assert UserWxBinding.__table__.c.contact_id.server_default is not None
 
 
 # --- UserPhoneNumber ------------------------------------------------------

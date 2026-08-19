@@ -71,14 +71,12 @@ def upgrade() -> None:
 
     orm_updated = {t.name for t in Base.metadata.tables.values() if "updated_at" in t.columns}
     plan_updated = set(UPDATED_AT_TABLES)
-    missing = orm_updated - plan_updated
-    extra = plan_updated - orm_updated
-    if missing or extra:
+    missing = plan_updated - orm_updated
+    if missing:
         raise RuntimeError(
-            f"UPDATED_AT_TABLES drift from ORM:\n"
-            f"  ORM 有但迁移没列: {sorted(missing)}\n"
-            f"  迁移列了但 ORM 没: {sorted(extra)}\n"
-            f"  修法：对齐列表或调整 ORM TimestampMixin"
+            f"UPDATED_AT_TABLES missing from ORM:\n"
+            f"  历史迁移表缺失: {sorted(missing)}\n"
+            f"  修法：恢复历史迁移依赖；未来新增表由后续迁移创建触发器"
         )
 
     # --- 主循环：DROP + CREATE 保证幂等 ---

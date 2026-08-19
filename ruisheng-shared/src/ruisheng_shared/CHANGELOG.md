@@ -8,6 +8,10 @@
 - `fix:` — 错误修正
 - `chore:` — 重构、重命名、注释（无语义变化）
 
+## 2026-08-19
+
+- feature: add immutable alarm configuration snapshots plus tenant-scoped notification subscriptions, dispatches, leased deliveries, and sanitized delivery-attempt audit models. Existing alarm rows remain readable; `SHARED_SCHEMA_VERSION` is unchanged because the change is additive.
+
 ## 2026-06-25
 
 - feature: Device ORM 增加 is_enabled 业务启停字段，用于网关只加载启用设备、前端设备启停控制；非 breaking，SHARED_SCHEMA_VERSION 不变。

@@ -119,15 +119,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Revoke current-database grants without dropping cluster-global roles."""
     for role in ("ruisheng_api", "ruisheng_gw"):
-        # 先 DROP OWNED（清所有 GRANT / DEFAULT PRIVILEGES 条目）
-        # 再 DROP ROLE。IF EXISTS 兜底"已被手工删除"
+        # PostgreSQL 角色是集群级对象，可能被同实例其他数据库使用。
+        # downgrade 只清当前数据库内的授权，避免 DROP ROLE 破坏其他数据库。
         op.execute(f"""
             DO $$ BEGIN
               IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='{role}') THEN
                 EXECUTE format('DROP OWNED BY %I', '{role}');
-                EXECUTE format('DROP ROLE %I', '{role}');
               END IF;
             END $$;
         """)

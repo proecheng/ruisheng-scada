@@ -6,6 +6,8 @@ import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Protocol
 
+from loguru import logger
+
 from ruisheng_gw.domain.alarm_simple import check_threshold
 from ruisheng_gw.domain.device import DeviceState
 from ruisheng_gw.domain.point import ScalingError, apply_scaling
@@ -23,7 +25,7 @@ from ruisheng_gw.pubsub.schemas import AlarmEvent, RealtimeEvent
 from ruisheng_gw.transport.session import PendingRead
 
 if TYPE_CHECKING:
-    from ruisheng_gw.domain.registry import PointEntry
+    from ruisheng_gw.domain.registry import AlarmSpec, PointEntry
 
 MAX_REGISTER_BIT = 15
 
@@ -37,6 +39,17 @@ class _Publisher(Protocol):
     async def publish_alarm(self, ev: AlarmEvent) -> None: ...
 
 
+class _AlarmRepository(Protocol):
+    async def apply_alarm_reading(
+        self,
+        *,
+        alarm_cfg_id: int,
+        value: float,
+        observed_at: float,
+        relation_value: float | None = None,
+    ) -> bool: ...
+
+
 class FrameIngestor:
     def __init__(
         self,
@@ -44,15 +57,20 @@ class FrameIngestor:
         registry: Registry,
         batch: _BatchSink,
         publisher: _Publisher,
+        alarm_repository: _AlarmRepository | None = None,
+        relation_value_max_age_sec: float = 300,
     ) -> None:
         self._registry = registry
         self._batch = batch
         self._publisher = publisher
+        self._alarm_repository = alarm_repository
+        self._relation_value_max_age_sec = relation_value_max_age_sec
+        self._current_values: dict[tuple[str, int], tuple[float, float, float]] = {}
 
     async def process_frame(self, *, dev_number: str, frame: bytes) -> None:
         await self.process_frame_for_pending(dev_number=dev_number, frame=frame, pending_read=None)
 
-    async def process_frame_for_pending(
+    async def process_frame_for_pending(  # noqa: PLR0912
         self,
         *,
         dev_number: str,
@@ -81,6 +99,7 @@ class FrameIngestor:
             response=decoded,
             pending_read=pending_read,
         )
+        readings: list[tuple[PointEntry, BatchRow]] = []
         for point_entry in points:
             raw_value = _raw_value_for_point(
                 point_entry=point_entry,
@@ -100,6 +119,14 @@ class FrameIngestor:
                 org_value=raw_value,
                 recorded_at=now,
             )
+            readings.append((point_entry, row))
+            self._current_values[(dev_number, row.point_id)] = (
+                row.rt_value,
+                row.org_value,
+                row.recorded_at,
+            )
+
+        for _point_entry, row in readings:
             self._batch.submit(row)
             await self._publisher.publish_realtime(
                 RealtimeEvent(
@@ -110,15 +137,66 @@ class FrameIngestor:
                     recorded_at=row.recorded_at,
                 )
             )
-            alarm = check_threshold(
-                dev_number=row.dev_number,
-                point_id=row.point_id,
-                value=row.rt_value,
-                spec=point_entry.threshold,
-                now=now,
-            )
-            if alarm is not None:
-                await self._publisher.publish_alarm(AlarmEvent(**alarm.__dict__))
+
+        for point_entry, row in readings:
+            if self._alarm_repository is not None:
+                for alarm in point_entry.alarms:
+                    try:
+                        relation_value = self._relation_value(
+                            dev_number, alarm, observed_at=row.recorded_at
+                        )
+                        alarm_value = self._alarm_value(row, alarm)
+                        if alarm_value is None:
+                            continue
+                        await self._alarm_repository.apply_alarm_reading(
+                            alarm_cfg_id=alarm.id,
+                            value=alarm_value,
+                            observed_at=now,
+                            relation_value=relation_value,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "alarm rule evaluation failed dev_number={} alarm_cfg_id={}",
+                            dev_number,
+                            alarm.id,
+                        )
+            else:
+                threshold_alarm = check_threshold(
+                    dev_number=row.dev_number,
+                    point_id=row.point_id,
+                    value=row.rt_value,
+                    spec=point_entry.threshold,
+                    now=now,
+                )
+                if threshold_alarm is not None:
+                    await self._publisher.publish_alarm(AlarmEvent(**threshold_alarm.__dict__))
+
+    def _relation_value(
+        self, dev_number: str, alarm: AlarmSpec, *, observed_at: float
+    ) -> float | None:
+        if alarm.relation_point_id is None:
+            return None
+        current = self._current_values.get((dev_number, alarm.relation_point_id))
+        if current is None:
+            return None
+        rt_value, org_value, relation_observed_at = current
+        age = observed_at - relation_observed_at
+        if age < 0 or age > self._relation_value_max_age_sec:
+            return None
+        if alarm.relation_reg_bit is None:
+            return rt_value
+        bit = alarm.relation_reg_bit
+        if bit < 0 or bit > MAX_REGISTER_BIT:
+            return None
+        return float((int(org_value) >> bit) & 0x01)
+
+    @staticmethod
+    def _alarm_value(row: BatchRow, alarm: AlarmSpec) -> float | None:
+        if alarm.reg_bit is None:
+            return row.rt_value
+        if alarm.reg_bit < 0 or alarm.reg_bit > MAX_REGISTER_BIT:
+            return None
+        return float((int(row.org_value) >> alarm.reg_bit) & 0x01)
 
     @staticmethod
     def _decode_frame(frame: bytes) -> AnyFrame | None:
