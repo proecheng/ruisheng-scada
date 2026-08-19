@@ -259,13 +259,17 @@ class Registry:
         if not requested:
             return set()
         async with engine.begin() as conn:
-            params = {"devices": sorted(requested)}
+            params = {
+                "dev_numbers": sorted(requested),
+                "tenants": sorted({self._entries[dev].device.usr_group for dev in requested}),
+            }
             version_rows = (
                 (
                     await conn.execute(
                         text(
                             "SELECT dev_number, update_flag FROM devices "
-                            "WHERE dev_number = ANY(CAST(:devices AS text[])) "
+                            "WHERE dev_number = ANY(CAST(:dev_numbers AS text[])) "
+                            "AND usr_group = ANY(CAST(:tenants AS text[])) "
                             "AND deleted_at IS NULL AND is_enabled IS TRUE"
                         ),
                         params,
@@ -281,11 +285,15 @@ class Registry:
                 (
                     await conn.execute(
                         text(
-                            "SELECT id, dev_number, point_id, reg_bit, alarm_name, alarm_type, "
-                            "limit_value, alarm_msg, waring_flag, relation_point_id, "
-                            "relation_reg_bit, relation_alarm_type, relation_limit_value "
-                            "FROM device_waring_cfgs WHERE enable IS TRUE "
-                            "AND dev_number = ANY(CAST(:devices AS text[]))"
+                            "SELECT cfg.id, cfg.dev_number, cfg.point_id, cfg.reg_bit, "
+                            "cfg.alarm_name, cfg.alarm_type, cfg.limit_value, cfg.alarm_msg, "
+                            "cfg.waring_flag, cfg.relation_point_id, cfg.relation_reg_bit, "
+                            "cfg.relation_alarm_type, cfg.relation_limit_value "
+                            "FROM device_waring_cfgs AS cfg "
+                            "JOIN devices AS d ON d.dev_number = cfg.dev_number "
+                            "WHERE cfg.enable IS TRUE "
+                            "AND cfg.dev_number = ANY(CAST(:dev_numbers AS text[])) "
+                            "AND d.usr_group = ANY(CAST(:tenants AS text[]))"
                         ),
                         params,
                     )
@@ -305,14 +313,19 @@ class Registry:
         """Poll immutable per-device versions without consuming shared state."""
         from sqlalchemy import text  # noqa: PLC0415
 
+        tenants = sorted({entry.device.usr_group for entry in self._entries.values()})
+        if not tenants:
+            return set()
         async with engine.begin() as conn:
             version_rows = (
                 (
                     await conn.execute(
                         text(
                             "SELECT dev_number, update_flag FROM devices "
-                            "WHERE deleted_at IS NULL AND is_enabled IS TRUE"
-                        )
+                            "WHERE usr_group = ANY(CAST(:tenants AS text[])) "
+                            "AND deleted_at IS NULL AND is_enabled IS TRUE"
+                        ),
+                        {"tenants": tenants},
                     )
                 )
                 .mappings()

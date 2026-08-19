@@ -266,7 +266,7 @@ async def test_config_version_poll_is_non_consuming_and_clears_deleted_rules() -
             }
         ],
     )
-    statements: list[str] = []
+    calls: list[tuple[str, dict[str, object] | None]] = []
 
     class Result:
         def __init__(self, rows):
@@ -281,7 +281,7 @@ async def test_config_version_poll_is_non_consuming_and_clears_deleted_rules() -
     class Conn:
         async def execute(self, statement, params=None):
             sql = str(statement)
-            statements.append(sql)
+            calls.append((sql, params))
             if "FROM device_waring_cfgs" in sql:
                 return Result([])
             return Result([{"dev_number": "D1", "update_flag": 2}])
@@ -300,7 +300,11 @@ async def test_config_version_poll_is_non_consuming_and_clears_deleted_rules() -
     assert await reg.reload_alarm_rules_if_changed(Engine()) == {"D1"}
     assert reg.get("D1").config_version == 2  # type: ignore[union-attr]
     assert reg.get("D1").points[1].alarms == ()  # type: ignore[union-attr]
-    assert not any("UPDATE devices" in statement for statement in statements)
+    assert not any("UPDATE devices" in statement for statement, _ in calls)
+    assert all("usr_group" in statement for statement, _ in calls)
+    assert calls[0][1] == {"tenants": ["g1"]}
+    assert calls[1][1] == {"dev_numbers": ["D1"], "tenants": ["g1"]}
+    assert calls[2][1] == {"dev_numbers": ["D1"], "tenants": ["g1"]}
     assert not reg.needs_config_reload("D1", 2)
     assert not reg.needs_config_reload("D1", 1)
     assert reg.needs_config_reload("D1", 3)
