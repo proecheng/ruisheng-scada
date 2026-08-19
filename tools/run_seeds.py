@@ -1,4 +1,4 @@
-"""按字典序跑 seeds/ 下所有 .sql 文件。"""
+"""显式加载本地开发/测试演示数据；生产 bootstrap 不调用此脚本。"""
 
 from __future__ import annotations
 

@@ -62,31 +62,22 @@ openssl rand -hex 24
 ### 3. 首次启动
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d postgres redis migrate
 ```
 
 首次启动会自动完成：
 - 创建数据库表结构（约 30 秒）
-- 写入初始演示数据
 
 查看初始化进度：
 ```bash
 docker compose -f docker-compose.prod.yml logs migrate -f
 ```
 
-看到 `Database initialised successfully.` 后，系统启动完成。
+看到 `Database initialised successfully.` 后，数据库结构迁移完成；API、GW 和 Web 尚未启动。
 
-### 4. 访问系统
+### 4. 对外开放前置条件
 
-浏览器打开：`http://localhost`（或 `http://<本机IP>`）
-
-**默认账号：**
-| 账号 | 密码 | 权限 |
-|------|------|------|
-| `13800138000` | `Admin@2026!` | 管理员 |
-| `13800138001` | `Admin@2026!` | 普通用户 |
-
-> **首次登录后请立即修改密码！**
+生产 bootstrap 不创建演示数据或账号。管理员引导和凭据交接尚未交付，B-02 不解除 G0-05/CAP-2；在独立流程获批并完成前，不得将系统开放给用户或提供 Web 访问入口。
 
 ### 5. RS485 串口设备（可选）
 
@@ -103,6 +94,8 @@ gw:
 > Windows 串口（COM3 等）需通过 usbipd-win 转发至 WSL2，建议在 Linux 系统上部署。
 
 ## 日常管理
+
+以下全栈重启和升级命令仅在管理员引导及凭据交接通过独立流程获批并完成后使用；当前交付状态不得执行。
 
 ```bash
 # 停止系统
@@ -138,7 +131,6 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 
 | 现象 | 可能原因 | 解决方法 |
 |------|---------|---------|
-| 网页打不开 | 端口 80 被占用 | `docker ps` 检查，或修改 compose 端口 |
-| 登录失败 | 数据库未初始化完成 | `docker logs ruisheng-prod-migrate-1` 检查 |
+| 无法登录 | 管理员引导和凭据交接尚未交付 | 保持系统不对外开放，等待独立流程获批并完成 |
 | 数据库启动失败 | 磁盘空间不足 | 清理磁盘，至少保留 5 GB |
 | API 报错 | 服务未就绪 | 等待 30 秒后重试 |
