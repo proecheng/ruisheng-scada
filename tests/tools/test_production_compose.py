@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import tomllib
 from copy import deepcopy
 from pathlib import Path
 
@@ -14,6 +15,8 @@ import pytest
 ROOT = Path(__file__).parents[2]
 COMPOSE_FILES = (ROOT / "docker-compose.prod.yml", ROOT / "deploy" / "docker-compose.prod.yml")
 ENV_FILES = (ROOT / ".env.prod.example", ROOT / "deploy" / ".env.prod.example")
+PRODUCTION_DOCS = (ROOT / "README.md", ROOT / "deploy" / "setup-customer.md")
+SEED_FILES = tuple(sorted((ROOT / "seeds").glob("*.sql")))
 APPLICATION_SERVICES = ("migrate", "api", "gw", "web")
 ENV_KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 API_NOTIFICATION_VARIABLES = {
@@ -129,6 +132,21 @@ def _compose_variable_keys(compose_path: Path, env_path: Path) -> set[str]:
     if not lines or lines[0].split(maxsplit=1)[0] != "NAME":
         pytest.fail(f"Docker Compose returned an unexpected variables table for {compose_path}")
     return {line.split(maxsplit=1)[0] for line in lines[1:]}
+
+
+def _seed_document_forbidden_values() -> set[str]:
+    quoted_values = {
+        value
+        for seed_file in SEED_FILES
+        for value in re.findall(r"'([^'\r\n]+)'", _read(seed_file))
+    }
+    return {
+        value
+        for value in quoted_values
+        if "demo" in value.casefold()
+        or "@" in value
+        or re.fullmatch(r"1[3-9][0-9]{9}", value) is not None
+    }
 
 
 @pytest.mark.parametrize("interpolate", (True, False))
@@ -305,6 +323,76 @@ def test_migration_entrypoint_rejects_unsafe_or_placeholder_secrets() -> None:
     assert "^[A-Za-z0-9._~-]+$" in script
     assert "${#value} -lt 16" in script
     assert "${#JWT_SECRET} -lt 32" in script
+
+
+def test_production_migration_entrypoint_only_runs_alembic() -> None:
+    script = _read(ROOT / "scripts" / "entrypoint-migrate.sh")
+
+    assert "alembic upgrade head" in script
+    assert "run_seeds" not in script
+    assert "seeds/" not in script
+    assert "Running seeds" not in script
+
+
+def test_api_image_keeps_workspace_and_migration_assets_without_demo_seeds() -> None:
+    dockerfile = _read(ROOT / "ruisheng-api" / "Dockerfile")
+
+    assert "COPY ruisheng-shared/ ruisheng-shared/" in dockerfile
+    assert "COPY ruisheng-api/ ruisheng-api/" in dockerfile
+    assert "COPY tools/pcap_gen/ tools/pcap_gen/" in dockerfile
+    assert "COPY alembic/ alembic/" in dockerfile
+    assert "COPY alembic.ini ./" in dockerfile
+    assert "COPY scripts/ scripts/" in dockerfile
+    assert "uv sync --package ruisheng-api --no-dev --frozen" in dockerfile
+    assert "COPY seeds/" not in dockerfile
+    assert "COPY tools/ tools/" not in dockerfile
+
+
+@pytest.mark.parametrize(("compose_path", "env_path"), zip(COMPOSE_FILES, ENV_FILES, strict=True))
+def test_services_use_the_same_migration_entrypoint_and_wait_for_success(
+    compose_path: Path, env_path: Path
+) -> None:
+    services = _render_compose(compose_path, env_path)["services"]
+
+    assert services["migrate"]["entrypoint"] == ["bash", "scripts/entrypoint-migrate.sh"]
+    for service_name in ("api", "gw"):
+        assert services[service_name]["depends_on"]["migrate"] == {
+            "condition": "service_completed_successfully",
+            "required": True,
+        }
+
+
+def test_demo_seed_is_available_only_through_explicit_development_paths() -> None:
+    project = tomllib.loads(_read(ROOT / "pyproject.toml"))
+    makefile = _read(ROOT / "Makefile")
+    dev_api = _read(ROOT / "tools" / "dev_api.ps1")
+    ci_web = _read(ROOT / ".github" / "workflows" / "ci-web.yml")
+    seed_runner = _read(ROOT / "tools" / "run_seeds.py")
+
+    assert project["tool"]["taskipy"]["tasks"]["seed"] == "python tools/run_seeds.py"
+    assert "seed:\n\tuv run task seed" in makefile
+    assert "uv run python tools/run_seeds.py" in dev_api
+    assert "uv run python tools/run_seeds.py" in ci_web
+    assert ci_web.count("- 'tools/run_seeds.py'") == 2
+    assert "本地开发/测试" in seed_runner
+    assert "生产 bootstrap 不调用" in seed_runner
+
+
+@pytest.mark.parametrize("document", PRODUCTION_DOCS)
+def test_production_docs_do_not_publish_seed_identities_or_claim_bootstrap(
+    document: Path,
+) -> None:
+    contents = _read(document)
+    folded_contents = contents.casefold()
+
+    assert _seed_document_forbidden_values()
+    for forbidden_value in _seed_document_forbidden_values():
+        assert forbidden_value.casefold() not in folded_contents
+    assert "默认账号" not in contents
+    assert "首次登录后" not in contents
+    assert "写入初始演示数据" not in contents
+    assert "管理员引导和凭据交接尚未交付" in contents
+    assert "B-02 不解除 G0-05/CAP-2" in contents
 
 
 def test_role_migration_does_not_embed_passwords_in_dollar_quoted_blocks() -> None:

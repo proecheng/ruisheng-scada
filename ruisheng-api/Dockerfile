@@ -10,12 +10,11 @@ COPY pyproject.toml uv.lock ./
 # API 依赖的 workspace 成员
 COPY ruisheng-shared/ ruisheng-shared/
 COPY ruisheng-api/ ruisheng-api/
+COPY tools/pcap_gen/ tools/pcap_gen/
 
-# migrate 服务也用这个镜像，所以把 alembic/seeds/scripts 一并打包
+# migrate 服务也用这个镜像，所以保留 Alembic 和生产入口
 COPY alembic/ alembic/
 COPY alembic.ini ./
-COPY seeds/ seeds/
-COPY tools/ tools/
 COPY scripts/ scripts/
 
 # 只安装 ruisheng-api 包及其 workspace dep（ruisheng-shared），不装 dev 依赖

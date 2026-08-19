@@ -20,12 +20,14 @@
 cp .env.prod.example .env.prod
 # 编辑 .env.prod，填写所有 CHANGE_ME_* 密码
 
-# 2. 一键启动（首次自动完成数据库初始化）
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+# 2. 初始化数据库（不启动 API、GW 或 Web 对外服务）
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d postgres redis migrate
 
-# 3. 浏览器打开 http://localhost
-# 默认账号：13800138000 / Admin@2026!
+# 3. 检查迁移任务成功退出
+docker compose -f docker-compose.prod.yml --env-file .env.prod ps --all migrate
 ```
+
+生产 bootstrap 只迁移数据库表结构，不创建演示数据或账号。管理员引导和凭据交接尚未交付，B-02 不解除 G0-05/CAP-2；在独立流程获批并完成前，不得将系统开放给用户。
 
 详细说明见 [`deploy/setup-customer.md`](deploy/setup-customer.md)。
 
@@ -43,6 +45,9 @@ uv run task up
 
 # 数据库迁移
 uv run task migrate
+
+# 显式加载演示数据（仅限本地开发/测试，生产环境不得运行）
+uv run task seed
 
 # 运行测试（250 unit tests）
 uv run task test
@@ -75,7 +80,7 @@ ruisheng-scada/
 │   ├── Dockerfile
 │   └── nginx.conf
 ├── alembic/                # 数据库迁移（8 个版本）
-├── seeds/                  # 初始演示数据
+├── seeds/                  # 本地开发/测试演示数据（显式加载）
 ├── scripts/
 │   └── entrypoint-migrate.sh
 ├── deploy/                 # 客户机部署包
