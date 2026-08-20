@@ -2,7 +2,9 @@ name: ruisheng-prod
 
 services:
   postgres:
-    image: timescale/timescaledb:2.16.1-pg15
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE must be set}
+    platform: ${TARGET_PLATFORM:?TARGET_PLATFORM must be set}
+    pull_policy: never
     container_name: ruisheng-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -18,7 +20,9 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:?REDIS_IMAGE must be set}
+    platform: ${TARGET_PLATFORM:?TARGET_PLATFORM must be set}
+    pull_policy: never
     container_name: ruisheng-redis
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
     volumes:
@@ -31,7 +35,8 @@ services:
     restart: unless-stopped
 
   migrate:
-    image: ${API_IMAGE:-ruisheng-prod-api:latest}
+    image: ${API_IMAGE:?API_IMAGE must be set}
+    platform: ${TARGET_PLATFORM:?TARGET_PLATFORM must be set}
     pull_policy: never
     entrypoint: ["bash", "scripts/entrypoint-migrate.sh"]
     depends_on:
@@ -47,7 +52,8 @@ services:
     restart: "no"
 
   api:
-    image: ${API_IMAGE:-ruisheng-prod-api:latest}
+    image: ${API_IMAGE:?API_IMAGE must be set}
+    platform: ${TARGET_PLATFORM:?TARGET_PLATFORM must be set}
     pull_policy: never
     container_name: ruisheng-api
     depends_on:
@@ -84,7 +90,8 @@ services:
     restart: unless-stopped
 
   gw:
-    image: ${GW_IMAGE:-ruisheng-prod-gw:latest}
+    image: ${GW_IMAGE:?GW_IMAGE must be set}
+    platform: ${TARGET_PLATFORM:?TARGET_PLATFORM must be set}
     pull_policy: never
     container_name: ruisheng-gw
     depends_on:
@@ -108,7 +115,8 @@ services:
     restart: unless-stopped
 
   web:
-    image: ${WEB_IMAGE:-ruisheng-prod-web:latest}
+    image: ${WEB_IMAGE:?WEB_IMAGE must be set}
+    platform: ${TARGET_PLATFORM:?TARGET_PLATFORM must be set}
     pull_policy: never
     container_name: ruisheng-web
     depends_on:

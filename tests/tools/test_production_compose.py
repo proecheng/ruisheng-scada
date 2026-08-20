@@ -18,6 +18,7 @@ ENV_FILES = (ROOT / ".env.prod.example", ROOT / "deploy" / ".env.prod.example")
 PRODUCTION_DOCS = (ROOT / "README.md", ROOT / "deploy" / "setup-customer.md")
 SEED_FILES = tuple(sorted((ROOT / "seeds").glob("*.sql")))
 APPLICATION_SERVICES = ("migrate", "api", "gw", "web")
+ALL_SERVICES = ("postgres", "redis", *APPLICATION_SERVICES)
 ENV_KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 API_NOTIFICATION_VARIABLES = {
     "API_NOTIFICATION_WECHAT_ENABLED",
@@ -170,6 +171,11 @@ def test_application_services_lock_deployment_fields_per_service() -> None:
         assert "pull_policy" not in build_services[service_name]
         assert "build" not in offline_services[service_name]
         assert offline_services[service_name]["pull_policy"] == "never"
+    for service_name in ("postgres", "redis"):
+        assert "build" not in build_services[service_name]
+        assert "pull_policy" not in build_services[service_name]
+    for service_name in ALL_SERVICES:
+        assert offline_services[service_name]["pull_policy"] == "never"
 
 
 def test_production_environment_templates_are_exactly_equal() -> None:
@@ -257,12 +263,17 @@ def test_compose_render_ignores_ambient_template_overrides(
 
 
 @pytest.mark.parametrize("compose_path", COMPOSE_FILES)
-def test_application_images_are_named_and_migrate_reuses_api(compose_path: Path) -> None:
+def test_all_images_are_explicit_and_migrate_reuses_api(compose_path: Path) -> None:
     compose = _read(compose_path)
 
-    assert compose.count("image: ${API_IMAGE:-ruisheng-prod-api:latest}") == 2
-    assert compose.count("image: ${GW_IMAGE:-ruisheng-prod-gw:latest}") == 1
-    assert compose.count("image: ${WEB_IMAGE:-ruisheng-prod-web:latest}") == 1
+    assert compose.count("image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE must be set}") == 1
+    assert compose.count("image: ${REDIS_IMAGE:?REDIS_IMAGE must be set}") == 1
+    assert compose.count("image: ${API_IMAGE:?API_IMAGE must be set}") == 2
+    assert compose.count("image: ${GW_IMAGE:?GW_IMAGE must be set}") == 1
+    assert compose.count("image: ${WEB_IMAGE:?WEB_IMAGE must be set}") == 1
+    assert compose.count("platform: ${TARGET_PLATFORM:?TARGET_PLATFORM must be set}") == 6
+    assert ":latest" not in compose
+    assert "redis:7-alpine" not in compose
 
 
 def test_build_compose_keeps_local_build_contexts() -> None:
@@ -278,7 +289,7 @@ def test_offline_compose_contains_no_build_keys() -> None:
     compose = _read(ROOT / "deploy" / "docker-compose.prod.yml")
 
     assert "build:" not in compose
-    assert compose.count("pull_policy: never") == 4
+    assert compose.count("pull_policy: never") == 6
 
 
 @pytest.mark.parametrize("compose_path", COMPOSE_FILES)
@@ -290,15 +301,56 @@ def test_gateway_wal_is_explicitly_persistent(compose_path: Path) -> None:
     assert "  ruisheng-gw-wal:\n" in compose
 
 
-def test_export_script_saves_compose_resolved_images() -> None:
+def test_export_script_delegates_atomic_candidate_generation() -> None:
     script = (ROOT / "deploy" / "export-images.sh").read_text(encoding="utf-8")
 
-    assert "pull postgres redis" in script
-    assert "config --images" in script
-    assert 'docker save "$image"' in script
+    assert "Usage: $0 <candidate-id> <target-platform>" in script
+    assert "tools/release_artifacts.py build" in script
+    assert '--candidate-id "$CANDIDATE_ID"' in script
+    assert '--target-platform "$TARGET_PLATFORM"' in script
     assert '--env-file "$ENV_FILE"' in script
-    assert "declare -A SEEN_ARCHIVES=()" in script
-    assert "Archive name collision" in script
+    assert '--output-root "$PROJECT_ROOT/dist/deploy"' in script
+    assert "docker save" not in script
+
+
+def test_environment_templates_have_release_placeholders_without_mutable_runtime_tags() -> None:
+    expected = {
+        "TARGET_PLATFORM": "linux/amd64",
+        "POSTGRES_IMAGE": "ruisheng-candidate/postgres:SET_BY_EXPORT",
+        "REDIS_IMAGE": "ruisheng-candidate/redis:SET_BY_EXPORT",
+        "API_IMAGE": "ruisheng-candidate/api:SET_BY_EXPORT",
+        "GW_IMAGE": "ruisheng-candidate/gw:SET_BY_EXPORT",
+        "WEB_IMAGE": "ruisheng-candidate/web:SET_BY_EXPORT",
+    }
+    for env_path in ENV_FILES:
+        values = _parse_env(env_path)
+        assert {key: values[key] for key in expected} == expected
+        assert not any(":latest" in value for value in values.values())
+        assert "redis:7-alpine" not in values.values()
+
+
+def test_verifiers_preserve_integrity_before_load_and_authenticity_block() -> None:
+    bash = _read(ROOT / "deploy" / "verify-candidate.sh")
+    powershell = _read(ROOT / "deploy" / "verify-candidate.ps1")
+    guide = _read(ROOT / "deploy" / "setup-customer.md")
+
+    assert bash.index("SHA-256, and archive identities passed") < bash.index("docker image load")
+    assert powershell.index("SHA-256, and archive identities passed") < powershell.index(
+        "docker image load"
+    )
+    for document in (bash, powershell, guide):
+        assert "CAP-1/G0-03" in document
+        assert "BLOCKED" in document
+    assert "不要编辑" in guide
+    assert "站点 Compose override" in guide
+    assert guide.count("verify-candidate.sh . ../site/.env.prod") == 2
+    assert "verify-candidate.ps1 . ..\\site\\.env.prod" in guide
+    assert "verify-candidate.ps1 . $Site" in guide
+    assert "sorted(keys - seen)" in guide
+    assert "Where-Object { -not $Seen.ContainsKey($_) }" in guide
+    for line in guide.splitlines():
+        if line.startswith("docker compose"):
+            assert "--env-file" in line
 
 
 @pytest.mark.parametrize("compose_path", COMPOSE_FILES)
