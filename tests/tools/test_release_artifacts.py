@@ -509,6 +509,63 @@ def test_archive_tag_collision_or_drift_is_rejected(tmp_path: Path) -> None:
         inspect_docker_archive(path, "ruisheng-candidate/api:expected")
 
 
+def test_archive_accepts_docker_29_selected_platform_under_source_index(
+    tmp_path: Path,
+) -> None:
+    reference = "ruisheng-candidate/postgres:expected"
+    config = json.dumps({"architecture": "amd64", "os": "linux"}).encode()
+    config_id = hashlib.sha256(config).hexdigest()
+    child = json.dumps(
+        {
+            "schemaVersion": 2,
+            "config": {"digest": f"sha256:{config_id}"},
+            "layers": [],
+        },
+        sort_keys=True,
+    ).encode()
+    child_id = hashlib.sha256(child).hexdigest()
+    source_index = json.dumps(
+        {
+            "schemaVersion": 2,
+            "manifests": [
+                {
+                    "digest": f"sha256:{child_id}",
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                },
+                {
+                    "digest": f"sha256:{'f' * 64}",
+                    "platform": {"architecture": "arm64", "os": "linux"},
+                },
+            ],
+        },
+        sort_keys=True,
+    ).encode()
+    source_index_id = hashlib.sha256(source_index).hexdigest()
+    manifest = json.dumps(
+        [
+            {
+                "Config": f"blobs/sha256/{config_id}",
+                "Layers": [],
+                "RepoTags": [reference],
+            }
+        ]
+    ).encode()
+    index = json.dumps({"manifests": [{"digest": f"sha256:{source_index_id}"}]}).encode()
+    path = tmp_path / "multi-platform-source-index.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        _add_tar_bytes(archive, "manifest.json", manifest)
+        _add_tar_bytes(archive, "index.json", index)
+        _add_tar_bytes(archive, f"blobs/sha256/{config_id}", config)
+        _add_tar_bytes(archive, f"blobs/sha256/{child_id}", child)
+        _add_tar_bytes(archive, f"blobs/sha256/{source_index_id}", source_index)
+
+    identity = inspect_docker_archive(path, reference)
+
+    assert identity.image_id == f"sha256:{source_index_id}"
+    assert identity.os == "linux"
+    assert identity.architecture == "amd64"
+
+
 def test_compose_image_drift_is_rejected(tmp_path: Path, production_env: Path) -> None:
     build_runner = FakeRunner()
     package = _build(tmp_path, production_env, build_runner)

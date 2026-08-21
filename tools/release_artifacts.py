@@ -351,6 +351,8 @@ def inspect_docker_archive(  # noqa: PLR0912, PLR0915
                 config = json.loads(config_bytes)
             except json.JSONDecodeError as error:
                 raise ReleaseArtifactError(f"archive config is invalid JSON: {path}") from error
+            if not isinstance(config, dict):
+                raise ReleaseArtifactError(f"archive config root is invalid: {path}")
             config_digest = f"sha256:{hashlib.sha256(config_bytes).hexdigest()}"
             image_id = config_digest
             if "index.json" in names:
@@ -394,11 +396,69 @@ def inspect_docker_archive(  # noqa: PLR0912, PLR0915
                 descriptor_config = (
                     descriptor_value.get("config") if isinstance(descriptor_value, dict) else None
                 )
-                if (
-                    not isinstance(descriptor_config, dict)
-                    or descriptor_config.get("digest") != config_digest
+                if not (
+                    isinstance(descriptor_config, dict)
+                    and descriptor_config.get("digest") == config_digest
                 ):
-                    raise ReleaseArtifactError(f"archive descriptor/config digest mismatch: {path}")
+                    nested_descriptors = (
+                        descriptor_value.get("manifests")
+                        if isinstance(descriptor_value, dict)
+                        else None
+                    )
+                    if not isinstance(nested_descriptors, list):
+                        raise ReleaseArtifactError(
+                            f"archive descriptor/config digest mismatch: {path}"
+                        )
+                    matching_nested: list[str] = []
+                    for nested in nested_descriptors:
+                        nested_digest = nested.get("digest") if isinstance(nested, dict) else None
+                        if (
+                            not isinstance(nested_digest, str)
+                            or re.fullmatch(r"sha256:[0-9a-f]{64}", nested_digest) is None
+                        ):
+                            raise ReleaseArtifactError(
+                                f"archive nested descriptor digest is invalid: {path}"
+                            )
+                        nested_blob = f"blobs/sha256/{nested_digest.removeprefix('sha256:')}"
+                        try:
+                            nested_member = archive.getmember(nested_blob)
+                        except KeyError:
+                            # Docker 29 retains the source multi-platform index while
+                            # exporting blobs only for the selected local platform.
+                            continue
+                        nested_stream = archive.extractfile(nested_member)
+                        if nested_stream is None:
+                            raise ReleaseArtifactError(
+                                f"archive nested descriptor blob is not a regular file: "
+                                f"{path}:{nested_blob}"
+                            )
+                        nested_bytes = nested_stream.read()
+                        actual_nested_digest = f"sha256:{hashlib.sha256(nested_bytes).hexdigest()}"
+                        if actual_nested_digest != nested_digest:
+                            raise ReleaseArtifactError(
+                                f"archive nested descriptor digest mismatch: {path}"
+                            )
+                        nested_value = json.loads(nested_bytes)
+                        nested_config = (
+                            nested_value.get("config") if isinstance(nested_value, dict) else None
+                        )
+                        if (
+                            isinstance(nested_config, dict)
+                            and nested_config.get("digest") == config_digest
+                        ):
+                            platform_value = nested.get("platform")
+                            if isinstance(platform_value, dict) and (
+                                platform_value.get("os") != config.get("os")
+                                or platform_value.get("architecture") != config.get("architecture")
+                            ):
+                                raise ReleaseArtifactError(
+                                    f"archive nested descriptor platform mismatch: {path}"
+                                )
+                            matching_nested.append(nested_digest)
+                    if len(matching_nested) != 1:
+                        raise ReleaseArtifactError(
+                            f"archive descriptor/config digest mismatch: {path}"
+                        )
                 image_id = descriptor_digest
     except (
         tarfile.TarError,
@@ -409,8 +469,6 @@ def inspect_docker_archive(  # noqa: PLR0912, PLR0915
     ) as error:
         raise ReleaseArtifactError(f"invalid Docker image archive {path}: {error}") from error
 
-    if not isinstance(config, dict):
-        raise ReleaseArtifactError(f"archive config root is invalid: {path}")
     image_os = config.get("os")
     architecture = config.get("architecture")
     if not isinstance(image_os, str) or not isinstance(architecture, str):
