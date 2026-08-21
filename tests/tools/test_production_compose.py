@@ -413,6 +413,18 @@ def test_api_image_keeps_workspace_and_migration_assets_without_demo_seeds() -> 
     assert "COPY tools/ tools/" not in dockerfile
 
 
+def test_gw_image_declares_logging_imports_as_runtime_dependencies() -> None:
+    project = tomllib.loads(_read(ROOT / "ruisheng-gw" / "pyproject.toml"))["project"]
+    dependencies = project["dependencies"]
+    dockerfile = _read(ROOT / "ruisheng-gw" / "Dockerfile")
+
+    assert any(dependency.startswith("loguru") for dependency in dependencies)
+    assert any(dependency.startswith("structlog") for dependency in dependencies)
+    assert "uv sync --package ruisheng-gw --no-dev --frozen" in dockerfile
+    assert "apt-get" not in dockerfile
+    assert "gcc" not in dockerfile
+
+
 @pytest.mark.parametrize(("compose_path", "env_path"), zip(COMPOSE_FILES, ENV_FILES, strict=True))
 def test_services_use_the_same_migration_entrypoint_and_wait_for_success(
     compose_path: Path, env_path: Path

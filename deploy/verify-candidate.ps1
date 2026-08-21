@@ -170,8 +170,53 @@ function Get-DockerArchiveIdentity([string]$ArchivePath, [string]$ExpectedRefere
         } catch {
             Fail "Archive descriptor is invalid JSON: $ArchivePath"
         }
-        if ($Descriptor.config.digest -cne $ConfigDigest) {
-            Fail "Archive descriptor/config digest mismatch: $ArchivePath"
+        if ([string]$Descriptor.config.digest -cne $ConfigDigest) {
+            $NestedDescriptors = @($Descriptor.manifests)
+            if ($NestedDescriptors.Count -eq 0) {
+                Fail "Archive descriptor/config digest mismatch: $ArchivePath"
+            }
+            $NestedNames = @()
+            foreach ($NestedDescriptor in $NestedDescriptors) {
+                $NestedDigest = [string]$NestedDescriptor.digest
+                if ($NestedDigest -notmatch '^sha256:[0-9a-f]{64}$') {
+                    Fail "Archive nested descriptor digest is invalid: $ArchivePath"
+                }
+                $NestedNames += "blobs/sha256/$($NestedDigest.Substring(7))"
+            }
+            $NestedRecords = Read-TarEntries $ArchivePath $NestedNames
+            $MatchingNested = @()
+            foreach ($NestedDescriptor in $NestedDescriptors) {
+                $NestedDigest = [string]$NestedDescriptor.digest
+                $NestedName = "blobs/sha256/$($NestedDigest.Substring(7))"
+                if (-not $NestedRecords.Values.ContainsKey($NestedName)) {
+                    # Docker 29 can retain the source index while exporting only
+                    # the manifest blob for the selected local platform.
+                    continue
+                }
+                $NestedBytes = [byte[]]$NestedRecords.Values[$NestedName]
+                if ("sha256:$(Get-Sha256Bytes $NestedBytes)" -cne $NestedDigest) {
+                    Fail "Archive nested descriptor digest mismatch: $ArchivePath"
+                }
+                try {
+                    $NestedValue = [Text.Encoding]::UTF8.GetString(
+                        $NestedBytes
+                    ) | ConvertFrom-Json
+                } catch {
+                    Fail "Archive nested descriptor is invalid JSON: $ArchivePath"
+                }
+                if ([string]$NestedValue.config.digest -cne $ConfigDigest) {
+                    continue
+                }
+                if ($null -ne $NestedDescriptor.platform -and
+                    ($NestedDescriptor.platform.os -cne $Config.os -or
+                        $NestedDescriptor.platform.architecture -cne $Config.architecture)) {
+                    Fail "Archive nested descriptor platform mismatch: $ArchivePath"
+                }
+                $MatchingNested += $NestedDigest
+            }
+            if ($MatchingNested.Count -ne 1) {
+                Fail "Archive descriptor/config digest mismatch: $ArchivePath"
+            }
         }
         $ImageId = $DescriptorDigest
     }

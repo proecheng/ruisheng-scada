@@ -191,7 +191,38 @@ for image in images:
                     fail("archive descriptor digest mismatch for " + image["component"])
                 descriptor = json.loads(descriptor_bytes)
                 if descriptor.get("config", {}).get("digest") != config_digest:
-                    fail("archive descriptor/config mismatch for " + image["component"])
+                    nested_descriptors = descriptor.get("manifests")
+                    if not isinstance(nested_descriptors, list):
+                        fail("archive descriptor/config mismatch for " + image["component"])
+                    matching_nested = []
+                    for nested in nested_descriptors:
+                        nested_digest = nested.get("digest") if isinstance(nested, dict) else None
+                        if not isinstance(nested_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", nested_digest) is None:
+                            fail("invalid archive nested descriptor digest for " + image["component"])
+                        nested_name = "blobs/sha256/" + nested_digest.split(":", 1)[1]
+                        try:
+                            nested_stream = archive.extractfile(nested_name)
+                        except KeyError:
+                            # Docker 29 can retain the source index while exporting only
+                            # the manifest blob for the selected local platform.
+                            continue
+                        if nested_stream is None:
+                            fail("invalid archive nested descriptor for " + image["component"])
+                        nested_bytes = nested_stream.read()
+                        if "sha256:" + hashlib.sha256(nested_bytes).hexdigest() != nested_digest:
+                            fail("archive nested descriptor digest mismatch for " + image["component"])
+                        nested_value = json.loads(nested_bytes)
+                        if nested_value.get("config", {}).get("digest") != config_digest:
+                            continue
+                        platform = nested.get("platform")
+                        if isinstance(platform, dict) and (
+                            platform.get("os") != config.get("os")
+                            or platform.get("architecture") != config.get("architecture")
+                        ):
+                            fail("archive nested descriptor platform mismatch for " + image["component"])
+                        matching_nested.append(nested_digest)
+                    if len(matching_nested) != 1:
+                        fail("archive descriptor/config mismatch for " + image["component"])
                 archive_id = descriptor_digest
     except (OSError, EOFError, gzip.BadGzipFile, tarfile.TarError, ValueError, KeyError) as error:
         fail("invalid Docker archive {}: {}".format(image["archive"], error))
