@@ -17,6 +17,40 @@ def test_config_loads_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = Config()
     assert cfg.listen_host == "0.0.0.0"
     assert cfg.listen_port == 5020  # noqa: PLR2004  # test fixture literal
+    assert cfg.health_host == "127.0.0.1"
+
+
+def test_health_host_loads_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GW_LISTEN_HOST", "0.0.0.0")
+    monkeypatch.setenv("GW_LISTEN_PORT", "5020")
+    monkeypatch.setenv("GW_DATABASE_URL", "postgresql+asyncpg://u:p@h:5432/d")
+    monkeypatch.setenv("GW_REDIS_URL", "redis://h:6379/0")
+    monkeypatch.setenv("GW_HEALTH_HOST", "10.20.30.40")
+    cfg = Config()
+    assert cfg.health_host == "10.20.30.40"
+
+
+@pytest.mark.parametrize("value", ["", "localhost", "health.internal"])
+def test_health_host_rejects_non_ip_literal(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("GW_LISTEN_HOST", "0.0.0.0")
+    monkeypatch.setenv("GW_LISTEN_PORT", "5020")
+    monkeypatch.setenv("GW_DATABASE_URL", "postgresql+asyncpg://u:p@h:5432/d")
+    monkeypatch.setenv("GW_REDIS_URL", "redis://h:6379/0")
+    monkeypatch.setenv("GW_HEALTH_HOST", value)
+    with pytest.raises(ValidationError, match="health_host must be an IPv4 or IPv6 address"):
+        Config()
+
+
+@pytest.mark.parametrize("value", ["0.0.0.0", "::", "::1"])
+def test_health_host_accepts_ip_listener_addresses(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("GW_LISTEN_HOST", "0.0.0.0")
+    monkeypatch.setenv("GW_LISTEN_PORT", "5020")
+    monkeypatch.setenv("GW_DATABASE_URL", "postgresql+asyncpg://u:p@h:5432/d")
+    monkeypatch.setenv("GW_REDIS_URL", "redis://h:6379/0")
+    monkeypatch.setenv("GW_HEALTH_HOST", value)
+    assert Config().health_host == value
 
 
 def test_config_missing_required_raises(monkeypatch: pytest.MonkeyPatch) -> None:

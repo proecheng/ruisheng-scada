@@ -45,7 +45,12 @@ FIXED_PACKAGE_FILES = {
     "MANIFEST.md",
     "SHA256SUMS",
     "docker-compose.prod.yml",
+    "nginx.conf",
+    "site-acceptance-profile.md.example",
+    "site-health-acl.conf.example",
+    "site-network.override.yml",
     "setup-customer.md",
+    "validate-network-boundary.py",
     "verify-candidate.ps1",
     "verify-candidate.sh",
 }
@@ -912,7 +917,7 @@ def _git_state(root: Path, runner: Runner) -> tuple[str, str]:
     source_commit = runner.run(["git", "rev-parse", "HEAD"], cwd=root)
     if SOURCE_COMMIT_PATTERN.fullmatch(source_commit) is None:
         raise ReleaseArtifactError("git rev-parse did not return a full lowercase commit")
-    dirty = runner.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=root)
+    dirty = runner.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=root)
     if dirty:
         raise ReleaseArtifactError("tracked release inputs are dirty; commit or revert them first")
     return source_commit, dirty
@@ -954,12 +959,35 @@ def _write_manifests(package: Path, manifest: CandidateManifest) -> None:
 def _copy_candidate_files(root: Path, package: Path, replacements: Mapping[str, str]) -> None:
     source_deploy = root / "deploy"
     shutil.copyfile(source_deploy / "docker-compose.prod.yml", package / "docker-compose.prod.yml")
+    shutil.copyfile(
+        source_deploy / "site-health-acl.conf.example", package / "site-health-acl.conf.example"
+    )
+    shutil.copyfile(
+        source_deploy / "site-network.override.yml", package / "site-network.override.yml"
+    )
     shutil.copyfile(source_deploy / "setup-customer.md", package / "setup-customer.md")
     shutil.copyfile(source_deploy / "verify-candidate.sh", package / "verify-candidate.sh")
     shutil.copyfile(source_deploy / "verify-candidate.ps1", package / "verify-candidate.ps1")
+    shutil.copyfile(root / "ruisheng-web" / "nginx.conf", package / "nginx.conf")
+    shutil.copyfile(
+        root
+        / "docs"
+        / "superpowers"
+        / "specs"
+        / "spec-plan-5-customer-deployment-acceptance"
+        / "site-acceptance-profile.md",
+        package / "site-acceptance-profile.md.example",
+    )
+    shutil.copyfile(
+        root / "tools" / "validate_network_boundary.py", package / "validate-network-boundary.py"
+    )
     template = (source_deploy / ".env.prod.example").read_text(encoding="utf-8")
+    candidate_replacements = dict(replacements)
+    # The site env is copied outside the immutable candidate; Compose resolves
+    # this bind source relative to the candidate's Compose file directory.
+    candidate_replacements["WEB_HEALTH_ACL_FILE"] = "../site/site-health-acl.conf"
     (package / ".env.prod.example").write_text(
-        _replace_env_values(template, replacements), encoding="utf-8", newline="\n"
+        _replace_env_values(template, candidate_replacements), encoding="utf-8", newline="\n"
     )
 
 

@@ -34,7 +34,12 @@ fixed = {
     "MANIFEST.md",
     "SHA256SUMS",
     "docker-compose.prod.yml",
+    "nginx.conf",
+    "site-acceptance-profile.md.example",
+    "site-health-acl.conf.example",
+    "site-network.override.yml",
     "setup-customer.md",
+    "validate-network-boundary.py",
     "verify-candidate.ps1",
     "verify-candidate.sh",
 }
@@ -274,4 +279,17 @@ for name, service in services.items():
 PY
 
 echo "[verify] Integrity and loaded image identity passed."
+SITE_DIR="$(cd "$(dirname "$SITE_ENV_FILE")" && pwd)"
+if [[ -f "$SITE_DIR/site-health-acl.conf" && -f "$SITE_DIR/site-acceptance-profile.md" ]]; then
+  python3 "$PACKAGE_DIR/validate-network-boundary.py" \
+    --compose "$PACKAGE_DIR/docker-compose.prod.yml" \
+    --compose "$PACKAGE_DIR/site-network.override.yml" \
+    --env-file "$SITE_ENV_FILE" \
+    --profile "$SITE_DIR/site-acceptance-profile.md" \
+    --nginx-config "$PACKAGE_DIR/nginx.conf" \
+    --acl-file "$SITE_DIR/site-health-acl.conf"
+else
+  echo "[verify] B-04 network validation remains BLOCKED until site ACL and Profile are supplied." >&2
+  exit 2
+fi
 echo "[verify] Publisher authenticity is not configured; CAP-1/G0-03 remain BLOCKED."

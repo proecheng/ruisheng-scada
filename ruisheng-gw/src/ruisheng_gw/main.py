@@ -91,10 +91,10 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
 
     # 0. Health endpoint (starts before DB check so /health always responds)
     health_state = HealthState()
-    health_app = create_health_app(health_state)
+    health_app = create_health_app(health_state, config.health_allowed_cidrs)
     runner = web.AppRunner(health_app)
     await runner.setup()
-    health_site = web.TCPSite(runner, "0.0.0.0", config.health_port)
+    health_site = web.TCPSite(runner, config.health_host, config.health_port)
     await health_site.start()
     log.info("health endpoint started", port=config.health_port)
 

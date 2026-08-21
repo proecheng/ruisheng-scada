@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+from ipaddress import ip_address, ip_network
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +32,34 @@ class Config(BaseSettings):
     redis_url: str = Field(..., description="redis URL")
 
     health_port: int = Field(default=9090, ge=1, le=65535)
+    health_host: str = Field(default="127.0.0.1", description="health server bind host")
+    health_allowed_cidrs: str = Field(
+        default="127.0.0.1/32,::1/128",
+        description="comma-separated source CIDRs for health endpoints",
+    )
+
+    @field_validator("health_host")
+    @classmethod
+    def _validate_health_host(cls, value: str) -> str:
+        try:
+            return str(ip_address(value))
+        except ValueError as error:
+            raise ValueError("health_host must be an IPv4 or IPv6 address") from error
+
+    @field_validator("health_allowed_cidrs")
+    @classmethod
+    def _validate_health_allowed_cidrs(cls, value: str) -> str:
+        subjects = [subject.strip() for subject in value.split(",") if subject.strip()]
+        if not subjects:
+            raise ValueError("health_allowed_cidrs must contain at least one CIDR")
+        for subject in subjects:
+            try:
+                network = ip_network(subject, strict=False)
+            except ValueError as error:
+                raise ValueError("health_allowed_cidrs must contain only IP/CIDR values") from error
+            if network.prefixlen == 0:
+                raise ValueError("health_allowed_cidrs must not contain a default route")
+        return ",".join(subjects)
 
     poll_concurrency_per_bus: int = Field(default=1, ge=1, le=1)  # RS485 物理约束：1
 

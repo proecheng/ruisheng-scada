@@ -28,7 +28,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 bash ./verify-candidate.sh .
 ```
 
-脚本严格检查文件 allowlist、`SHA256SUMS`、五个归档、目标平台、候选标签、镜像 ID 及离线 Compose。任何缺失、额外、重复、路径越界、篡改或身份漂移都会在启动前失败；脚本不会访问 registry、构建或启动服务。
+脚本严格检查文件 allowlist、`SHA256SUMS`、五个归档、目标平台、候选标签、镜像 ID 及离线 Compose。任何缺失、额外、重复、路径越界、篡改或身份漂移都会在启动前失败；脚本不会访问 registry、构建或启动服务。此时站点 ACL/Profile 尚未创建，脚本会明确输出 B-04 `BLOCKED` 并以退出码 `2` 结束；这是预期结果，不能把它当作可启动信号，继续完成下一步站点配置。
 
 ### 2. 配置环境变量
 
@@ -46,7 +46,7 @@ New-Item -ItemType Directory -Force ..\site | Out-Null
 Copy-Item .env.prod.example ..\site\.env.prod
 ```
 
-用文本编辑器打开 `../site/.env.prod`，仅将所有 `CHANGE_ME_*` 替换为真实密码；候选脚本写入的 `TARGET_PLATFORM` 和五个镜像标签不得修改：
+用文本编辑器打开 `../site/.env.prod`，仅将所有 `CHANGE_ME_*` 替换为真实密码；候选脚本写入的 `TARGET_PLATFORM` 和五个镜像标签不得修改。将 `WEB_HEALTH_ACL_FILE` 改为 `../site/site-health-acl.conf`，使只读站点文件不会从候选默认示例加载：
 
 | 变量 | 说明 |
 |------|------|
@@ -55,6 +55,32 @@ Copy-Item .env.prod.example ..\site\.env.prod
 | `RUISHENG_API_PASSWORD` | API 数据库角色密码 |
 | `REDIS_PASSWORD` | Redis 访问密码 |
 | `JWT_SECRET` | JWT 签名密钥（≥32 字符随机字符串） |
+
+网络变量默认只绑定到回环地址，不能把模板值当作现场批准。将受控网络 Profile、TLS 终止点和防火墙/ACL 方案确认后，再把以下变量改为批准的具体宿主机地址和端口；不要使用 `0.0.0.0`、`::` 或空值作为旁路。
+
+| 变量 | 作用 |
+|------|------|
+| `WEB_BIND_HOST` / `WEB_BIND_PORT` | Web 宿主机入口 |
+| `GW_DEVICE_BIND_HOST` / `GW_DEVICE_BIND_PORT` | GW 设备 TCP 入口 |
+| `GW_HEALTH_BIND_HOST` / `GW_HEALTH_BIND_PORT` | GW health/ready/metrics 管理入口 |
+| `GW_HEALTH_HOST` | 容器内 health listener；模板为 Docker 可达的 `0.0.0.0`，宿主暴露仍由 `GW_HEALTH_BIND_HOST` 控制 |
+| `GW_HEALTH_ALLOWED_CIDRS` | GW health/ready/metrics 源 CIDR，必须与 Profile 的运维/监控网段和站点 ACL 完全一致 |
+| `WEB_HEALTH_ACL_FILE` | 候选外部的只读 ACL 文件，必须指向 `../site/site-health-acl.conf` |
+| 站点 Compose override | 将候选目录外的 health ACL 以只读方式挂载到 `/etc/nginx/site-health-acl.conf` |
+
+从候选目录复制 ACL 和 Profile 模板到站点目录后，只按已批准的监控 CIDR 修改 `allow` 行，并保留最后的 `deny all;`。Profile 的审批、网段、三组宿主绑定、传输模式、TLS/旁路、防火墙和探测位置字段必须全部填写；任何 `UNRESOLVED` 或默认路由都保持 BLOCKED。不要修改候选基础 Compose。
+
+当 Web 使用非回环绑定时，TLS 字段不能只写“已配置”或复制说明文字，必须使用 validator 可解析的显式证据：`HTTPS_WSS` 至少填写 `termination=...; certificate=...; domain=...; firewall=...; direct_http=deny; direct_ws=deny`；隔离可信 HTTP 至少填写 `isolation=...; firewall=...; direct_http=trusted-only; direct_ws=trusted-only`。值应为脱敏的终止点、证书保管引用、域名和防火墙规则标识，不要写私钥。
+
+```bash
+cp site-health-acl.conf.example ../site/site-health-acl.conf
+cp site-acceptance-profile.md.example ../site/site-acceptance-profile.md
+```
+
+```powershell
+Copy-Item site-health-acl.conf.example ..\site\site-health-acl.conf
+Copy-Item site-acceptance-profile.md.example ..\site\site-acceptance-profile.md
+```
 
 数据库和 Redis 密码只能使用 URL-safe 字符：`A-Z a-z 0-9 . _ ~ -`。启动时会拒绝占位值和其他字符，避免连接字符串被特殊字符破坏。
 
@@ -70,7 +96,7 @@ openssl rand -hex 24
 
 ### 3. 首次启动
 
-使用最终站点环境再次核对六个服务的候选标签和目标平台。校验失败时不得启动：
+使用最终站点环境再次核对六个服务的候选标签和目标平台。校验失败时不得启动。网络 validator 必须使用基础 Compose 与只读站点 override 的实际渲染结果；禁止提供手工 rendered JSON：
 
 ```bash
 bash ./verify-candidate.sh . ../site/.env.prod
@@ -81,7 +107,29 @@ bash ./verify-candidate.sh . ../site/.env.prod
 ```
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file ../site/.env.prod up -d postgres redis migrate
+python3 ./validate-network-boundary.py \
+  --compose ./docker-compose.prod.yml \
+  --compose ./site-network.override.yml \
+  --env-file ../site/.env.prod \
+  --profile ../site/site-acceptance-profile.md \
+  --nginx-config ./nginx.conf \
+  --acl-file ../site/site-health-acl.conf
+```
+
+```powershell
+py -3 .\validate-network-boundary.py `
+  --compose .\docker-compose.prod.yml `
+  --compose .\site-network.override.yml `
+  --env-file ..\site\.env.prod `
+  --profile ..\site\site-acceptance-profile.md `
+  --nginx-config .\nginx.conf `
+  --acl-file ..\site\site-health-acl.conf
+```
+
+仅当上一个命令输出 `[network] PASS` 时，才可启动；其返回 `BLOCKED` 或 `FAIL` 都禁止 Go。
+
+```bash
+docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file ../site/.env.prod up -d postgres redis migrate
 ```
 
 首次启动会自动完成：
@@ -89,7 +137,7 @@ docker compose -f docker-compose.prod.yml --env-file ../site/.env.prod up -d pos
 
 查看初始化进度：
 ```bash
-docker compose -f docker-compose.prod.yml --env-file ../site/.env.prod logs migrate -f
+docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file ../site/.env.prod logs migrate -f
 ```
 
 看到 `Database initialised successfully.` 后，数据库结构迁移完成；API、GW 和 Web 尚未启动。
@@ -107,17 +155,26 @@ docker compose -f docker-compose.prod.yml --env-file ../site/.env.prod logs migr
 以下全栈重启和升级命令仅在管理员引导及凭据交接通过独立流程获批并完成后使用；当前交付状态不得执行。
 
 ```bash
+# 每次启动、重启或回滚前先运行边界校验；非 PASS 不得执行 Compose。
+python3 ./validate-network-boundary.py \
+  --compose ./docker-compose.prod.yml \
+  --compose ./site-network.override.yml \
+  --env-file ../site/.env.prod \
+  --profile ../site/site-acceptance-profile.md \
+  --nginx-config ./nginx.conf \
+  --acl-file ../site/site-health-acl.conf
+
 # 停止系统
-docker compose -f docker-compose.prod.yml --env-file ../site/.env.prod down
+docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file ../site/.env.prod down
 
 # 重新启动（保留数据）
-docker compose -f docker-compose.prod.yml --env-file ../site/.env.prod up -d
+docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file ../site/.env.prod up -d
 
 # 查看所有服务日志
-docker compose -f docker-compose.prod.yml --env-file ../site/.env.prod logs -f
+docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file ../site/.env.prod logs -f
 
 # 查看指定服务日志
-docker compose -f docker-compose.prod.yml --env-file ../site/.env.prod logs api -f
+docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file ../site/.env.prod logs api -f
 
 # 数据库备份
 docker exec ruisheng-postgres pg_dump -U ruisheng_admin ruisheng > backup_$(date +%Y%m%d).sql
@@ -165,10 +222,17 @@ PY
 
 # 用最终站点环境再次闭环候选标签和平台，然后停止旧版本
 bash ./verify-candidate.sh . ../site/.env.prod
-docker compose -f docker-compose.prod.yml --env-file ../site/.env.prod down
+python3 ./validate-network-boundary.py \
+  --compose ./docker-compose.prod.yml \
+  --compose ./site-network.override.yml \
+  --env-file ../site/.env.prod \
+  --profile ../site/site-acceptance-profile.md \
+  --nginx-config ./nginx.conf \
+  --acl-file ../site/site-health-acl.conf
+docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file ../site/.env.prod down
 
 # 重启（会自动运行新的数据库迁移）
-docker compose -f docker-compose.prod.yml --env-file ../site/.env.prod up -d
+docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file ../site/.env.prod up -d
 ```
 
 **Windows PowerShell：**
@@ -203,8 +267,15 @@ try {
     Remove-Item -LiteralPath $TemporarySite -Force -ErrorAction SilentlyContinue
 }
 .\verify-candidate.ps1 . $Site
-docker compose -f docker-compose.prod.yml --env-file $Site down
-docker compose -f docker-compose.prod.yml --env-file $Site up -d
+py -3 .\validate-network-boundary.py `
+  --compose .\docker-compose.prod.yml `
+  --compose .\site-network.override.yml `
+  --env-file $Site `
+  --profile ..\site\site-acceptance-profile.md `
+  --nginx-config .\nginx.conf `
+  --acl-file ..\site\site-health-acl.conf
+docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file $Site down
+docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file $Site up -d
 ```
 
 ## 故障排查

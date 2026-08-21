@@ -80,7 +80,10 @@ class FakeRunner:
         if command == ("git", "rev-parse", "HEAD"):
             self.git_head_calls += 1
             return COMMIT if self.git_head_calls == 1 else self.final_commit
-        if command == ("git", "status", "--porcelain", "--untracked-files=no"):
+        if command in {
+            ("git", "status", "--porcelain", "--untracked-files=no"),
+            ("git", "status", "--porcelain", "--untracked-files=all"),
+        }:
             return self.dirty
         if command[:4] == ("docker", "image", "pull", "--platform"):
             if command[-1] not in self.images:

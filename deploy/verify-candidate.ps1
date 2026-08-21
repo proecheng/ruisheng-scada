@@ -23,7 +23,12 @@ $FixedFiles = @(
     "MANIFEST.md",
     "SHA256SUMS",
     "docker-compose.prod.yml",
+    "nginx.conf",
+    "site-acceptance-profile.md.example",
+    "site-health-acl.conf.example",
+    "site-network.override.yml",
     "setup-customer.md",
+    "validate-network-boundary.py",
     "verify-candidate.ps1",
     "verify-candidate.sh"
 )
@@ -351,4 +356,19 @@ foreach ($Property in $ComposeConfig.services.PSObject.Properties) {
 }
 
 Write-Host "[verify] Integrity and loaded image identity passed."
+if ((Test-Path -LiteralPath (Join-Path (Split-Path $ComposeEnvPath) "site-health-acl.conf")) -and
+    (Test-Path -LiteralPath (Join-Path (Split-Path $ComposeEnvPath) "site-acceptance-profile.md"))) {
+    $SiteDir = Split-Path $ComposeEnvPath
+    & python (Join-Path $PackageRoot "validate-network-boundary.py") `
+        --compose (Join-Path $PackageRoot "docker-compose.prod.yml") `
+        --compose (Join-Path $PackageRoot "site-network.override.yml") `
+        --env-file $ComposeEnvPath `
+        --profile (Join-Path $SiteDir "site-acceptance-profile.md") `
+        --nginx-config (Join-Path $PackageRoot "nginx.conf") `
+        --acl-file (Join-Path $SiteDir "site-health-acl.conf")
+    if ($LASTEXITCODE -ne 0) { Fail "B-04 network boundary validation failed" }
+} else {
+    Write-Warning "B-04 network validation remains BLOCKED until site ACL and Profile are supplied."
+    exit 2
+}
 Write-Warning "Publisher authenticity is not configured; CAP-1/G0-03 remain BLOCKED."

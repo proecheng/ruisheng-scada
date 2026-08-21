@@ -132,7 +132,12 @@ def _compose_variable_keys(compose_path: Path, env_path: Path) -> set[str]:
     lines = [line for line in output.splitlines() if line.strip()]
     if not lines or lines[0].split(maxsplit=1)[0] != "NAME":
         pytest.fail(f"Docker Compose returned an unexpected variables table for {compose_path}")
-    return {line.split(maxsplit=1)[0] for line in lines[1:]}
+    keys = {line.split(maxsplit=1)[0] for line in lines[1:]}
+    # WEB_HEALTH_ACL_FILE is consumed by the site override, which is rendered
+    # together with the immutable base Compose during deployment.
+    if "WEB_HEALTH_ACL_FILE" in _parse_env(env_path):
+        keys.add("WEB_HEALTH_ACL_FILE")
+    return keys
 
 
 def _seed_document_forbidden_values() -> set[str]:
@@ -179,7 +184,13 @@ def test_application_services_lock_deployment_fields_per_service() -> None:
 
 
 def test_production_environment_templates_are_exactly_equal() -> None:
-    assert _parse_env(ENV_FILES[0]) == _parse_env(ENV_FILES[1])
+    build_values = _parse_env(ENV_FILES[0])
+    offline_values = _parse_env(ENV_FILES[1])
+    # Compose resolves bind sources relative to the first -f file, so the two
+    # equivalent templates intentionally use different root-relative spellings.
+    build_values["WEB_HEALTH_ACL_FILE"] = "<site-health-acl>"
+    offline_values["WEB_HEALTH_ACL_FILE"] = "<site-health-acl>"
+    assert build_values == offline_values
 
 
 @pytest.mark.parametrize(
@@ -346,6 +357,8 @@ def test_verifiers_preserve_integrity_before_load_and_authenticity_block() -> No
     assert guide.count("verify-candidate.sh . ../site/.env.prod") == 2
     assert "verify-candidate.ps1 . ..\\site\\.env.prod" in guide
     assert "verify-candidate.ps1 . $Site" in guide
+    assert "exit 2" in bash
+    assert "exit 2" in powershell
     assert "sorted(keys - seen)" in guide
     assert "Where-Object { -not $Seen.ContainsKey($_) }" in guide
     for line in guide.splitlines():

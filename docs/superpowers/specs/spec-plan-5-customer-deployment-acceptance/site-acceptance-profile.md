@@ -29,10 +29,21 @@
 
 | 字段 | 决定 |
 |---|---|
-| 用户、设备、运维和外部服务网段 | UNRESOLVED |
-| 暴露端口及源地址白名单 | UNRESOLVED |
-| HTTP 仅限隔离可信网，或 HTTPS/WSS 域名与证书方案 | UNRESOLVED |
-| health/metrics 访问主体和防护方式 | UNRESOLVED |
+| 用户网段（CIDR，逗号分隔） | UNRESOLVED |
+| 设备网段（CIDR，逗号分隔） | UNRESOLVED |
+| 运维/监控网段（CIDR，逗号分隔） | UNRESOLVED |
+| 外部服务网段（CIDR，逗号分隔或批准 N/A） | UNRESOLVED |
+| 未批准探测源（CIDR，逗号分隔） | UNRESOLVED |
+| Web 宿主绑定（IP:端口） | UNRESOLVED |
+| GW 设备宿主绑定（IP:端口） | UNRESOLVED |
+| GW 管理宿主绑定（IP:端口） | UNRESOLVED |
+| Web 传输模式（LOOPBACK_ONLY / TRUSTED_HTTP / HTTPS_WSS） | UNRESOLVED |
+| TLS 终止、证书及 Web 直连旁路防护 | UNRESOLVED 或 LOOPBACK_ONLY |
+| API health/metrics 访问主体和 ACL | UNRESOLVED |
+| GW health/ready/metrics 源 ACL/防火墙 | UNRESOLVED |
+| IPv4/IPv6 启用或禁用位置与证据 | UNRESOLVED |
+| 防火墙平台、配置负责人、复核人及持久化 | UNRESOLVED |
+| 用户、设备、监控和未批准源探测位置 | UNRESOLVED |
 | 站点密钥生成、交接、轮换和恢复保管人 | UNRESOLVED |
 | 发布签名/可信分发机制、验证密钥指纹和发布负责人 | UNRESOLVED |
 | 合规、渗透测试和审计保留要求 | UNRESOLVED 或批准 N/A |

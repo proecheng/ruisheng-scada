@@ -1,0 +1,6 @@
+# Copy this file to the controlled site directory named by WEB_HEALTH_ACL_FILE.
+# Replace the allow entries only with CIDRs approved in site-acceptance-profile.md.
+# Keep the final deny rule. Do not put credentials or customer data here.
+allow 127.0.0.1;
+allow ::1;
+deny all;
