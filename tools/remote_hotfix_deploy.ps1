@@ -15,6 +15,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$HotfixOperationId = [Guid]::NewGuid().ToString("D")
 
 $ServiceConfiguration = @{
   api = @{
@@ -108,6 +109,257 @@ function Invoke-RemotePowerShell {
     $Target,
     "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", $encoded
   )
+}
+
+function Assert-RemoteMaintenanceLocksAvailable {
+  $stateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
+  $sharedLock = Join-Path $stateDirectory ".remote-maintenance.lock"
+  $legacyLock = Join-Path $SiteRoot ".remote-hotfix.lock"
+  $script = @"
+`$ErrorActionPreference = 'Stop'
+`$stateDirectory = $(ConvertTo-PowerShellLiteral $stateDirectory)
+`$sharedLock = $(ConvertTo-PowerShellLiteral $sharedLock)
+`$legacyLock = $(ConvertTo-PowerShellLiteral $legacyLock)
+if (-not (Test-Path -LiteralPath `$stateDirectory -PathType Container)) {
+  throw 'Maintenance security preparation is required before hotfix deployment.'
+}
+`$allowed = @{}
+@([Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544') |
+  Select-Object -Unique | ForEach-Object { `$allowed[`$_] = `$true }
+`$siteAcl = Get-Acl -LiteralPath $(ConvertTo-PowerShellLiteral $SiteRoot)
+if (-not `$siteAcl.AreAccessRulesProtected) {
+  throw 'Maintenance security preparation is required before hotfix deployment.'
+}
+foreach (`$rule in @(`$siteAcl.Access)) {
+  `$sid = `$rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+  if (`$rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+      -not `$allowed.ContainsKey(`$sid)) {
+    throw 'Maintenance security preparation is required before hotfix deployment.'
+  }
+}
+if (Test-Path -LiteralPath `$sharedLock -PathType Leaf) {
+  throw 'Another maintenance or hotfix operation is active, or its shared lock requires inspection.'
+}
+if (Test-Path -LiteralPath `$legacyLock -PathType Leaf) {
+  throw 'Another maintenance or hotfix operation is active, or its legacy lock requires inspection.'
+}
+'available'
+"@
+  [void](Invoke-RemotePowerShell -Script $script)
+}
+
+function Start-RemoteHotfixReservation {
+  $template = @'
+$ErrorActionPreference = "Stop"
+$SiteRoot = __SITE_ROOT__
+$StateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
+$SharedLockPath = Join-Path $StateDirectory ".remote-maintenance.lock"
+$LegacyLockPath = Join-Path $SiteRoot ".remote-hotfix.lock"
+$OperationId = __OPERATION_ID__
+$Action = __ACTION__
+$ProcessStartedAt = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime().ToString("o")
+$Acquired = New-Object System.Collections.ArrayList
+
+function Acquire-Lock {
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Name)
+  $acquiredAt = [DateTimeOffset]::UtcNow
+  $record = [ordered]@{
+    schema_version=1; lock_name=$Name; operation_id=$OperationId; action=$Action;
+    pid=$PID; process_started_at=$ProcessStartedAt; target=[string]$env:COMPUTERNAME;
+    acquired_at=$acquiredAt.ToString("o"); expires_at=$acquiredAt.AddMinutes(5).ToString("o")
+  }
+  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(
+    ($record | ConvertTo-Json -Depth 4 -Compress)
+  )
+  $stream = $null
+  try {
+    $stream = [IO.File]::Open(
+      $Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None
+    )
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush()
+    $stream.Dispose()
+    $stream = $null
+    [void]$Acquired.Add($Path)
+  }
+  catch {
+    if ($null -ne $stream) { $stream.Dispose() }
+    throw "hotfix_lock_conflict"
+  }
+}
+
+function Renew-Locks {
+  foreach ($path in @($Acquired)) {
+    $temporary = "$path.$PID.$([Guid]::NewGuid().ToString('N')).renew.tmp"
+    $backup = "$path.$PID.$([Guid]::NewGuid().ToString('N')).renew.bak"
+    try {
+      $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+      if (
+        [int]$record.schema_version -ne 1 -or
+        [string]$record.operation_id -ne $OperationId -or
+        [string]$record.action -ne $Action -or
+        [int]$record.pid -ne $PID -or
+        [string]$record.process_started_at -ne $ProcessStartedAt
+      ) { throw "hotfix_lock_ownership_lost" }
+      $record.expires_at = [DateTimeOffset]::UtcNow.AddMinutes(5).ToString("o")
+      [IO.File]::WriteAllText(
+        $temporary, ($record | ConvertTo-Json -Depth 4 -Compress),
+        (New-Object Text.UTF8Encoding($false))
+      )
+      [IO.File]::Replace($temporary, $path, $backup)
+    }
+    finally {
+      Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Release-Locks {
+  foreach ($path in @($Acquired)) {
+    try {
+      $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+      if (
+        [string]$record.operation_id -eq $OperationId -and
+        [string]$record.action -eq $Action -and
+        [string]$record.phase -eq "deployment" -and
+        [int]$record.pid -ne $PID
+      ) {
+        return
+      }
+    }
+    catch { }
+  }
+  $paths = @($Acquired)
+  [array]::Reverse($paths)
+  foreach ($path in $paths) {
+    try {
+      $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+      if (
+        [string]$record.operation_id -eq $OperationId -and
+        [string]$record.action -eq $Action -and
+        [int]$record.pid -eq $PID -and
+        [string]$record.process_started_at -eq $ProcessStartedAt
+      ) {
+        Remove-Item -LiteralPath $path -Force
+      }
+    }
+    catch { }
+  }
+}
+
+try {
+  if (-not (Test-Path -LiteralPath $StateDirectory -PathType Container)) {
+    throw "maintenance_security_preparation_required"
+  }
+  Acquire-Lock -Path $SharedLockPath -Name "shared-maintenance"
+  Acquire-Lock -Path $LegacyLockPath -Name "legacy-hotfix"
+  [ordered]@{ ok=$true; operation_id=$OperationId; action=$Action } | ConvertTo-Json -Compress
+  [Console]::Out.Flush()
+  $deadline = [DateTimeOffset]::UtcNow.AddHours(6)
+  while ([DateTimeOffset]::UtcNow -lt $deadline) {
+    Start-Sleep -Seconds 30
+    Renew-Locks
+  }
+  throw "hotfix_reservation_timeout"
+}
+finally { Release-Locks }
+'@
+  $script = $template.Replace("__SITE_ROOT__", (ConvertTo-PowerShellLiteral $SiteRoot))
+  $script = $script.Replace(
+    "__OPERATION_ID__", (ConvertTo-PowerShellLiteral $HotfixOperationId)
+  )
+  $script = $script.Replace("__ACTION__", (ConvertTo-PowerShellLiteral "hotfix-$Service"))
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+  if ($encoded.Length -gt 24000) { throw "Hotfix reservation command is too large." }
+  $startInfo = New-Object Diagnostics.ProcessStartInfo
+  $startInfo.FileName = "ssh.exe"
+  $startInfo.Arguments = @(
+    "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+    "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=3", $Target, "powershell.exe", "-NoLogo",
+    "-NoProfile", "-NonInteractive", "-EncodedCommand", $encoded
+  ) -join " "
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $process = New-Object Diagnostics.Process
+  $process.StartInfo = $startInfo
+  try {
+    if (-not $process.Start()) { throw "Failed to start the hotfix reservation session." }
+    $readyTask = $process.StandardOutput.ReadLineAsync()
+    if (-not $readyTask.Wait(20000)) { throw "Timed out waiting for the hotfix reservation." }
+    $readyLine = [string]$readyTask.Result
+    if (-not $readyLine) { throw "The hotfix reservation ended without confirmation." }
+    $result = $readyLine | ConvertFrom-Json
+    if (-not [bool]$result.ok -or [string]$result.operation_id -ne $HotfixOperationId) {
+      throw "Target did not confirm the hotfix lock reservation."
+    }
+    return $process
+  }
+  catch {
+    if (-not $process.HasExited) { try { $process.Kill() } catch { } }
+    try { $process.WaitForExit() } catch { }
+    $process.Dispose()
+    throw
+  }
+}
+
+function Assert-RemoteHotfixReservationAlive {
+  param([Parameter(Mandatory)][Diagnostics.Process]$Process)
+  if ($Process.HasExited) { throw "The remote hotfix lock reservation was lost." }
+}
+
+function Stop-RemoteHotfixReservation {
+  param([Diagnostics.Process]$Process)
+  if ($null -eq $Process) { return }
+  try {
+    if (-not $Process.HasExited) { $Process.Kill() }
+    $Process.WaitForExit()
+  }
+  catch { }
+  finally { $Process.Dispose() }
+}
+
+function Release-RemoteHotfixReservation {
+  $stateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
+  $paths = @(
+    (Join-Path $SiteRoot ".remote-hotfix.lock"),
+    (Join-Path $stateDirectory ".remote-maintenance.lock")
+  )
+  $template = @'
+$ErrorActionPreference = "Stop"
+$OperationId = __OPERATION_ID__
+$Action = __ACTION__
+$Paths = @(__LOCK_PATHS__)
+foreach ($path in $Paths) {
+  try {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+    $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$record.operation_id -eq $OperationId -and [string]$record.action -eq $Action) {
+      Remove-Item -LiteralPath $path -Force
+    }
+  }
+  catch { }
+}
+foreach ($path in $Paths) {
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+  try { $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json }
+  catch { continue }
+  if ([string]$record.operation_id -eq $OperationId -and [string]$record.action -eq $Action) {
+    throw "hotfix_lock_release_failed"
+  }
+}
+'released'
+'@
+  $script = $template.Replace(
+    "__OPERATION_ID__", (ConvertTo-PowerShellLiteral $HotfixOperationId)
+  )
+  $script = $script.Replace("__ACTION__", (ConvertTo-PowerShellLiteral "hotfix-$Service"))
+  $lockLiterals = @($paths | ForEach-Object { ConvertTo-PowerShellLiteral $_ }) -join ","
+  $script = $script.Replace("__LOCK_PATHS__", $lockLiterals)
+  [void](Invoke-RemotePowerShell -Script $script)
 }
 
 function Get-RemotePreflight {
@@ -404,15 +656,68 @@ $composeBase = @(
 
 function Invoke-Docker {
   param([Parameter(Mandatory)][string[]]$Arguments, [switch]$Capture)
-  if ($Capture) {
-    $output = & docker @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
-    $text = (($output | ForEach-Object { "$_" }) -join [Environment]::NewLine).Trim()
-    if ($exitCode -ne 0) { throw "Docker command failed with exit code $exitCode." }
-    return $text
+  $resolvedDocker = Get-Command docker.exe -ErrorAction SilentlyContinue
+  if ($null -eq $resolvedDocker) { $resolvedDocker = Get-Command docker -ErrorAction Stop }
+  $startInfo = New-Object Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $resolvedDocker.Source
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $quotedArguments = foreach ($argument in $Arguments) {
+    if ($argument -notmatch '[\s"]') { $argument; continue }
+    $escaped = [regex]::Replace($argument, '(\\*)"', '$1$1\"')
+    $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+    '"' + $escaped + '"'
   }
-  & docker @Arguments | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "Docker command failed with exit code $LASTEXITCODE." }
+  $startInfo.Arguments = $quotedArguments -join " "
+  $process = New-Object Diagnostics.Process
+  $process.StartInfo = $startInfo
+  try {
+    Maintain-TransitionLocks -Force
+    if (-not $process.Start()) { throw "Docker process did not start." }
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    while (-not $process.WaitForExit(1000)) { Maintain-TransitionLocks }
+    $process.WaitForExit()
+    Maintain-TransitionLocks -Force
+    $text = (($stdoutTask.Result, $stderrTask.Result) -join [Environment]::NewLine).Trim()
+    if ($process.ExitCode -ne 0) {
+      throw "Docker command failed with exit code $($process.ExitCode)."
+    }
+    if ($Capture) { return $text }
+  }
+  catch {
+    if (-not $process.HasExited) { try { $process.Kill() } catch { } }
+    throw
+  }
+  finally {
+    if (-not $process.HasExited) { try { $process.Kill() } catch { } }
+    $process.Dispose()
+  }
+}
+
+function Get-LeaseGuardedFileSha256 {
+  param([Parameter(Mandatory)][string]$Path)
+  $stream = $null
+  $sha = $null
+  try {
+    $stream = [IO.File]::OpenRead($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $buffer = New-Object byte[] (1024 * 1024)
+    Maintain-TransitionLocks -Force
+    while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+      [void]$sha.TransformBlock($buffer, 0, $read, $buffer, 0)
+      Maintain-TransitionLocks
+    }
+    [void]$sha.TransformFinalBlock($buffer, 0, 0)
+    Maintain-TransitionLocks -Force
+    return ([BitConverter]::ToString($sha.Hash)).Replace("-", "").ToLowerInvariant()
+  }
+  finally {
+    if ($null -ne $sha) { $sha.Dispose() }
+    if ($null -ne $stream) { $stream.Dispose() }
+  }
 }
 
 function Get-ComposeModel {
@@ -439,14 +744,20 @@ function Test-ServiceReady {
   $state = $stateText | ConvertFrom-Json
   if (-not [bool]$state.Running) { return $false }
   if ($null -ne $state.Health -and [string]$state.Health.Status -ne "healthy") { return $false }
-  if ($Service -eq "web") {
-    & docker exec $ContainerName wget -q -O /dev/null $HealthUrl
+  try {
+    if ($Service -eq "web") {
+      Invoke-Docker -Arguments @("exec", $ContainerName, "wget", "-q", "-O", "/dev/null", $HealthUrl)
+    }
+    else {
+      $pythonProbe = "import urllib.request; urllib.request.urlopen('$HealthUrl', timeout=5).read(1)"
+      Invoke-Docker -Arguments @("exec", $ContainerName, "python", "-c", $pythonProbe)
+    }
+    return $true
   }
-  else {
-    $pythonProbe = "import urllib.request; urllib.request.urlopen('$HealthUrl', timeout=5).read(1)"
-    & docker exec $ContainerName python -c $pythonProbe
+  catch {
+    if ($_.Exception.Message -eq "deployment_lock_unavailable") { throw }
+    return $false
   }
-  return $LASTEXITCODE -eq 0
 }
 
 function Wait-ServiceReady {
@@ -462,22 +773,180 @@ function Wait-ServiceReady {
 foreach ($path in @($ComposeFile, $OverrideFile, $EnvFile, $ArchivePath, $ManifestPath)) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required file is missing: $path" }
 }
-$lockPath = Join-Path $SiteRoot ".remote-hotfix.lock"
-$lockStream = $null
+$maintenanceStateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
+$sharedLockPath = Join-Path $maintenanceStateDirectory ".remote-maintenance.lock"
+$legacyLockPath = Join-Path $SiteRoot ".remote-hotfix.lock"
+$hotfixOperationId = __OPERATION_ID__
+$processStartedAt = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime().ToString("o")
+$acquiredLocks = New-Object System.Collections.ArrayList
+$lockLeaseMinutes = 5
+$nextLockCheckAt = [DateTimeOffset]::MinValue
+$nextLockRenewalAt = [DateTimeOffset]::MinValue
+
+function Read-ReservedLock {
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Name)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "The reserved $Name lock was lost before deployment."
+  }
+  try {
+    $record = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (
+      [int]$record.schema_version -ne 1 -or
+      [string]$record.lock_name -ne $Name -or
+      [string]$record.operation_id -ne $hotfixOperationId -or
+      [string]$record.action -ne "hotfix-$Service" -or
+      [DateTimeOffset]::Parse([string]$record.expires_at) -le [DateTimeOffset]::UtcNow
+    ) { throw "invalid" }
+    return $record
+  }
+  catch {
+    throw "Another maintenance or hotfix operation is active, or its $Name lock requires inspection."
+  }
+}
+
+function Write-TransitionLockAtomic {
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Record)
+  $temporary = "$Path.$PID.$([Guid]::NewGuid().ToString('N')).transition.tmp"
+  $backup = "$Path.$PID.$([Guid]::NewGuid().ToString('N')).transition.bak"
+  try {
+    [IO.File]::WriteAllText(
+      $temporary, ($Record | ConvertTo-Json -Depth 4 -Compress),
+      (New-Object Text.UTF8Encoding($false))
+    )
+    [IO.File]::Replace($temporary, $Path, $backup)
+  }
+  finally {
+    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Acquire-TransitionLock {
+  param(
+    [Parameter(Mandatory)][string]$Path,
+    [Parameter(Mandatory)][string]$Name,
+    [Parameter(Mandatory)][int]$ReservedPid,
+    [Parameter(Mandatory)][string]$ReservedProcessStartedAt
+  )
+  $record = Read-ReservedLock -Path $Path -Name $Name
+  if (
+    [int]$record.pid -ne $ReservedPid -or
+    [string]$record.process_started_at -ne $ReservedProcessStartedAt
+  ) {
+    throw "The reserved $Name lock changed during deployment handoff."
+  }
+  $record.pid = $PID
+  $record.process_started_at = $processStartedAt
+  $record.expires_at = [DateTimeOffset]::UtcNow.AddMinutes($lockLeaseMinutes).ToString("o")
+  $record | Add-Member -NotePropertyName phase -NotePropertyValue "deployment" -Force
+  Write-TransitionLockAtomic -Path $Path -Record $record
+  [void]$acquiredLocks.Add($Path)
+}
+
+function Assert-TransitionLocksOwned {
+  foreach ($path in @($acquiredLocks)) {
+    $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (
+      [int]$record.schema_version -ne 1 -or
+      [string]$record.operation_id -ne $hotfixOperationId -or
+      [string]$record.action -ne "hotfix-$Service" -or
+      [int]$record.pid -ne $PID -or
+      [string]$record.process_started_at -ne $processStartedAt -or
+      [string]$record.phase -ne "deployment" -or
+      [DateTimeOffset]::Parse([string]$record.expires_at) -le [DateTimeOffset]::UtcNow
+    ) {
+      throw "The deployment lock ownership was lost."
+    }
+  }
+}
+
+function Renew-TransitionLocks {
+  foreach ($path in @($acquiredLocks)) {
+    $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (
+      [int]$record.schema_version -ne 1 -or
+      [string]$record.operation_id -ne $hotfixOperationId -or
+      [string]$record.action -ne "hotfix-$Service" -or
+      [int]$record.pid -ne $PID -or
+      [string]$record.process_started_at -ne $processStartedAt -or
+      [string]$record.phase -ne "deployment"
+    ) {
+      throw "The deployment lock ownership was lost."
+    }
+    $record.expires_at = [DateTimeOffset]::UtcNow.AddMinutes($lockLeaseMinutes).ToString("o")
+    Write-TransitionLockAtomic -Path $path -Record $record
+  }
+}
+
+function Maintain-TransitionLocks {
+  param([switch]$Force)
+  try {
+    $now = [DateTimeOffset]::UtcNow
+    if (-not $Force -and $now -lt $nextLockCheckAt) { return }
+    Assert-TransitionLocksOwned
+    if ($Force -or $now -ge $nextLockRenewalAt) {
+      Renew-TransitionLocks
+      $script:nextLockRenewalAt = $now.AddSeconds(30)
+    }
+    $script:nextLockCheckAt = $now.AddSeconds(1)
+  }
+  catch {
+    throw "deployment_lock_unavailable"
+  }
+}
+
+function Release-TransitionLocks {
+  $paths = @($acquiredLocks)
+  [array]::Reverse($paths)
+  foreach ($path in $paths) {
+    try {
+      $record = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+      if (
+        [string]$record.operation_id -eq $hotfixOperationId -and
+        [string]$record.action -eq "hotfix-$Service" -and
+        [int]$record.pid -eq $PID -and
+        [string]$record.process_started_at -eq $processStartedAt
+      ) {
+        Remove-Item -LiteralPath $path -Force
+      }
+    }
+    catch { }
+  }
+}
+
+if (-not (Test-Path -LiteralPath $maintenanceStateDirectory -PathType Container)) {
+  throw "Maintenance security preparation is required before hotfix deployment."
+}
+$sharedReservation = Read-ReservedLock -Path $sharedLockPath -Name "shared-maintenance"
+$legacyReservation = Read-ReservedLock -Path $legacyLockPath -Name "legacy-hotfix"
+if (
+  [int]$sharedReservation.pid -ne [int]$legacyReservation.pid -or
+  [string]$sharedReservation.process_started_at -ne [string]$legacyReservation.process_started_at
+) {
+  throw "The reserved lock owners do not match."
+}
+$reservedPid = [int]$sharedReservation.pid
+$reservedProcessStartedAt = [string]$sharedReservation.process_started_at
+$reservedOwner = Get-Process -Id $reservedPid -ErrorAction Stop
+$reservedOwnerStartedAt = $reservedOwner.StartTime.ToUniversalTime()
+$reservedRecordStartedAt = [DateTimeOffset]::Parse($reservedProcessStartedAt).UtcDateTime
+if ([Math]::Abs(($reservedOwnerStartedAt - $reservedRecordStartedAt).TotalSeconds) -ge 1) {
+  throw "The reserved lock process identity is invalid."
+}
+Acquire-TransitionLock -Path $sharedLockPath -Name "shared-maintenance" `
+  -ReservedPid $reservedPid -ReservedProcessStartedAt $reservedProcessStartedAt
 try {
-  $lockStream = [IO.File]::Open($lockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-  $lockBytes = [Text.Encoding]::ASCII.GetBytes("pid=$PID`nservice=$Service`n")
-  $lockStream.Write($lockBytes, 0, $lockBytes.Length)
-  $lockStream.Flush()
+  Acquire-TransitionLock -Path $legacyLockPath -Name "legacy-hotfix" `
+    -ReservedPid $reservedPid -ReservedProcessStartedAt $reservedProcessStartedAt
 }
 catch {
-  if ($null -ne $lockStream) {
-    $lockStream.Dispose()
-    Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
-  }
-  throw "Another remote hotfix is running, or its lock requires inspection: $lockPath"
+  Release-TransitionLocks
+  throw
 }
 try {
+$nextLockCheckAt = [DateTimeOffset]::MinValue
+$nextLockRenewalAt = [DateTimeOffset]::MinValue
+Maintain-TransitionLocks -Force
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
 if ([int]$manifest.schema_version -ne 1 -or [string]$manifest.service -ne $Service) {
   throw "Hotfix manifest identity is invalid."
@@ -486,7 +955,7 @@ if ([string]$manifest.source_commit -ne $ExpectedCommit -or [string]$manifest.im
   throw "Hotfix manifest source identity does not match the requested deployment."
 }
 if ([string]$manifest.archive -ne $ArchiveName) { throw "Hotfix manifest archive name mismatch." }
-$actualHash = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$actualHash = Get-LeaseGuardedFileSha256 -Path $ArchivePath
 if ($actualHash -ne [string]$manifest.sha256) { throw "Hotfix archive SHA-256 mismatch." }
 
 Invoke-Docker -Arguments @("image", "load", "--input", $ArchivePath)
@@ -514,8 +983,10 @@ $backupPath = "$EnvFile.pre-hotfix-$Service-$timestamp.bak"
 $temporaryEnv = "$EnvFile.$PID.tmp"
 $environmentChanged = $false
 try {
+  Maintain-TransitionLocks -Force
   $lines[$entryIndex] = "$EnvironmentKey=$ExpectedImage"
   [IO.File]::WriteAllLines($temporaryEnv, $lines, [Text.UTF8Encoding]::new($false))
+  Maintain-TransitionLocks -Force
   [IO.File]::Replace($temporaryEnv, $EnvFile, $backupPath)
   $environmentChanged = $true
 
@@ -537,10 +1008,22 @@ catch {
   $deploymentError = $_.Exception.Message
   Remove-Item -LiteralPath $temporaryEnv -Force -ErrorAction SilentlyContinue
   if (-not $environmentChanged) { throw }
+  if ($deploymentError -eq "deployment_lock_unavailable") {
+    throw "Deployment lock was lost after mutation; no unlocked rollback was attempted. Inspect the target before retrying."
+  }
   try {
+    Maintain-TransitionLocks -Force
     $rollbackTemp = "$EnvFile.$PID.rollback.tmp"
     Copy-Item -LiteralPath $backupPath -Destination $rollbackTemp
-    [IO.File]::Replace($rollbackTemp, $EnvFile, $null)
+    $rollbackBackup = "$EnvFile.rollback-replace-$Service-$timestamp.bak"
+    try {
+      Maintain-TransitionLocks -Force
+      [IO.File]::Replace($rollbackTemp, $EnvFile, $rollbackBackup)
+    }
+    finally {
+      Remove-Item -LiteralPath $rollbackBackup -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $rollbackTemp -Force -ErrorAction SilentlyContinue
+    }
     $rollbackModel = Get-ComposeModel
     Assert-ServicePolicy -Model $rollbackModel -Image $oldImage
     Invoke-Docker -Arguments ($composeBase + @("up", "-d", "--no-deps", "--force-recreate", $Service))
@@ -553,14 +1036,14 @@ catch {
 }
 }
 finally {
-  if ($null -ne $lockStream) { $lockStream.Dispose() }
-  Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+  Release-TransitionLocks
 }
 '@
   $remoteScript = $deploymentTemplate
   $replacements = [ordered]@{
     "__CANDIDATE_ROOT__"   = $CandidateRoot
     "__SITE_ROOT__"        = $SiteRoot
+    "__OPERATION_ID__"     = $HotfixOperationId
     "__REMOTE_DIRECTORY__" = $RemoteDirectory
     "__SERVICE__"          = $Service
     "__ENVIRONMENT_KEY__"  = [string]$Configuration.env_key
@@ -607,37 +1090,59 @@ $worktree = Invoke-NativeText -FilePath "git.exe" -ArgumentList @(
 if ($worktree) { throw "The worktree must be clean before building an immutable hotfix." }
 
 Write-Host "Checking target deployment..."
-$preflight = Get-RemotePreflight
-if ([string]$preflight.target_platform -ne $Platform) {
-  throw "Target candidate platform is $($preflight.target_platform), not $Platform."
+$reservationHeld = $false
+$reservationProcess = $null
+if ($DryRun) { Assert-RemoteMaintenanceLocksAvailable }
+else {
+  Assert-RemoteMaintenanceLocksAvailable
+  $reservationProcess = Start-RemoteHotfixReservation
+  $reservationHeld = $true
+  Write-Host "Reserved maintenance locks: operation=$HotfixOperationId"
 }
-if ([string]$preflight.docker_platform -ne $Platform) {
-  throw "Target Docker platform is $($preflight.docker_platform), not $Platform."
+try {
+  if ($reservationHeld) { Assert-RemoteHotfixReservationAlive -Process $reservationProcess }
+  $preflight = Get-RemotePreflight
+  if ($reservationHeld) { Assert-RemoteHotfixReservationAlive -Process $reservationProcess }
+  if ([string]$preflight.target_platform -ne $Platform) {
+    throw "Target candidate platform is $($preflight.target_platform), not $Platform."
+  }
+  if ([string]$preflight.docker_platform -ne $Platform) {
+    throw "Target Docker platform is $($preflight.docker_platform), not $Platform."
+  }
+  if ($Service -eq "api") {
+    Invoke-NativeText -FilePath "git.exe" -ArgumentList @(
+      "cat-file", "-e", "$($preflight.source_commit)^{commit}"
+    ) | Out-Null
+    $migrationChanges = Invoke-NativeText -FilePath "git.exe" -ArgumentList @(
+      "diff", "--name-only", "$($preflight.source_commit)..$commit", "--", "alembic"
+    )
+    if ($migrationChanges) {
+      throw "API hotfix contains database migration changes and must use the full deployment workflow."
+    }
+  }
+
+  Write-Host "Target preflight passed: service=$Service, current=$($preflight.current_image), platform=$Platform"
+  if ($DryRun) {
+    Write-Host "Dry run complete. No image was built, transferred, or deployed."
+    exit 0
+  }
+
+  Invoke-ServiceTests
+  Assert-RemoteHotfixReservationAlive -Process $reservationProcess
+  Write-Host "Building immutable hotfix image from $commit..."
+  $artifact = New-HotfixArtifact -Commit $commit -ShortCommit $shortCommit
+  Assert-RemoteHotfixReservationAlive -Process $reservationProcess
+  Write-Host "Transferring verified artifact to $Target..."
+  $remoteDirectory = Send-HotfixArtifact -Artifact $artifact -ShortCommit $shortCommit
+  Assert-RemoteHotfixReservationAlive -Process $reservationProcess
+  Write-Host "Deploying only the $Service service..."
+  $result = Invoke-RemoteDeployment -Artifact $artifact -RemoteDirectory $remoteDirectory
+  Write-Host $result
+  Write-Host "Remote hotfix deployment completed."
 }
-if ($Service -eq "api") {
-  Invoke-NativeText -FilePath "git.exe" -ArgumentList @(
-    "cat-file", "-e", "$($preflight.source_commit)^{commit}"
-  ) | Out-Null
-  $migrationChanges = Invoke-NativeText -FilePath "git.exe" -ArgumentList @(
-    "diff", "--name-only", "$($preflight.source_commit)..$commit", "--", "alembic"
-  )
-  if ($migrationChanges) {
-    throw "API hotfix contains database migration changes and must use the full deployment workflow."
+finally {
+  if ($reservationHeld) {
+    try { Release-RemoteHotfixReservation }
+    finally { Stop-RemoteHotfixReservation -Process $reservationProcess }
   }
 }
-
-Write-Host "Target preflight passed: service=$Service, current=$($preflight.current_image), platform=$Platform"
-if ($DryRun) {
-  Write-Host "Dry run complete. No image was built, transferred, or deployed."
-  exit 0
-}
-
-Invoke-ServiceTests
-Write-Host "Building immutable hotfix image from $commit..."
-$artifact = New-HotfixArtifact -Commit $commit -ShortCommit $shortCommit
-Write-Host "Transferring verified artifact to $Target..."
-$remoteDirectory = Send-HotfixArtifact -Artifact $artifact -ShortCommit $shortCommit
-Write-Host "Deploying only the $Service service..."
-$result = Invoke-RemoteDeployment -Artifact $artifact -RemoteDirectory $remoteDirectory
-Write-Host $result
-Write-Host "Remote hotfix deployment completed."

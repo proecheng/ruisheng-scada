@@ -1,17 +1,390 @@
-"""Contracts for the Windows remote-debug and single-service hotfix tools."""
+"""Contracts for the Windows remote-operation tools."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 ROOT = Path(__file__).parents[2]
 DEBUG_SCRIPT = ROOT / "tools" / "remote_debug.ps1"
 HOTFIX_SCRIPT = ROOT / "tools" / "remote_hotfix_deploy.ps1"
+MAINTENANCE_SCRIPT = ROOT / "tools" / "remote_maintenance.ps1"
+MAINTENANCE_PREPARE_SCRIPT = ROOT / "tools" / "remote_maintenance_prepare.ps1"
 GUIDE = ROOT / "docs" / "REMOTE_DEBUG.md"
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _powershell() -> str:
+    executable = shutil.which("powershell.exe")
+    if executable is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    return executable
+
+
+def _powershell_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PSModulePath"] = os.pathsep.join(
+        (
+            str(Path(env["USERPROFILE"]) / "Documents" / "WindowsPowerShell" / "Modules"),
+            str(
+                Path(env.get("ProgramFiles", r"C:\Program Files")) / "WindowsPowerShell" / "Modules"
+            ),
+            str(
+                Path(env.get("SystemRoot", r"C:\Windows"))
+                / "System32"
+                / "WindowsPowerShell"
+                / "v1.0"
+                / "Modules"
+            ),
+        )
+    )
+    return env
+
+
+def _ps_literal(value: str | Path) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _remote_template() -> str:
+    match = re.search(
+        r"\$remoteTemplate = @'\r?\n(.*?)\r?\n'@", _read(MAINTENANCE_SCRIPT), re.DOTALL
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def _set_restricted_directory(path: Path, *, audit_mutex: bool = False) -> None:
+    mutex = (
+        "[IO.File]::WriteAllText((Join-Path $path '.remote-maintenance-audit.lock'), '')"
+        if audit_mutex
+        else ""
+    )
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$path = {_ps_literal(path)}
+New-Item -ItemType Directory -Path $path -Force | Out-Null
+$security = New-Object Security.AccessControl.DirectorySecurity
+$security.SetAccessRuleProtection($true, $false)
+$sidValues = @(
+  [Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
+  'S-1-5-18',
+  'S-1-5-32-544'
+) | Select-Object -Unique
+foreach ($sidValue in $sidValues) {{
+  $sid = New-Object Security.Principal.SecurityIdentifier($sidValue)
+  $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+    $sid,
+    [Security.AccessControl.FileSystemRights]::FullControl,
+    ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+      [Security.AccessControl.InheritanceFlags]::ObjectInherit),
+    [Security.AccessControl.PropagationFlags]::None,
+    [Security.AccessControl.AccessControlType]::Allow
+  )
+  [void]$security.AddAccessRule($rule)
+}}
+[IO.Directory]::SetAccessControl($path, $security)
+{mutex}
+"""
+    completed = subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_powershell_env(),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def _remote_layout(tmp_path: Path) -> dict[str, Path]:
+    candidate = tmp_path / "candidate"
+    site = tmp_path / "site"
+    audit = tmp_path / "audit"
+    candidate.mkdir()
+    site.mkdir()
+    for name in ("docker-compose.prod.yml", "site-network.override.yml"):
+        (candidate / name).write_text(f"fixture:{name}\n", encoding="utf-8")
+    manifest = {
+        "schema_version": 1,
+        "candidate_id": "candidate",
+        "images": [
+            {
+                "component": service,
+                "candidate_reference": f"fixture/{service}:candidate",
+                "image_id": f"sha256:{str(index) * 64}",
+            }
+            for index, service in enumerate(("postgres", "redis", "gw", "api", "web"), start=1)
+        ],
+    }
+    (candidate / "MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (site / ".env.prod").write_text("SECRET_FIXTURE=never-return\n", encoding="utf-8")
+    return {"candidate": candidate, "site": site, "audit": audit}
+
+
+def _tree_digest(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    return {
+        item.relative_to(path).as_posix(): hashlib.sha256(item.read_bytes()).hexdigest()
+        for item in path.rglob("*")
+        if item.is_file()
+    }
+
+
+def _mock_preamble() -> str:
+    compose_model = json.dumps(
+        {
+            "services": {
+                service: {
+                    "pull_policy": "never",
+                    "image": f"fixture/{'api' if service == 'migrate' else service}:candidate",
+                    "ports": [],
+                }
+                for service in ("postgres", "redis", "migrate", "gw", "api", "web")
+            }
+        },
+        separators=(",", ":"),
+    )
+    return rf"""
+function global:docker {{
+  param([Parameter(ValueFromRemainingArguments = $true)][object[]]$DockerArguments)
+  $argumentList = @($DockerArguments | ForEach-Object {{ "$_" }})
+  [IO.File]::AppendAllText(
+    $env:SIM_DOCKER_LOG,
+    (($argumentList -join "`t") + [Environment]::NewLine),
+    (New-Object Text.UTF8Encoding($false))
+  )
+  if ($argumentList[0] -eq 'compose' -and $argumentList -contains 'config') {{
+    $global:LASTEXITCODE = 0
+    Write-Output '{compose_model}'
+    return
+  }}
+  if ($argumentList[0] -eq 'inspect' -and $argumentList -contains '{{{{json .State}}}}') {{
+    $container = $argumentList[-1]
+    $service = $container -replace '^ruisheng-', ''
+    if ($env:SIM_FAIL_INSPECT -eq $service) {{
+      $global:LASTEXITCODE = 43
+      Write-Output 'simulated inspect failure'
+      return
+    }}
+    $stopped = @()
+    if (Test-Path -LiteralPath $env:SIM_STOPPED_FILE -PathType Leaf) {{
+      $stopped = @(Get-Content -LiteralPath $env:SIM_STOPPED_FILE)
+    }}
+    $global:LASTEXITCODE = 0
+    if ($stopped -contains $service) {{
+      Write-Output '{{"Running":false,"Health":{{"Status":"healthy"}}}}'
+    }} else {{
+      Write-Output '{{"Running":true,"Health":{{"Status":"healthy"}}}}'
+    }}
+    return
+  }}
+  if ($argumentList[0] -eq 'ps' -and $argumentList -contains '{{{{.Names}}}}') {{
+    $global:LASTEXITCODE = 0
+    Write-Output 'ruisheng-postgres'
+    Write-Output 'ruisheng-redis'
+    Write-Output 'ruisheng-gw'
+    Write-Output 'ruisheng-api'
+    Write-Output 'ruisheng-web'
+    return
+  }}
+  if ($argumentList[0] -eq 'inspect' -and $argumentList -contains '{{{{.Config.Image}}}}') {{
+    $global:LASTEXITCODE = 0
+    Write-Output 'fixture/image@sha256:0123456789abcdef'
+    return
+  }}
+  if ($argumentList[0] -eq 'image' -and $argumentList[1] -eq 'inspect') {{
+    $component = (($argumentList[-1] -split '/')[-1] -split ':')[0]
+    $indexes = @{{
+      postgres = '1'; redis = '2'; gw = '3'; api = '4'; web = '5'
+    }}
+    $global:LASTEXITCODE = 0
+    Write-Output ('sha256:' + ($indexes[$component] * 64))
+    return
+  }}
+  $stopIndex = [Array]::IndexOf($argumentList, 'stop')
+  if ($stopIndex -ge 0) {{
+    $service = $argumentList[$stopIndex + 1]
+    if ($env:SIM_FAIL_STOP -eq $service) {{
+      $global:LASTEXITCODE = 42
+      Write-Output 'simulated stop failure'
+      return
+    }}
+    if ($env:SIM_DRIFT_AFTER_STOP -eq $service) {{
+      [IO.File]::AppendAllText($env:SIM_DRIFT_PATH, "`nchanged")
+    }}
+    [IO.File]::AppendAllText($env:SIM_STOPPED_FILE, $service + [Environment]::NewLine)
+  }}
+  $global:LASTEXITCODE = 0
+}}
+
+function global:sshd.exe {{
+  param([Parameter(ValueFromRemainingArguments = $true)][object[]]$SshdArguments)
+  $global:LASTEXITCODE = 0
+  Write-Output "passwordauthentication $env:SIM_PASSWORD_AUTH"
+  Write-Output 'kbdinteractiveauthentication no'
+  Write-Output 'pubkeyauthentication yes'
+  Write-Output 'authenticationmethods publickey'
+  Write-Output 'gssapiauthentication no'
+  Write-Output 'hostbasedauthentication no'
+}}
+
+$env:SSH_CONNECTION = '100.64.0.10 50123 100.64.0.20 22'
+"""
+
+
+def _render_remote_script(
+    layout: dict[str, Path],
+    *,
+    action: str,
+    reason: str = "approved test reason",
+    operation_id: str = "00000000-0000-4000-8000-000000000001",
+    dry_run: bool = False,
+    approved: bool = True,
+    scenario: str = "",
+) -> str:
+    rendered = _remote_template().replace(
+        '$AuditDirectory = "C:\\Ruisheng\\audit"',
+        f"$AuditDirectory = {_ps_literal(layout['audit'])}",
+    )
+    replacements = {
+        "__ACTION__": _ps_literal(action),
+        "__REASON__": _ps_literal(reason),
+        "__OPERATION_ID__": _ps_literal(operation_id),
+        "__TARGET__": _ps_literal("fixture@100.64.0.20"),
+        "__CANDIDATE_ROOT__": _ps_literal(layout["candidate"]),
+        "__SITE_ROOT__": _ps_literal(layout["site"]),
+        "__LEASE_SECONDS__": "120",
+        "__DRY_RUN__": "$true" if dry_run else "$false",
+        "__APPROVED__": "$true" if approved else "$false",
+    }
+    for key, value in replacements.items():
+        rendered = rendered.replace(key, value)
+    if scenario:
+        rendered = rendered.replace(
+            "\n$identity = Get-RemoteIdentity\n$posture = Get-SshPosture",
+            f"\n{scenario}\n$identity = Get-RemoteIdentity\n$posture = Get-SshPosture",
+            1,
+        )
+    return _mock_preamble() + "\n" + rendered
+
+
+def _run_remote_script(
+    tmp_path: Path,
+    layout: dict[str, Path],
+    *,
+    action: str,
+    reason: str = "approved test reason",
+    operation_id: str = "00000000-0000-4000-8000-000000000001",
+    dry_run: bool = False,
+    approved: bool = True,
+    password_auth: str = "no",
+    scenario: str = "",
+    fail_stop: str = "",
+    drift_after_stop: str = "",
+    fail_inspect: str = "",
+) -> tuple[dict[str, Any], list[str]]:
+    script_path = tmp_path / f"remote-{action}-{operation_id[-4:]}.ps1"
+    command_log = tmp_path / f"docker-{action}-{operation_id[-4:]}.log"
+    script_path.write_text(
+        _render_remote_script(
+            layout,
+            action=action,
+            reason=reason,
+            operation_id=operation_id,
+            dry_run=dry_run,
+            approved=approved,
+            scenario=scenario,
+        ),
+        encoding="utf-8",
+    )
+    env = _powershell_env()
+    env.update(
+        {
+            "SIM_DOCKER_LOG": str(command_log),
+            "SIM_PASSWORD_AUTH": password_auth,
+            "SIM_FAIL_STOP": fail_stop,
+            "SIM_DRIFT_AFTER_STOP": drift_after_stop,
+            "SIM_FAIL_INSPECT": fail_inspect,
+            "SIM_DRIFT_PATH": str(layout["candidate"] / "docker-compose.prod.yml"),
+            "SIM_STOPPED_FILE": str(tmp_path / f"stopped-{action}-{operation_id[-4:]}.txt"),
+        }
+    )
+    completed = subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script_path],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    json_lines = [line for line in completed.stdout.splitlines() if line.lstrip().startswith("{")]
+    assert json_lines, completed.stdout + completed.stderr
+    commands = command_log.read_text(encoding="utf-8").splitlines() if command_log.exists() else []
+    return json.loads(json_lines[-1]), commands
+
+
+def _restricted_scenario(*extra: str) -> str:
+    return "\n".join(
+        (
+            "Assert-RestrictedDirectory -Path $StateDirectory",
+            "Assert-RestrictedDirectory -Path $AuditDirectory",
+            "Assert-RestrictedFile -Path (Join-Path $AuditDirectory '.remote-maintenance-audit.lock')",
+            *extra,
+        )
+    )
+
+
+def _prepare_restricted_layout(layout: dict[str, Path]) -> None:
+    _set_restricted_directory(layout["site"])
+    _set_restricted_directory(layout["site"] / ".remote-maintenance-state")
+    _set_restricted_directory(layout["audit"], audit_mutex=True)
+
+
+def _run_prepare_remote_template(
+    tmp_path: Path, layout: dict[str, Path], *, password_auth: str
+) -> subprocess.CompletedProcess[str]:
+    script = _read(MAINTENANCE_PREPARE_SCRIPT)
+    match = re.search(r"\$remoteTemplate = @'\r?\n(.*?)\r?\n'@", script, re.DOTALL)
+    assert match is not None
+    rendered = match.group(1)
+    rendered = rendered.replace("__SITE_ROOT__", _ps_literal(layout["site"]))
+    rendered = rendered.replace("__AUDIT_DIRECTORY__", _ps_literal(layout["audit"]))
+    rendered = _mock_preamble() + "\n" + rendered
+    script_path = tmp_path / f"prepare-{password_auth}.ps1"
+    script_path.write_text(rendered, encoding="utf-8")
+    env = _powershell_env()
+    env.update(
+        {
+            "SIM_DOCKER_LOG": str(tmp_path / "prepare-docker.log"),
+            "SIM_PASSWORD_AUTH": password_auth,
+            "SIM_FAIL_STOP": "",
+            "SIM_DRIFT_AFTER_STOP": "",
+            "SIM_FAIL_INSPECT": "",
+            "SIM_DRIFT_PATH": str(layout["candidate"] / "docker-compose.prod.yml"),
+            "SIM_STOPPED_FILE": str(tmp_path / "prepare-stopped.txt"),
+        }
+    )
+    return subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script_path],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
 
 
 def test_remote_debug_tunnel_is_loopback_only_and_fail_fast() -> None:
@@ -70,7 +443,7 @@ def test_hotfix_verifies_archive_and_loaded_image_before_environment_change() ->
     script = _read(HOTFIX_SCRIPT)
     remote = script.split("$deploymentTemplate = @'", 1)[1].split("\n'@", 1)[0]
 
-    hash_check = remote.index("Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256")
+    hash_check = remote.index("Get-LeaseGuardedFileSha256 -Path $ArchivePath")
     load = remote.index('Invoke-Docker -Arguments @("image", "load"')
     inspect = remote.index('Invoke-Docker -Arguments @("image", "inspect"')
     environment_change = remote.index('$lines[$entryIndex] = "$EnvironmentKey=$ExpectedImage"')
@@ -90,8 +463,10 @@ def test_hotfix_renders_offline_compose_and_recreates_only_selected_service() ->
     assert '[string]$serviceModel.pull_policy -ne "never"' in script
     assert '[string]$port.host_ip -notin @("127.0.0.1", "::1")' in script
     assert '@("up", "-d", "--no-deps", "--force-recreate", $Service)' in script
-    assert "& docker exec $ContainerName python -c $pythonProbe" in script
-    assert "& docker exec $ContainerName wget" in script
+    assert (
+        'Invoke-Docker -Arguments @("exec", $ContainerName, "python", "-c", $pythonProbe)' in script
+    )
+    assert 'Invoke-Docker -Arguments @("exec", $ContainerName, "wget"' in script
     assert "Service did not become ready" in script
 
 
@@ -101,12 +476,768 @@ def test_hotfix_has_atomic_environment_backup_and_automatic_rollback() -> None:
     assert '"$EnvFile.pre-hotfix-$Service-$timestamp.bak"' in script
     assert "[IO.File]::Replace($temporaryEnv, $EnvFile, $backupPath)" in script
     assert "Copy-Item -LiteralPath $backupPath -Destination $rollbackTemp" in script
-    assert "[IO.File]::Replace($rollbackTemp, $EnvFile, $null)" in script
+    assert "[IO.File]::Replace($rollbackTemp, $EnvFile, $rollbackBackup)" in script
+    assert "Remove-Item -LiteralPath $rollbackBackup" in script
     assert "Deployment failed and the previous image was restored" in script
     assert "Rollback also failed" in script
     assert "[IO.FileMode]::CreateNew" in script
     assert 'Join-Path $SiteRoot ".remote-hotfix.lock"' in script
-    assert "Another remote hotfix is running" in script
+    assert "Another maintenance or hotfix operation is active" in script
+
+
+def test_maintenance_surface_validates_reason_approval_and_key_only_posture() -> None:
+    script = _read(MAINTENANCE_SCRIPT)
+
+    assert '[ValidateSet("Status", "StopApp", "StartApp", "RestartApp")]' in script
+    assert "$Reason.Length -lt 8" in script
+    assert "$Reason.Length -gt 200" in script
+    assert r"$Reason -match '[\x00-\x1f\x7f]'" in script
+    assert "requires fresh approval through -Approved" in script
+    assert '$password -eq "no"' in script
+    assert '$keyboard -eq "no"' in script
+    assert '$publicKey -eq "yes"' in script
+    assert 'if (-not $posture.mutation_allowed) { throw "ssh_not_key_only" }' in script
+
+
+def test_maintenance_prepare_is_explicit_key_only_and_docker_free() -> None:
+    script = _read(MAINTENANCE_PREPARE_SCRIPT)
+    remote = script.split("$remoteTemplate = @'", 1)[1].split("\n'@", 1)[0]
+
+    assert "requires fresh approval through -Approved" in script
+    assert 'if (-not $posture.mutation_allowed) { throw "ssh_not_key_only" }' in remote
+    assert "SetAccessRuleProtection($true, $false)" in remote
+    assert '"S-1-5-18"' in remote
+    assert '"S-1-5-32-544"' in remote
+    assert remote.index("Acquire-PreparationLock -Path $SharedLockPath") < remote.index(
+        "Acquire-PreparationLock -Path $LegacyLockPath"
+    )
+    assert remote.index("Set-RestrictedDirectory -Path $SiteRoot") < remote.index(
+        "Acquire-PreparationLock -Path $SharedLockPath"
+    )
+    assert remote.index("Acquire-PreparationLock -Path $LegacyLockPath") < remote.index(
+        "Set-RestrictedDirectory -Path $AuditDirectory"
+    )
+    assert '"-o", "BatchMode=yes"' in script
+    assert '"-o", "StrictHostKeyChecking=yes"' in script
+    assert "docker" not in script.lower()
+
+
+def test_maintenance_transport_and_identity_are_remote_derived() -> None:
+    script = _read(MAINTENANCE_SCRIPT)
+
+    assert '"-o", "BatchMode=yes"' in script
+    assert '"-o", "StrictHostKeyChecking=yes"' in script
+    assert '"powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"' in script
+    assert "$transportScript | & ssh.exe @sshArguments" in script
+    assert '$transportScript = "& {`r`n$remoteScript`r`n}`r`n"' in script
+    assert "EncodedCommand" not in script
+    assert len(_remote_template()) > 32_767
+    assert "user           = [string]$env:USERNAME" in script
+    assert "computer       = [string]$env:COMPUTERNAME" in script
+    assert "ssh_connection = [string]$env:SSH_CONNECTION" in script
+    assert "ConvertTo-PowerShellUtf8Expression $Reason" in script
+
+
+def test_maintenance_stdin_transport_executes_script_larger_than_windows_command_line() -> None:
+    payload = "#" + ("x" * 110_000) + "\n[ordered]@{ok=$true} | ConvertTo-Json -Compress"
+    transport = f"& {{\r\n{payload}\r\n}}\r\n"
+
+    completed = subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"],
+        input=transport,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_powershell_env(),
+    )
+
+    assert len(transport) > 100_000
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(completed.stdout.splitlines()[-1])["ok"] is True
+
+
+def test_maintenance_dry_run_compares_read_only_snapshots() -> None:
+    script = _read(MAINTENANCE_SCRIPT)
+    remote = _remote_template()
+    dry_run = remote.split('if ($Action -eq "Status" -or $DryRun) {', 1)[1].split(
+        "if (-not $Approved)", 1
+    )[0]
+
+    assert "$before = Get-Snapshot" in script
+    assert "$after = Get-Snapshot" in dry_run
+    assert 'if ($before.identity -ne $after.identity) { throw "dry_run_state_changed" }' in dry_run
+    assert '$status = "security_blocked"' in dry_run
+    assert "Acquire-LeasedLock" not in dry_run
+    assert "Write-TargetAudit" not in dry_run
+    assert "Write-JsonAtomic" not in dry_run
+    assert 'Invoke-DockerText -Arguments ($composeBase + @("stop"' not in dry_run
+    assert "snapshot_equal" in script
+
+
+def test_maintenance_lock_is_leased_pid_safe_and_reclaimed_fail_closed() -> None:
+    script = _read(MAINTENANCE_SCRIPT)
+
+    assert 'Join-Path $StateDirectory ".remote-maintenance.lock"' in script
+    assert 'Join-Path $SiteRoot ".remote-hotfix.lock"' in script
+    assert "[IO.FileMode]::CreateNew" in script
+    assert "process_started_at = $ProcessStartedAt" in script
+    assert "Get-Process -Id ([int]$Record.pid)" in script
+    assert "process.StartTime.ToUniversalTime()" in script
+    assert "-not $expired -or (Test-MatchingProcess -Record $existing)" in script
+    assert 'throw "lock_conflict_unrecognized"' in script
+    assert "stale_lock_reclaimed" in script
+    assert script.index("Acquire-LeasedLock -Path $SharedLockPath") < script.index(
+        "Acquire-LeasedLock -Path $LegacyLockPath"
+    )
+
+
+def test_hotfix_and_maintenance_use_the_same_fixed_lock_order() -> None:
+    hotfix = _read(HOTFIX_SCRIPT)
+    remote = hotfix.split("$deploymentTemplate = @'", 1)[1].split("\n'@", 1)[0]
+
+    shared = 'Acquire-TransitionLock -Path $sharedLockPath -Name "shared-maintenance"'
+    legacy = 'Acquire-TransitionLock -Path $legacyLockPath -Name "legacy-hotfix"'
+    docker_mutation = 'Invoke-Docker -Arguments @("image", "load"'
+    environment_mutation = '$lines[$entryIndex] = "$EnvironmentKey=$ExpectedImage"'
+
+    assert remote.index(shared) < remote.index(legacy) < remote.index(docker_mutation)
+    assert remote.index(legacy) < remote.index(environment_mutation)
+    assert "[array]::Reverse($paths)" in remote
+    assert "record.process_started_at" in remote
+    assert "Get-Process -Id $reservedPid" in remote
+    assert "[IO.FileMode]::CreateNew" in hotfix
+    assert 'Join-Path $maintenanceStateDirectory ".remote-maintenance.lock"' in remote
+    assert hotfix.rindex("Assert-RemoteMaintenanceLocksAvailable") < hotfix.index(
+        "$preflight = Get-RemotePreflight"
+    )
+    assert hotfix.rindex("Assert-RemoteMaintenanceLocksAvailable") < hotfix.index(
+        "$remoteDirectory = Send-HotfixArtifact"
+    )
+    assert hotfix.rindex("Start-RemoteHotfixReservation") < hotfix.index(
+        "$preflight = Get-RemotePreflight"
+    )
+    assert hotfix.rindex("Start-RemoteHotfixReservation") < hotfix.index(
+        "$remoteDirectory = Send-HotfixArtifact"
+    )
+    assert "$hotfixOperationId = __OPERATION_ID__" in remote
+    assert 'throw "The reserved $Name lock was lost before deployment."' in remote
+    assert "Assert-RemoteHotfixReservationAlive -Process $reservationProcess" in hotfix
+    assert "$record.expires_at = [DateTimeOffset]::UtcNow.AddMinutes(5)" in hotfix
+    assert "[Console]::Out.Flush()" in hotfix
+
+
+def test_hotfix_deployment_handoff_survives_reservation_exit(tmp_path: Path) -> None:
+    hotfix = _read(HOTFIX_SCRIPT)
+    reservation = hotfix.split("function Start-RemoteHotfixReservation", 1)[1].split(
+        "function Stop-RemoteHotfixReservation", 1
+    )[0]
+    template = reservation.split("$template = @'", 1)[1].split("\n'@", 1)[0]
+    release_function = template.split("function Release-Locks {", 1)[1].split("\n\ntry {", 1)[0]
+    shared = tmp_path / "shared.lock"
+    legacy = tmp_path / "legacy.lock"
+    invocation = f"""
+$ErrorActionPreference = 'Stop'
+$OperationId = '00000000-0000-4000-8000-000000000071'
+$Action = 'hotfix-gw'
+$ProcessStartedAt = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+$Acquired = New-Object System.Collections.ArrayList
+$shared = {_ps_literal(shared)}
+$legacy = {_ps_literal(legacy)}
+[void]$Acquired.Add($shared)
+[void]$Acquired.Add($legacy)
+$sharedRecord = [ordered]@{{
+  schema_version=1; operation_id=$OperationId; action=$Action; pid=($PID + 100000);
+  process_started_at='deployment-owner'; phase='deployment'
+}}
+$legacyRecord = [ordered]@{{
+  schema_version=1; operation_id=$OperationId; action=$Action; pid=$PID;
+  process_started_at=$ProcessStartedAt
+}}
+[IO.File]::WriteAllText($shared, ($sharedRecord | ConvertTo-Json -Compress))
+[IO.File]::WriteAllText($legacy, ($legacyRecord | ConvertTo-Json -Compress))
+function Release-Locks {{{release_function}
+Release-Locks
+[ordered]@{{shared=(Test-Path -LiteralPath $shared); legacy=(Test-Path -LiteralPath $legacy)}} |
+  ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", invocation],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_powershell_env(),
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(completed.stdout.splitlines()[-1]) == {"shared": True, "legacy": True}
+
+    remote = hotfix.split("$deploymentTemplate = @'", 1)[1].split("\n'@", 1)[0]
+    assert 'phase -NotePropertyValue "deployment"' in remote
+    assert "while (-not $process.WaitForExit(1000)) { Maintain-TransitionLocks }" in remote
+    assert remote.index(
+        'Acquire-TransitionLock -Path $sharedLockPath -Name "shared-maintenance"'
+    ) < remote.index('Acquire-TransitionLock -Path $legacyLockPath -Name "legacy-hotfix"')
+    assert "Get-LeaseGuardedFileSha256 -Path $ArchivePath" in remote
+
+
+def test_hotfix_health_does_not_swallow_lock_loss() -> None:
+    hotfix = _read(HOTFIX_SCRIPT)
+    remote = hotfix.split("$deploymentTemplate = @'", 1)[1].split("\n'@", 1)[0]
+    health_function = remote.split("function Test-ServiceReady {", 1)[1].split(
+        "function Wait-ServiceReady", 1
+    )[0]
+    invocation = f"""
+$ErrorActionPreference = 'Stop'
+$Service = 'gw'
+$ContainerName = 'fixture-gw'
+$HealthUrl = 'http://127.0.0.1:9090/ready'
+$script:calls = 0
+function Invoke-Docker {{
+  $script:calls++
+  if ($script:calls -eq 1) {{ return '{{"Running":true,"Health":{{"Status":"healthy"}}}}' }}
+  throw 'deployment_lock_unavailable'
+}}
+function Test-ServiceReady {{{health_function}
+Test-ServiceReady
+"""
+    completed = subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", invocation],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_powershell_env(),
+    )
+
+    assert completed.returncode != 0
+    assert "deployment_lock_unavailable" in completed.stderr
+    first_env_mutation = remote.index("[IO.File]::Replace($temporaryEnv, $EnvFile, $backupPath)")
+    rollback_mutation = remote.index("[IO.File]::Replace($rollbackTemp, $EnvFile, $rollbackBackup)")
+    assert remote.rfind("Maintain-TransitionLocks -Force", 0, first_env_mutation) != -1
+    assert (
+        remote.rfind("Maintain-TransitionLocks -Force", 0, rollback_mutation) > first_env_mutation
+    )
+    assert "no unlocked rollback was attempted" in remote
+
+
+def test_maintenance_lifecycle_order_migration_health_and_partial_recovery() -> None:
+    script = _read(MAINTENANCE_SCRIPT)
+
+    assert '$StopOrder = @("web", "api", "gw", "redis", "postgres")' in script
+    assert '$composeBase + @("stop", $service)' in script
+    assert 'throw "service_stop_verification_failed"' in script
+    assert '$composeBase + @("up", "-d", "postgres", "redis")' in script
+    assert '"--exit-code-from", "migrate", "migrate"' in script
+    assert '"--force-recreate", "--abort-on-container-exit"' in script
+    assert '$composeBase + @("up", "-d", "gw", "api", "web")' in script
+    assert '$PolicyServices = @("postgres", "redis", "migrate", "gw", "api", "web")' in script
+    assert 'throw "loaded_image_identity_mismatch"' in script
+    assert '"exec", "ruisheng-api", "python"' in script
+    assert '"exec", "ruisheng-gw", "python"' in script
+    assert '"exec", "ruisheng-web", "wget"' in script
+    assert 'throw "partial_stop"' in script
+    assert "use a new operation identity for the approved recovery action" in script
+    assert "keep healthy dependencies running" not in script
+
+
+def test_maintenance_idempotency_audit_and_output_are_allowlisted() -> None:
+    script = _read(MAINTENANCE_SCRIPT)
+
+    assert 'status -in @("succeeded", "failed", "partial", "rejected", "uncertain")' in script
+    assert 'throw "operation_identity_conflict"' in script
+    assert 'Join-Path $AuditDirectory "remote-maintenance.jsonl"' in script
+    assert "previous_hash" in script
+    assert "record_hash" in script
+    assert "Write-OperatorAudit" in script
+    assert "New-SafeResult" in script
+    assert "ConvertTo-Json -Depth 10 -Compress" in script
+    assert "Config.Env" not in script
+    assert "docker logs" not in script.lower()
+    assert "request url" not in script.lower()
+
+
+def test_maintenance_never_uses_destructive_or_exposing_commands() -> None:
+    script = _read(MAINTENANCE_SCRIPT).lower()
+
+    forbidden = (
+        "compose down",
+        '"down"',
+        "down -v",
+        "volume rm",
+        "docker rm",
+        "0.0.0.0:",
+        "shutdown.exe",
+        "restart-computer",
+        "stop-computer",
+    )
+    for text in forbidden:
+        assert text not in script
+
+
+def test_maintenance_status_and_dry_run_make_no_target_writes(tmp_path: Path) -> None:
+    layout = _remote_layout(tmp_path)
+    before = {name: _tree_digest(path) for name, path in layout.items()}
+
+    status, status_commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="Status",
+        operation_id="00000000-0000-4000-8000-000000000011",
+        password_auth="yes",
+    )
+    after_status = {name: _tree_digest(path) for name, path in layout.items()}
+    dry_run, dry_run_commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000012",
+        dry_run=True,
+        password_auth="yes",
+    )
+
+    assert status["status"] == "observed"
+    assert status["snapshot_equal"] is True
+    assert dry_run["status"] == "security_blocked"
+    assert dry_run["error_code"] == "ssh_not_key_only"
+    assert dry_run["snapshot_equal"] is True
+    assert dry_run["plan"]["stop_order"] == ["web", "api", "gw", "redis", "postgres"]
+    assert dry_run["plan"]["preserves_volumes"] is True
+    assert before == after_status == {name: _tree_digest(path) for name, path in layout.items()}
+    status_execs = [command for command in status_commands if "\texec\t" in f"\t{command}\t"]
+    assert len(status_execs) == 3
+    dry_run_execs = [command for command in dry_run_commands if "\texec\t" in f"\t{command}\t"]
+    assert len(dry_run_execs) == 3
+    assert not (layout["site"] / ".remote-maintenance-state").exists()
+    assert not layout["audit"].exists()
+
+
+def test_maintenance_status_rejects_manifest_image_retargeting_without_writes(
+    tmp_path: Path,
+) -> None:
+    layout = _remote_layout(tmp_path)
+    manifest_path = layout["candidate"] / "MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["images"][0]["image_id"] = "sha256:" + "f" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = {name: _tree_digest(path) for name, path in layout.items()}
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="Status",
+        operation_id="00000000-0000-4000-8000-000000000013",
+    )
+
+    assert result["status"] == "observed"
+    assert result["preflight"]["ok"] is False
+    assert result["preflight"]["error_code"] == "loaded_image_identity_mismatch"
+    assert not any("\tstop\t" in f"\t{command}\t" for command in commands)
+    assert before == {name: _tree_digest(path) for name, path in layout.items()}
+
+
+def test_maintenance_password_auth_blocks_before_docker_or_state(tmp_path: Path) -> None:
+    layout = _remote_layout(tmp_path)
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000021",
+        password_auth="yes",
+    )
+
+    assert result["status"] == "rejected"
+    assert result["error_code"] == "ssh_not_key_only"
+    assert commands == []
+    assert not (layout["site"] / ".remote-maintenance-state").exists()
+    assert not layout["audit"].exists()
+
+
+def test_maintenance_prepare_blocks_password_auth_then_provisions_restricted_acl(
+    tmp_path: Path,
+) -> None:
+    layout = _remote_layout(tmp_path)
+    blocked = _run_prepare_remote_template(tmp_path, layout, password_auth="yes")
+
+    assert blocked.returncode != 0
+    assert "ssh_not_key_only" in blocked.stderr
+    assert not (layout["site"] / ".remote-maintenance-state").exists()
+    assert not layout["audit"].exists()
+
+    prepared = _run_prepare_remote_template(tmp_path, layout, password_auth="no")
+    assert prepared.returncode == 0, prepared.stdout + prepared.stderr
+    assert json.loads(prepared.stdout.splitlines()[-1])["status"] == "prepared"
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000023",
+    )
+    assert result["status"] == "succeeded"
+    assert any("\tstop\t" in f"\t{command}\t" for command in commands)
+    mutation_commands = [command for command in commands if "\tstop\t" in f"\t{command}\t"]
+    assert mutation_commands
+    assert all(f"{result['operation_id']}.inputs" in command for command in mutation_commands)
+    assert not (
+        layout["site"] / ".remote-maintenance-state" / f"{result['operation_id']}.inputs"
+    ).exists()
+
+
+def test_maintenance_rejects_unrestricted_state_without_docker(tmp_path: Path) -> None:
+    layout = _remote_layout(tmp_path)
+    (layout["site"] / ".remote-maintenance-state").mkdir()
+    layout["audit"].mkdir()
+    (layout["audit"] / ".remote-maintenance-audit.lock").write_text("", encoding="utf-8")
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StartApp",
+        operation_id="00000000-0000-4000-8000-000000000022",
+    )
+
+    assert result["status"] == "rejected"
+    assert result["error_code"] == "restricted_acl_inheritance_enabled"
+    assert commands == []
+
+
+@pytest.mark.parametrize(
+    ("lock_setup", "error_code"),
+    [
+        (
+            """
+$record = [ordered]@{
+  schema_version=1; lock_name='shared-maintenance';
+  operation_id='10000000-0000-4000-8000-000000000031'; action='hotfix-gw'; pid=999999;
+  process_started_at='2000-01-01T00:00:00Z'; target='fixture';
+  acquired_at=[DateTimeOffset]::UtcNow.ToString('o');
+  expires_at=[DateTimeOffset]::UtcNow.AddMinutes(5).ToString('o')
+}
+[IO.File]::WriteAllText($SharedLockPath, ($record | ConvertTo-Json -Compress))
+""",
+            "lock_conflict_active",
+        ),
+        (
+            "[IO.File]::WriteAllText($SharedLockPath, 'legacy-unstructured-lock')",
+            "lock_conflict_unrecognized",
+        ),
+        (
+            """
+$record = [ordered]@{
+  schema_version=1; lock_name='shared-maintenance';
+  operation_id='20000000-0000-4000-8000-000000000031'; action='hotfix-api'; pid=$PID;
+  process_started_at=$ProcessStartedAt; target='fixture';
+  acquired_at=[DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o');
+  expires_at=[DateTimeOffset]::UtcNow.AddMinutes(-5).ToString('o')
+}
+[IO.File]::WriteAllText($SharedLockPath, ($record | ConvertTo-Json -Compress))
+""",
+            "lock_conflict_active",
+        ),
+    ],
+)
+def test_maintenance_lock_conflicts_are_fail_closed_without_audit_or_docker(
+    tmp_path: Path, lock_setup: str, error_code: str
+) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000031",
+        scenario=_restricted_scenario(lock_setup),
+    )
+
+    assert result["status"] == "rejected"
+    assert result["error_code"] == error_code
+    assert commands == []
+    assert not (layout["audit"] / "remote-maintenance.jsonl").exists()
+    assert (layout["site"] / ".remote-maintenance-state" / ".remote-maintenance.lock").exists()
+
+
+def test_maintenance_does_not_reclaim_incomplete_structured_expired_lock(tmp_path: Path) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+    setup = """
+$record = [ordered]@{
+  schema_version=1; lock_name='shared-maintenance';
+  operation_id='40000000-0000-4000-8000-000000000031'; action='hotfix-web';
+  pid=2147480000; process_started_at='2000-01-01T00:00:00Z';
+  acquired_at=[DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o');
+  expires_at=[DateTimeOffset]::UtcNow.AddMinutes(-5).ToString('o')
+}
+[IO.File]::WriteAllText($SharedLockPath, ($record | ConvertTo-Json -Compress))
+"""
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="50000000-0000-4000-8000-000000000031",
+        scenario=_restricted_scenario(setup),
+    )
+
+    assert result["status"] == "rejected"
+    assert result["error_code"] == "lock_conflict_unrecognized"
+    assert commands == []
+    assert (layout["site"] / ".remote-maintenance-state" / ".remote-maintenance.lock").exists()
+
+
+@pytest.mark.parametrize(
+    "record_identity",
+    [
+        "pid=2147480000; process_started_at='2000-01-01T00:00:00Z'",
+        "pid=$PID; process_started_at='2000-01-01T00:00:00Z'",
+    ],
+)
+def test_maintenance_reclaims_only_expired_nonmatching_process_locks(
+    tmp_path: Path, record_identity: str
+) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+    setup = f"""
+$record = [ordered]@{{
+  schema_version=1; lock_name='shared-maintenance';
+  operation_id='30000000-0000-4000-8000-000000000041'; action='hotfix-web'; {record_identity};
+  target='fixture'; acquired_at=[DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o');
+  expires_at=[DateTimeOffset]::UtcNow.AddMinutes(-5).ToString('o')
+}}
+[IO.File]::WriteAllText($SharedLockPath, ($record | ConvertTo-Json -Compress))
+"""
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000041",
+        scenario=_restricted_scenario(setup),
+    )
+
+    stops = [command.split("\t")[-1] for command in commands if "\tstop\t" in f"\t{command}\t"]
+    assert result["status"] == "succeeded"
+    assert stops == ["web", "api", "gw", "redis", "postgres"]
+    assert list(
+        (layout["site"] / ".remote-maintenance-state").glob(".remote-maintenance.lock.stale.*")
+    )
+    audit_text = (layout["audit"] / "remote-maintenance.jsonl").read_text(encoding="utf-8")
+    assert "stale_lock_reclaimed" in audit_text
+
+
+def test_maintenance_partial_stop_stops_on_first_failure(tmp_path: Path) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000051",
+        scenario=_restricted_scenario(),
+        fail_stop="api",
+    )
+
+    stops = [command.split("\t")[-1] for command in commands if "\tstop\t" in f"\t{command}\t"]
+    assert result["status"] == "partial"
+    assert result["error_code"] == "docker_command_failed"
+    assert result["stopped"] == ["web"]
+    assert result["remaining"] == ["api", "gw", "redis", "postgres"]
+    assert stops == ["web", "api"]
+
+
+def test_maintenance_configuration_drift_blocks_the_next_stop_phase(tmp_path: Path) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000052",
+        scenario=_restricted_scenario(),
+        drift_after_stop="web",
+    )
+
+    stops = [command.split("\t")[-1] for command in commands if "\tstop\t" in f"\t{command}\t"]
+    assert result["status"] == "partial"
+    assert result["error_code"] == "configuration_drift"
+    assert result["stopped"] == ["web"]
+    assert stops == ["web"]
+
+
+def test_maintenance_stop_verification_fails_closed_on_inspect_error(tmp_path: Path) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000053",
+        scenario=_restricted_scenario(),
+        fail_inspect="web",
+    )
+
+    stops = [command.split("\t")[-1] for command in commands if "\tstop\t" in f"\t{command}\t"]
+    assert result["status"] == "failed"
+    assert result["error_code"] == "service_state_unavailable"
+    assert result["stopped"] == []
+    assert stops == ["web"]
+
+
+def test_maintenance_reconciles_abandoned_executing_operation_as_uncertain(tmp_path: Path) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+    setup = """
+$record = [ordered]@{
+  schema_version=1; operation_id=$OperationId; action=$Action; target=$RequestedTarget;
+  candidate_id=(Split-Path -Leaf $CandidateRoot); reason_hash=(Get-Sha256Text -Text $Reason);
+  status='executing'; ok=$false; audit_id='60000000-0000-4000-8000-000000000054';
+  started_at=[DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o');
+  stopped=@('web'); started=@(); remaining=@('api','gw','redis','postgres');
+  recovery_hint=''; error_code=''; services=@()
+}
+Write-JsonAtomic -Path $OperationPath -Value $record
+"""
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000054",
+        scenario=_restricted_scenario(setup),
+    )
+
+    assert result["status"] == "uncertain", result
+    assert result["error_code"] == "operation_result_uncertain"
+    assert result["stopped"] == ["web"]
+    assert not any("\tstop\t" in f"\t{command}\t" for command in commands)
+    audit_text = (layout["audit"] / "remote-maintenance.jsonl").read_text(encoding="utf-8")
+    assert audit_text.count('"result":"uncertain"') == 1
+
+
+def test_maintenance_terminal_replay_returns_correlated_result_without_docker(
+    tmp_path: Path,
+) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+    audit_id = "10000000-0000-4000-8000-000000000061"
+    setup = f"""
+$script:auditId = '{audit_id}'
+Write-TargetAudit -Event 'lifecycle_completed' -Result 'succeeded'
+$record = [ordered]@{{
+  schema_version=1; operation_id=$OperationId; action=$Action; target=$RequestedTarget;
+  candidate_id=(Split-Path -Leaf $CandidateRoot);
+  reason_hash=(Get-Sha256Text -Text $Reason); status='succeeded'; ok=$true;
+  audit_id=$auditId; started_at=[DateTimeOffset]::UtcNow.AddMinutes(-1).ToString('o');
+  completed_at=[DateTimeOffset]::UtcNow.ToString('o'); stopped=@('web'); started=@();
+  remaining=@(); recovery_hint=''; error_code=''; services=@()
+}}
+Write-JsonAtomic -Path $OperationPath -Value $record
+"""
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000061",
+        scenario=_restricted_scenario(setup),
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["audit_id"] == audit_id
+    assert result["stopped"] == ["web"]
+    assert commands == []
+    assert "SECRET_FIXTURE" not in json.dumps(result)
+    assert "approved test reason" not in json.dumps(result)
+
+
+def _assert_jsonl_hash_chain(path: Path, expected_lines: int) -> None:
+    previous_hash = "0" * 64
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    assert len(records) == expected_lines
+    for record in records:
+        assert record["previous_hash"] == previous_hash
+        payload = {key: value for key, value in record.items() if key != "record_hash"}
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        assert record["record_hash"] == hashlib.sha256(encoded).hexdigest()
+        previous_hash = record["record_hash"]
+
+
+def test_operator_audit_concurrent_appends_preserve_hash_chain(tmp_path: Path) -> None:
+    audit = tmp_path / "operator-audit"
+    _set_restricted_directory(audit, audit_mutex=True)
+    function_source = _read(MAINTENANCE_SCRIPT).split("if ($Target -notmatch", 1)[0]
+    processes: list[subprocess.Popen[str]] = []
+    for index in range(8):
+        operation_id = f"00000000-0000-4000-8000-{index + 100:012d}"
+        audit_id = f"10000000-0000-4000-8000-{index + 100:012d}"
+        invocation = f"""
+$result = [pscustomobject]@{{
+  operation_id='{operation_id}'; audit_id='{audit_id}'; status='succeeded';
+  identity=[pscustomobject]@{{user='fixture-user';computer='fixture-host'}}
+}}
+Write-OperatorAudit -Result $result -RequestedAction 'StopApp' `
+  -RequestedTarget 'fixture@100.64.0.20' -AuditDirectory {_ps_literal(audit)}
+"""
+        script_path = tmp_path / f"operator-audit-{index}.ps1"
+        script_path.write_text(function_source + invocation, encoding="utf-8")
+        processes.append(
+            subprocess.Popen(
+                [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=_powershell_env(),
+            )
+        )
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=60)
+        assert process.returncode == 0, stdout + stderr
+
+    _assert_jsonl_hash_chain(audit / "remote-maintenance.jsonl", expected_lines=8)
+
+
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+def test_remote_operation_scripts_parse_in_both_powershell_editions(
+    executable: str, tmp_path: Path
+) -> None:
+    resolved = shutil.which(executable)
+    if resolved is None:
+        pytest.skip(f"{executable} is unavailable")
+
+    parse_targets: list[Path] = []
+    for path in (DEBUG_SCRIPT, HOTFIX_SCRIPT, MAINTENANCE_SCRIPT, MAINTENANCE_PREPARE_SCRIPT):
+        parse_targets.append(path)
+        templates = re.findall(r"@'\r?\n(.*?)\r?\n'@", _read(path), flags=re.DOTALL)
+        for index, template in enumerate(templates):
+            if '$ErrorActionPreference = "Stop"' not in template:
+                continue
+            rendered = re.sub(r"__[A-Z0-9_]+__", "'parser-placeholder'", template)
+            template_path = tmp_path / f"{path.stem}-template-{index}.ps1"
+            template_path.write_text(rendered, encoding="utf-8")
+            parse_targets.append(template_path)
+
+    for path in parse_targets:
+        escaped = str(path).replace("'", "''")
+        command = (
+            "$tokens=$null;$errors=$null;"
+            f"[void][System.Management.Automation.Language.Parser]::ParseFile('{escaped}',"
+            "[ref]$tokens,[ref]$errors);"
+            "if($errors.Count){$errors|ForEach-Object{$_.Message};exit 1}"
+        )
+        completed = subprocess.run(
+            [resolved, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert completed.returncode == 0, f"{path.name}: {completed.stdout}{completed.stderr}"
 
 
 def test_hotfix_dry_run_and_api_migration_gate_precede_mutating_steps() -> None:
@@ -134,6 +1265,13 @@ def test_remote_debug_guide_keeps_production_boundary_explicit() -> None:
     assert ".\\tools\\remote_debug.ps1 Stop" in guide
     assert ".\\tools\\remote_debug.ps1 Health" in guide
     assert ".\\tools\\remote_hotfix_deploy.ps1 -Service gw -DryRun" in guide
+    assert ".\\tools\\remote_maintenance.ps1 Status" in guide
+    assert ".\\tools\\remote_maintenance.ps1 StopApp" in guide
+    assert ".\\tools\\remote_maintenance.ps1 StartApp" in guide
+    assert ".\\tools\\remote_maintenance.ps1 RestartApp" in guide
+    assert ".\\tools\\remote_maintenance_prepare.ps1 -Approved" in guide
+    assert "-Approved" in guide
+    assert "snapshot_equal" in guide
     assert "127.0.0.1:18080" in guide
     assert "不开放目标机应用端口" in guide
     assert "BLOCKED" in guide
