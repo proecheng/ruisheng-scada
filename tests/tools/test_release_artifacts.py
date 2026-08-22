@@ -6,6 +6,8 @@ import hashlib
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tarfile
 from collections.abc import Mapping, Sequence
@@ -195,6 +197,319 @@ def _add_tar_bytes(archive: tarfile.TarFile, name: str, contents: bytes) -> None
     member.size = len(contents)
     member.mtime = 0
     archive.addfile(member, io.BytesIO(contents))
+
+
+def _json_bytes(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _digest(value: bytes) -> str:
+    return f"sha256:{hashlib.sha256(value).hexdigest()}"
+
+
+def _blob_name(digest: str) -> str:
+    return f"blobs/sha256/{digest.removeprefix('sha256:')}"
+
+
+def _write_docker_29_provenance_archive(  # noqa: PLR0912, PLR0915
+    tmp_path: Path,
+    *,
+    mutation: str | None = None,
+) -> tuple[Path, str, str]:
+    reference = "ruisheng-candidate/web:docker29"
+    image_config = _json_bytes({"architecture": "amd64", "os": "linux"})
+    image_config_digest = _digest(image_config)
+    image_manifest = _json_bytes(
+        {
+            "config": {"digest": image_config_digest},
+            "layers": [],
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "schemaVersion": 2,
+        }
+    )
+    image_manifest_digest = _digest(image_manifest)
+
+    second_image_config = _json_bytes({"architecture": "arm64", "os": "linux"})
+    second_image_config_digest = _digest(second_image_config)
+    second_image_manifest = _json_bytes(
+        {
+            "config": {"digest": second_image_config_digest},
+            "layers": [],
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "schemaVersion": 2,
+        }
+    )
+    second_image_manifest_digest = _digest(second_image_manifest)
+
+    nested_provenance_layer = _json_bytes(
+        {
+            "_type": "https://in-toto.io/Statement/v0.1",
+            "predicateType": "https://slsa.dev/provenance/v1",
+            "subject": [
+                {
+                    "name": "pkg:docker/ruisheng-build/web@docker29",
+                    "digest": {"sha256": image_manifest_digest.removeprefix("sha256:")},
+                }
+            ],
+            "predicate": {},
+        }
+    )
+    nested_provenance_layer_digest = _digest(nested_provenance_layer)
+    nested_provenance_config = _json_bytes(
+        {"architecture": "unknown", "config": {}, "os": "unknown"}
+    )
+    nested_provenance_config_digest = _digest(nested_provenance_config)
+    nested_provenance_manifest = _json_bytes(
+        {
+            "config": {
+                "digest": nested_provenance_config_digest,
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+            },
+            "layers": [
+                {
+                    "annotations": {"in-toto.io/predicate-type": "https://slsa.dev/provenance/v1"},
+                    "digest": nested_provenance_layer_digest,
+                    "mediaType": "application/vnd.in-toto+json",
+                }
+            ],
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "schemaVersion": 2,
+        }
+    )
+    nested_provenance_manifest_digest = _digest(nested_provenance_manifest)
+
+    provenance_statement: dict[str, object] = {
+        "_type": "https://in-toto.io/Statement/v0.1",
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "subject": [
+            {
+                "name": "pkg:docker/ruisheng-candidate/web@docker29",
+                "digest": {"sha256": image_manifest_digest.removeprefix("sha256:")},
+            }
+        ],
+        "predicate": {},
+    }
+    if mutation == "empty_statement":
+        provenance_statement = {}
+    elif mutation == "wrong_statement_type":
+        provenance_statement["_type"] = "https://in-toto.io/Statement/v1"
+    elif mutation == "wrong_predicate_type":
+        provenance_statement["predicateType"] = "https://example.invalid/predicate"
+    elif mutation == "missing_predicate":
+        del provenance_statement["predicate"]
+    elif mutation == "wrong_statement_subject":
+        provenance_statement["subject"] = [
+            {
+                "name": "pkg:docker/ruisheng-candidate/web@wrong",
+                "digest": {"sha256": "f" * 64},
+            }
+        ]
+    provenance_layer = _json_bytes(provenance_statement)
+    provenance_layer_digest = _digest(provenance_layer)
+    provenance_config = _json_bytes(
+        {
+            "architecture": "amd64" if mutation == "platform" else "unknown",
+            "os": "unknown",
+        }
+    )
+    provenance_config_digest = _digest(provenance_config)
+    provenance_layer_descriptor = {
+        "annotations": {"in-toto.io/predicate-type": "https://slsa.dev/provenance/v1"},
+        "digest": provenance_layer_digest,
+        "mediaType": (
+            "application/octet-stream"
+            if mutation == "layer_media_type"
+            else "application/vnd.in-toto+json"
+        ),
+    }
+    provenance_layers: object = [provenance_layer_descriptor]
+    if mutation == "multiple_layers":
+        provenance_layers = [provenance_layer_descriptor, provenance_layer_descriptor]
+    elif mutation == "layers_object":
+        provenance_layers = provenance_layer_descriptor
+    provenance_manifest = _json_bytes(
+        {
+            "config": {
+                "digest": provenance_config_digest,
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+            },
+            "layers": provenance_layers,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "schemaVersion": "2" if mutation == "schema_type" else 2,
+        }
+    )
+    provenance_manifest_digest = _digest(provenance_manifest)
+    source_manifests = [
+        {
+            "digest": image_manifest_digest,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "platform": {"architecture": "amd64", "os": "linux"},
+        },
+        {
+            "digest": nested_provenance_manifest_digest,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "platform": {"architecture": "unknown", "os": "unknown"},
+        },
+    ]
+    if mutation == "nested_second_main":
+        source_manifests.insert(
+            1,
+            {
+                "digest": second_image_manifest_digest,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "platform": {"architecture": "arm64", "os": "linux"},
+            },
+        )
+    source_index = _json_bytes(
+        {
+            "manifests": source_manifests,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "schemaVersion": 2,
+        }
+    )
+    source_index_digest = _digest(source_index)
+    top_descriptors = [
+        {
+            "digest": source_index_digest,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+        },
+        {
+            "annotations": {
+                "io.containerd.manifest.subject": (
+                    f"sha256:{'f' * 64}" if mutation == "wrong_subject" else image_manifest_digest
+                )
+            },
+            "digest": provenance_manifest_digest,
+            "mediaType": (
+                "application/octet-stream"
+                if mutation == "unknown_attachment"
+                else "application/vnd.oci.image.manifest.v1+json"
+            ),
+        },
+    ]
+    if mutation == "second_main":
+        top_descriptors.append(
+            {
+                "digest": image_manifest_digest,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            }
+        )
+
+    legacy_manifest = _json_bytes(
+        [
+            {
+                "Config": _blob_name(image_config_digest),
+                "Layers": [],
+                "RepoTags": [reference],
+            }
+        ]
+    )
+    top_manifests: object = top_descriptors
+    if mutation == "index_manifests_object":
+        top_manifests = top_descriptors[0]
+    top_index = _json_bytes(
+        {
+            "manifests": top_manifests,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "schemaVersion": 2,
+        }
+    )
+    blobs = {
+        _blob_name(image_config_digest): image_config,
+        _blob_name(image_manifest_digest): image_manifest,
+        _blob_name(nested_provenance_config_digest): nested_provenance_config,
+        _blob_name(nested_provenance_layer_digest): nested_provenance_layer,
+        _blob_name(nested_provenance_manifest_digest): nested_provenance_manifest,
+        _blob_name(provenance_config_digest): provenance_config,
+        _blob_name(provenance_layer_digest): provenance_layer,
+        _blob_name(provenance_manifest_digest): provenance_manifest,
+        _blob_name(source_index_digest): source_index,
+    }
+    if mutation == "nested_second_main":
+        blobs[_blob_name(second_image_config_digest)] = second_image_config
+        blobs[_blob_name(second_image_manifest_digest)] = second_image_manifest
+    if mutation == "missing_descriptor_blob":
+        del blobs[_blob_name(provenance_manifest_digest)]
+    elif mutation == "descriptor_digest_tamper":
+        blobs[_blob_name(provenance_manifest_digest)] = b"tampered"
+    elif mutation == "missing_config_blob":
+        del blobs[_blob_name(provenance_config_digest)]
+    elif mutation == "config_digest_tamper":
+        blobs[_blob_name(provenance_config_digest)] = b"tampered"
+    elif mutation == "missing_blob":
+        del blobs[_blob_name(provenance_layer_digest)]
+    elif mutation == "digest_tamper":
+        blobs[_blob_name(provenance_layer_digest)] = b"tampered"
+
+    path = tmp_path / f"docker29-{mutation or 'valid'}.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        _add_tar_bytes(archive, "manifest.json", legacy_manifest)
+        _add_tar_bytes(archive, "index.json", top_index)
+        for name, contents in blobs.items():
+            _add_tar_bytes(archive, name, contents)
+    return path, reference, source_index_digest
+
+
+INVALID_DOCKER29_ATTACHMENTS = (
+    ("second_main", "main descriptor is not unique"),
+    ("nested_second_main", "additional runnable descriptor"),
+    ("wrong_subject", "provenance subject mismatch"),
+    ("unknown_attachment", "unsupported archive attachment"),
+    ("platform", "provenance config platform mismatch"),
+    ("layer_media_type", "provenance layer media type is invalid"),
+    ("multiple_layers", "provenance layers are invalid"),
+    ("layers_object", "provenance layers are invalid"),
+    ("schema_type", "unsupported archive attachment"),
+    ("empty_statement", "provenance statement is invalid"),
+    ("wrong_statement_type", "provenance statement is invalid"),
+    ("wrong_predicate_type", "provenance statement is invalid"),
+    ("missing_predicate", "provenance statement is invalid"),
+    ("wrong_statement_subject", "provenance statement subject mismatch"),
+    ("index_manifests_object", "index must contain image descriptors"),
+    ("missing_descriptor_blob", "descriptor blob is missing"),
+    ("descriptor_digest_tamper", "descriptor digest mismatch"),
+    ("missing_config_blob", "provenance config blob is missing"),
+    ("config_digest_tamper", "provenance config digest mismatch"),
+    ("missing_blob", "provenance layer blob is missing"),
+    ("digest_tamper", "provenance layer digest mismatch"),
+)
+
+
+def _run_powershell_archive_identity(
+    path: Path, reference: str
+) -> subprocess.CompletedProcess[str]:
+    command = r"""
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$start = $source.IndexOf('function Fail')
+$end = $source.IndexOf('if ($Manifest.candidate_id')
+if ($start -lt 0 -or $end -lt 0) { throw 'Archive function block not found' }
+. ([scriptblock]::Create($source.Substring($start, $end - $start)))
+Get-DockerArchiveIdentity $env:RS_ARCHIVE_PATH $env:RS_ARCHIVE_REFERENCE |
+    ConvertTo-Json -Compress
+"""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RS_VERIFY_SCRIPT": str(ROOT / "deploy" / "verify-candidate.ps1"),
+            "RS_ARCHIVE_PATH": str(path),
+            "RS_ARCHIVE_REFERENCE": reference,
+        }
+    )
+    return subprocess.run(
+        [
+            shutil.which("pwsh") or "pwsh",
+            "-NoProfile",
+            "-Command",
+            command,
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
 
 
 def _read_env(path: Path) -> dict[str, str]:
@@ -564,6 +879,61 @@ def test_archive_accepts_docker_29_selected_platform_under_source_index(
     assert identity.image_id == f"sha256:{source_index_id}"
     assert identity.os == "linux"
     assert identity.architecture == "amd64"
+
+
+def test_archive_accepts_docker_29_top_level_provenance_referrer(tmp_path: Path) -> None:
+    path, reference, source_index_digest = _write_docker_29_provenance_archive(tmp_path)
+
+    identity = inspect_docker_archive(path, reference)
+
+    assert identity.image_id == source_index_digest
+    assert identity.os == "linux"
+    assert identity.architecture == "amd64"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    INVALID_DOCKER29_ATTACHMENTS,
+)
+def test_archive_rejects_invalid_docker_29_top_level_attachment(
+    tmp_path: Path, mutation: str, error: str
+) -> None:
+    path, reference, _source_index_digest = _write_docker_29_provenance_archive(
+        tmp_path, mutation=mutation
+    )
+
+    with pytest.raises(ReleaseArtifactError, match=error):
+        inspect_docker_archive(path, reference)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+def test_powershell_accepts_docker_29_top_level_provenance_referrer(tmp_path: Path) -> None:
+    path, reference, source_index_digest = _write_docker_29_provenance_archive(tmp_path)
+
+    result = _run_powershell_archive_identity(path, reference)
+
+    assert result.returncode == 0, result.stderr
+    identity = json.loads(result.stdout)
+    assert identity == {
+        "ImageId": source_index_digest,
+        "Os": "linux",
+        "Architecture": "amd64",
+    }
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(("mutation", "error"), INVALID_DOCKER29_ATTACHMENTS)
+def test_powershell_rejects_invalid_docker_29_top_level_attachment(
+    tmp_path: Path, mutation: str, error: str
+) -> None:
+    path, reference, _source_index_digest = _write_docker_29_provenance_archive(
+        tmp_path, mutation=mutation
+    )
+
+    result = _run_powershell_archive_identity(path, reference)
+
+    assert result.returncode != 0
+    assert error.lower() in result.stderr.lower()
 
 
 def test_compose_image_drift_is_rejected(tmp_path: Path, production_env: Path) -> None:

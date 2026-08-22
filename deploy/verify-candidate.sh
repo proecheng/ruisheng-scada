@@ -63,6 +63,192 @@ def sha256(path):
             digest.update(chunk)
     return digest.hexdigest()
 
+def read_archive_sha256_blob(archive, archive_label, digest, label, allow_missing=False):
+    if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+        fail("archive {} digest is invalid for {}".format(label, archive_label))
+    blob_name = "blobs/sha256/" + digest.split(":", 1)[1]
+    try:
+        member = archive.getmember(blob_name)
+    except KeyError:
+        if allow_missing:
+            return None
+        fail("archive {} blob is missing: {}:{}".format(label, archive_label, blob_name))
+    stream = archive.extractfile(member)
+    if stream is None:
+        fail("archive {} blob is not a regular file: {}:{}".format(
+            label, archive_label, blob_name
+        ))
+    contents = stream.read()
+    if "sha256:" + hashlib.sha256(contents).hexdigest() != digest:
+        fail("archive {} digest mismatch for {}".format(label, archive_label))
+    return contents
+
+def parse_archive_json_object(contents, archive_label, label):
+    try:
+        value = json.loads(contents)
+    except (UnicodeDecodeError, ValueError):
+        fail("archive {} is invalid JSON for {}".format(label, archive_label))
+    if not isinstance(value, dict):
+        fail("archive {} root is invalid for {}".format(label, archive_label))
+    return value
+
+def validate_slsa_provenance_statement(statement, archive_label, main_manifest_digest):
+    subjects = statement.get("subject")
+    if (
+        statement.get("_type") != "https://in-toto.io/Statement/v0.1"
+        or statement.get("predicateType") != "https://slsa.dev/provenance/v1"
+        or not isinstance(statement.get("predicate"), dict)
+        or not isinstance(subjects, list)
+        or not subjects
+    ):
+        fail("archive provenance statement is invalid for " + archive_label)
+    expected_subject = main_manifest_digest.split(":", 1)[1]
+    subject_digests = []
+    for subject in subjects:
+        digest = subject.get("digest") if isinstance(subject, dict) else None
+        name = subject.get("name") if isinstance(subject, dict) else None
+        sha256 = digest.get("sha256") if isinstance(digest, dict) else None
+        if (
+            not isinstance(name, str)
+            or not name
+            or not isinstance(sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+        ):
+            fail("archive provenance statement is invalid for " + archive_label)
+        subject_digests.append(sha256)
+    if expected_subject not in subject_digests:
+        fail("archive provenance statement subject mismatch for " + archive_label)
+
+def resolve_main_manifest_digest(
+    archive, archive_label, descriptor_digest, descriptor_value, config_digest, config
+):
+    descriptor_config = descriptor_value.get("config")
+    if isinstance(descriptor_config, dict) and descriptor_config.get("digest") == config_digest:
+        return descriptor_digest
+    nested_descriptors = descriptor_value.get("manifests")
+    if not isinstance(nested_descriptors, list):
+        return None
+    matching_nested = []
+    for nested in nested_descriptors:
+        nested_digest = nested.get("digest") if isinstance(nested, dict) else None
+        nested_bytes = read_archive_sha256_blob(
+            archive, archive_label, nested_digest, "nested descriptor", allow_missing=True
+        )
+        if nested_bytes is None:
+            # Docker 29 can retain source index entries while exporting only
+            # the manifest blob for the selected local platform.
+            continue
+        nested_value = parse_archive_json_object(
+            nested_bytes, archive_label, "nested descriptor"
+        )
+        nested_config = nested_value.get("config")
+        if not isinstance(nested_config, dict):
+            continue
+        platform = nested.get("platform")
+        if platform is not None and not isinstance(platform, dict):
+            fail("archive nested descriptor platform is invalid for " + archive_label)
+        if nested_config.get("digest") != config_digest:
+            nested_config_bytes = read_archive_sha256_blob(
+                archive, archive_label, nested_config.get("digest"), "nested config"
+            )
+            nested_config_value = parse_archive_json_object(
+                nested_config_bytes, archive_label, "nested config"
+            )
+            attachment_platform = (
+                nested_config_value.get("os"), nested_config_value.get("architecture")
+            )
+            descriptor_platform = (
+                (platform.get("os"), platform.get("architecture"))
+                if isinstance(platform, dict)
+                else ("unknown", "unknown")
+            )
+            if attachment_platform != ("unknown", "unknown") or descriptor_platform != (
+                "unknown", "unknown"
+            ):
+                fail("archive contains an additional runnable descriptor for " + archive_label)
+            continue
+        if isinstance(platform, dict) and (
+            platform.get("os") != config.get("os")
+            or platform.get("architecture") != config.get("architecture")
+        ):
+            fail("archive nested descriptor platform mismatch for " + archive_label)
+        matching_nested.append(nested_digest)
+    if len(matching_nested) > 1:
+        fail("archive main descriptor is not unique for " + archive_label)
+    return matching_nested[0] if matching_nested else None
+
+def validate_provenance_attachment(
+    archive, archive_label, descriptor, descriptor_value, main_manifest_digest
+):
+    manifest_media_type = "application/vnd.oci.image.manifest.v1+json"
+    if (
+        descriptor.get("mediaType") != manifest_media_type
+        or descriptor_value.get("schemaVersion") != 2
+        or descriptor_value.get("mediaType") != manifest_media_type
+    ):
+        fail("unsupported archive attachment for " + archive_label)
+    annotations = descriptor.get("annotations")
+    subject = (
+        annotations.get("io.containerd.manifest.subject")
+        if isinstance(annotations, dict)
+        else None
+    )
+    if subject != main_manifest_digest:
+        fail("archive provenance subject mismatch for " + archive_label)
+    descriptor_platform = descriptor.get("platform")
+    if descriptor_platform is not None and (
+        not isinstance(descriptor_platform, dict)
+        or descriptor_platform.get("os") != "unknown"
+        or descriptor_platform.get("architecture") != "unknown"
+    ):
+        fail("archive provenance descriptor platform mismatch for " + archive_label)
+    manifest_subject = descriptor_value.get("subject")
+    if manifest_subject is not None and (
+        not isinstance(manifest_subject, dict)
+        or manifest_subject.get("digest") != main_manifest_digest
+    ):
+        fail("archive provenance subject mismatch for " + archive_label)
+    config_descriptor = descriptor_value.get("config")
+    if (
+        not isinstance(config_descriptor, dict)
+        or config_descriptor.get("mediaType")
+        != "application/vnd.oci.image.config.v1+json"
+    ):
+        fail("archive provenance config is invalid for " + archive_label)
+    config_bytes = read_archive_sha256_blob(
+        archive, archive_label, config_descriptor.get("digest"), "provenance config"
+    )
+    provenance_config = parse_archive_json_object(
+        config_bytes, archive_label, "provenance config"
+    )
+    if (
+        provenance_config.get("os") != "unknown"
+        or provenance_config.get("architecture") != "unknown"
+    ):
+        fail("archive provenance config platform mismatch for " + archive_label)
+    layers = descriptor_value.get("layers")
+    if not isinstance(layers, list) or len(layers) != 1:
+        fail("archive provenance layers are invalid for " + archive_label)
+    for layer in layers:
+        if not isinstance(layer, dict) or layer.get("mediaType") != "application/vnd.in-toto+json":
+            fail("archive provenance layer media type is invalid for " + archive_label)
+        layer_annotations = layer.get("annotations")
+        if (
+            not isinstance(layer_annotations, dict)
+            or layer_annotations.get("in-toto.io/predicate-type")
+            != "https://slsa.dev/provenance/v1"
+        ):
+            fail("archive provenance layer is invalid for " + archive_label)
+        layer_bytes = read_archive_sha256_blob(
+            archive, archive_label, layer.get("digest"), "provenance layer"
+        )
+        statement = parse_archive_json_object(
+            layer_bytes, archive_label, "provenance layer"
+        )
+        validate_slsa_provenance_statement(
+            statement, archive_label, main_manifest_digest
+        )
+
 try:
     manifest = json.loads((root / "MANIFEST.json").read_text(encoding="utf-8"))
 except Exception as error:
@@ -177,53 +363,46 @@ for image in images:
                     fail("missing archive index for " + image["component"])
                 index = json.load(index_stream)
                 descriptors = index.get("manifests") if isinstance(index, dict) else None
-                if not isinstance(descriptors, list) or len(descriptors) != 1:
-                    fail("archive index must contain one descriptor for " + image["component"])
-                descriptor_digest = descriptors[0].get("digest")
-                if not isinstance(descriptor_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", descriptor_digest) is None:
-                    fail("invalid archive descriptor digest for " + image["component"])
-                descriptor_name = "blobs/sha256/" + descriptor_digest.split(":", 1)[1]
-                descriptor_stream = archive.extractfile(descriptor_name)
-                if descriptor_stream is None:
-                    fail("missing archive descriptor for " + image["component"])
-                descriptor_bytes = descriptor_stream.read()
-                if "sha256:" + hashlib.sha256(descriptor_bytes).hexdigest() != descriptor_digest:
-                    fail("archive descriptor digest mismatch for " + image["component"])
-                descriptor = json.loads(descriptor_bytes)
-                if descriptor.get("config", {}).get("digest") != config_digest:
-                    nested_descriptors = descriptor.get("manifests")
-                    if not isinstance(nested_descriptors, list):
-                        fail("archive descriptor/config mismatch for " + image["component"])
-                    matching_nested = []
-                    for nested in nested_descriptors:
-                        nested_digest = nested.get("digest") if isinstance(nested, dict) else None
-                        if not isinstance(nested_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", nested_digest) is None:
-                            fail("invalid archive nested descriptor digest for " + image["component"])
-                        nested_name = "blobs/sha256/" + nested_digest.split(":", 1)[1]
-                        try:
-                            nested_stream = archive.extractfile(nested_name)
-                        except KeyError:
-                            # Docker 29 can retain the source index while exporting only
-                            # the manifest blob for the selected local platform.
-                            continue
-                        if nested_stream is None:
-                            fail("invalid archive nested descriptor for " + image["component"])
-                        nested_bytes = nested_stream.read()
-                        if "sha256:" + hashlib.sha256(nested_bytes).hexdigest() != nested_digest:
-                            fail("archive nested descriptor digest mismatch for " + image["component"])
-                        nested_value = json.loads(nested_bytes)
-                        if nested_value.get("config", {}).get("digest") != config_digest:
-                            continue
-                        platform = nested.get("platform")
-                        if isinstance(platform, dict) and (
-                            platform.get("os") != config.get("os")
-                            or platform.get("architecture") != config.get("architecture")
-                        ):
-                            fail("archive nested descriptor platform mismatch for " + image["component"])
-                        matching_nested.append(nested_digest)
-                    if len(matching_nested) != 1:
-                        fail("archive descriptor/config mismatch for " + image["component"])
-                archive_id = descriptor_digest
+                if not isinstance(descriptors, list) or not descriptors:
+                    fail("archive index must contain image descriptors for " + image["component"])
+                loaded_descriptors = []
+                for descriptor in descriptors:
+                    if not isinstance(descriptor, dict):
+                        fail("archive descriptor is invalid for " + image["component"])
+                    descriptor_digest = descriptor.get("digest")
+                    descriptor_bytes = read_archive_sha256_blob(
+                        archive, image["archive"], descriptor_digest, "descriptor"
+                    )
+                    descriptor_value = parse_archive_json_object(
+                        descriptor_bytes, image["archive"], "descriptor"
+                    )
+                    resolved = resolve_main_manifest_digest(
+                        archive,
+                        image["archive"],
+                        descriptor_digest,
+                        descriptor_value,
+                        config_digest,
+                        config,
+                    )
+                    loaded_descriptors.append(
+                        (descriptor, descriptor_digest, descriptor_value, resolved)
+                    )
+                main_descriptors = [
+                    loaded for loaded in loaded_descriptors if loaded[3] is not None
+                ]
+                if len(main_descriptors) != 1:
+                    fail("archive main descriptor is not unique for " + image["component"])
+                archive_id = main_descriptors[0][1]
+                main_manifest_digest = main_descriptors[0][3]
+                for descriptor, _digest, descriptor_value, resolved in loaded_descriptors:
+                    if resolved is None:
+                        validate_provenance_attachment(
+                            archive,
+                            image["archive"],
+                            descriptor,
+                            descriptor_value,
+                            main_manifest_digest,
+                        )
     except (OSError, EOFError, gzip.BadGzipFile, tarfile.TarError, ValueError, KeyError) as error:
         fail("invalid Docker archive {}: {}".format(image["archive"], error))
     if (archive_id, config.get("os"), config.get("architecture")) != (

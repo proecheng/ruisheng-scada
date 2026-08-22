@@ -108,6 +108,224 @@ function Read-TarEntries([string]$ArchivePath, [string[]]$WantedNames) {
     return [PSCustomObject]@{ Names = $Names; Values = $Values }
 }
 
+function Read-ArchiveSha256Blob(
+    [string]$ArchivePath,
+    [object]$DigestValue,
+    [string]$Label,
+    [bool]$AllowMissing = $false
+) {
+    $Digest = [string]$DigestValue
+    if ($Digest -notmatch '^sha256:[0-9a-f]{64}$') {
+        Fail "Archive $Label digest is invalid: $ArchivePath"
+    }
+    $BlobName = "blobs/sha256/$($Digest.Substring(7))"
+    $Record = Read-TarEntries $ArchivePath @($BlobName)
+    if (-not $Record.Values.ContainsKey($BlobName)) {
+        if ($AllowMissing) { return $null }
+        Fail "Archive $Label blob is missing: $ArchivePath`:$BlobName"
+    }
+    [byte[]]$Bytes = $Record.Values[$BlobName]
+    if ("sha256:$(Get-Sha256Bytes $Bytes)" -cne $Digest) {
+        Fail "Archive $Label digest mismatch: $ArchivePath"
+    }
+    return ,$Bytes
+}
+
+function ConvertFrom-ArchiveJsonObject(
+    [byte[]]$Bytes,
+    [string]$ArchivePath,
+    [string]$Label
+) {
+    try {
+        $Utf8 = [Text.UTF8Encoding]::new($false, $true)
+        $Value = $Utf8.GetString($Bytes) | ConvertFrom-Json
+    } catch {
+        Fail "Archive $Label is invalid JSON: $ArchivePath"
+    }
+    if ($Value -isnot [System.Management.Automation.PSCustomObject]) {
+        Fail "Archive $Label root is invalid: $ArchivePath"
+    }
+    return $Value
+}
+
+function Test-SlsaProvenanceStatement(
+    [object]$Statement,
+    [string]$ArchivePath,
+    [string]$MainManifestDigest
+) {
+    $Subjects = $Statement.subject
+    if ($Statement -isnot [System.Management.Automation.PSCustomObject] -or
+        $Statement._type -isnot [string] -or
+        $Statement._type -cne "https://in-toto.io/Statement/v0.1" -or
+        $Statement.predicateType -isnot [string] -or
+        $Statement.predicateType -cne "https://slsa.dev/provenance/v1" -or
+        $Statement.predicate -isnot [System.Management.Automation.PSCustomObject] -or
+        $Subjects -isnot [object[]] -or $Subjects.Count -eq 0) {
+        Fail "Archive provenance statement is invalid: $ArchivePath"
+    }
+    $ExpectedSubject = $MainManifestDigest.Substring(7)
+    $SubjectDigests = @()
+    foreach ($Subject in $Subjects) {
+        if ($Subject -isnot [System.Management.Automation.PSCustomObject] -or
+            $Subject.name -isnot [string] -or
+            [string]::IsNullOrEmpty($Subject.name) -or
+            $Subject.digest -isnot [System.Management.Automation.PSCustomObject] -or
+            $Subject.digest.sha256 -isnot [string] -or
+            $Subject.digest.sha256 -notmatch '^[0-9a-f]{64}$') {
+            Fail "Archive provenance statement is invalid: $ArchivePath"
+        }
+        $SubjectDigests += [string]$Subject.digest.sha256
+    }
+    if ($ExpectedSubject -cnotin $SubjectDigests) {
+        Fail "Archive provenance statement subject mismatch: $ArchivePath"
+    }
+}
+
+function Resolve-MainManifestDigest(
+    [string]$ArchivePath,
+    [string]$DescriptorDigest,
+    [object]$DescriptorValue,
+    [string]$ConfigDigest,
+    [object]$Config
+) {
+    if ($DescriptorValue.config -is [System.Management.Automation.PSCustomObject] -and
+        $DescriptorValue.config.digest -is [string] -and
+        $DescriptorValue.config.digest -ceq $ConfigDigest) {
+        return $DescriptorDigest
+    }
+    if ($null -eq $DescriptorValue.PSObject.Properties["manifests"]) {
+        return $null
+    }
+    if ($DescriptorValue.manifests -isnot [object[]]) {
+        Fail "Archive nested descriptors are invalid: $ArchivePath"
+    }
+    $MatchingNested = @()
+    foreach ($NestedDescriptor in $DescriptorValue.manifests) {
+        if ($NestedDescriptor -isnot [System.Management.Automation.PSCustomObject]) {
+            Fail "Archive nested descriptor is invalid: $ArchivePath"
+        }
+        $NestedDigest = [string]$NestedDescriptor.digest
+        [byte[]]$NestedBytes = Read-ArchiveSha256Blob `
+            $ArchivePath $NestedDigest "nested descriptor" $true
+        if ($null -eq $NestedBytes) {
+            # Docker 29 can retain source index entries while exporting only
+            # the manifest blob for the selected local platform.
+            continue
+        }
+        $NestedValue = ConvertFrom-ArchiveJsonObject `
+            $NestedBytes $ArchivePath "nested descriptor"
+        $NestedConfig = $NestedValue.config
+        if ($NestedConfig -isnot [System.Management.Automation.PSCustomObject]) {
+            continue
+        }
+        if ($null -ne $NestedDescriptor.platform -and
+            $NestedDescriptor.platform -isnot [System.Management.Automation.PSCustomObject]) {
+            Fail "Archive nested descriptor platform is invalid: $ArchivePath"
+        }
+        if ($NestedConfig.digest -cne $ConfigDigest) {
+            [byte[]]$NestedConfigBytes = Read-ArchiveSha256Blob `
+                $ArchivePath $NestedConfig.digest "nested config"
+            $NestedConfigValue = ConvertFrom-ArchiveJsonObject `
+                $NestedConfigBytes $ArchivePath "nested config"
+            if ($NestedConfigValue.os -isnot [string] -or
+                $NestedConfigValue.architecture -isnot [string] -or
+                $NestedConfigValue.os -cne "unknown" -or
+                $NestedConfigValue.architecture -cne "unknown" -or
+                ($null -ne $NestedDescriptor.platform -and
+                    ($NestedDescriptor.platform.os -cne "unknown" -or
+                        $NestedDescriptor.platform.architecture -cne "unknown"))) {
+                Fail "Archive contains an additional runnable descriptor: $ArchivePath"
+            }
+            continue
+        }
+        if ($null -ne $NestedDescriptor.platform -and
+            ($NestedDescriptor.platform.os -cne $Config.os -or
+                $NestedDescriptor.platform.architecture -cne $Config.architecture)) {
+            Fail "Archive nested descriptor platform mismatch: $ArchivePath"
+        }
+        $MatchingNested += $NestedDigest
+    }
+    if ($MatchingNested.Count -gt 1) {
+        Fail "Archive main descriptor is not unique: $ArchivePath"
+    }
+    if ($MatchingNested.Count -eq 1) { return $MatchingNested[0] }
+    return $null
+}
+
+function Test-ProvenanceAttachment(
+    [string]$ArchivePath,
+    [object]$Descriptor,
+    [object]$DescriptorValue,
+    [string]$MainManifestDigest
+) {
+    $ManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
+    if ($Descriptor.mediaType -isnot [string] -or
+        $Descriptor.mediaType -cne $ManifestMediaType -or
+        $DescriptorValue.schemaVersion -isnot [long] -or
+        $DescriptorValue.schemaVersion -cne 2 -or
+        $DescriptorValue.mediaType -isnot [string] -or
+        $DescriptorValue.mediaType -cne $ManifestMediaType) {
+        Fail "Unsupported archive attachment: $ArchivePath"
+    }
+    if ($Descriptor.annotations -isnot [System.Management.Automation.PSCustomObject] -or
+        $Descriptor.annotations.'io.containerd.manifest.subject' -isnot [string] -or
+        $Descriptor.annotations.'io.containerd.manifest.subject' -cne $MainManifestDigest) {
+        Fail "Archive provenance subject mismatch: $ArchivePath"
+    }
+    if ($null -ne $Descriptor.platform -and
+        ($Descriptor.platform -isnot [System.Management.Automation.PSCustomObject] -or
+            $Descriptor.platform.os -isnot [string] -or
+            $Descriptor.platform.architecture -isnot [string] -or
+            $Descriptor.platform.os -cne "unknown" -or
+            $Descriptor.platform.architecture -cne "unknown")) {
+        Fail "Archive provenance descriptor platform mismatch: $ArchivePath"
+    }
+    if ($null -ne $DescriptorValue.subject -and
+        ($DescriptorValue.subject -isnot [System.Management.Automation.PSCustomObject] -or
+            $DescriptorValue.subject.digest -isnot [string] -or
+            $DescriptorValue.subject.digest -cne $MainManifestDigest)) {
+        Fail "Archive provenance subject mismatch: $ArchivePath"
+    }
+    $ConfigDescriptor = $DescriptorValue.config
+    if ($ConfigDescriptor -isnot [System.Management.Automation.PSCustomObject] -or
+        $ConfigDescriptor.mediaType -isnot [string] -or
+        $ConfigDescriptor.mediaType -cne "application/vnd.oci.image.config.v1+json") {
+        Fail "Archive provenance config is invalid: $ArchivePath"
+    }
+    [byte[]]$ProvenanceConfigBytes = Read-ArchiveSha256Blob `
+        $ArchivePath $ConfigDescriptor.digest "provenance config"
+    $ProvenanceConfig = ConvertFrom-ArchiveJsonObject `
+        $ProvenanceConfigBytes $ArchivePath "provenance config"
+    if ($ProvenanceConfig.os -isnot [string] -or
+        $ProvenanceConfig.architecture -isnot [string] -or
+        $ProvenanceConfig.os -cne "unknown" -or
+        $ProvenanceConfig.architecture -cne "unknown") {
+        Fail "Archive provenance config platform mismatch: $ArchivePath"
+    }
+    $Layers = $DescriptorValue.layers
+    if ($Layers -isnot [object[]] -or $Layers.Count -ne 1) {
+        Fail "Archive provenance layers are invalid: $ArchivePath"
+    }
+    foreach ($Layer in $Layers) {
+        if ($Layer -isnot [System.Management.Automation.PSCustomObject] -or
+            $Layer.mediaType -isnot [string] -or
+            $Layer.mediaType -cne "application/vnd.in-toto+json") {
+            Fail "Archive provenance layer media type is invalid: $ArchivePath"
+        }
+        if ($Layer.annotations -isnot [System.Management.Automation.PSCustomObject] -or
+            $Layer.annotations.'in-toto.io/predicate-type' -isnot [string] -or
+            $Layer.annotations.'in-toto.io/predicate-type' -cne
+                "https://slsa.dev/provenance/v1") {
+            Fail "Archive provenance layer is invalid: $ArchivePath"
+        }
+        [byte[]]$LayerBytes = Read-ArchiveSha256Blob `
+            $ArchivePath $Layer.digest "provenance layer"
+        $Statement = ConvertFrom-ArchiveJsonObject `
+            $LayerBytes $ArchivePath "provenance layer"
+        Test-SlsaProvenanceStatement $Statement $ArchivePath $MainManifestDigest
+    }
+}
+
 function Get-DockerArchiveIdentity([string]$ArchivePath, [string]$ExpectedReference) {
     $Headers = Read-TarEntries $ArchivePath @("manifest.json", "index.json")
     if (-not $Headers.Values.ContainsKey("manifest.json")) {
@@ -150,75 +368,41 @@ function Get-DockerArchiveIdentity([string]$ArchivePath, [string]$ExpectedRefere
         } catch {
             Fail "Archive index is invalid JSON: $ArchivePath"
         }
-        $Descriptors = @($Index.manifests)
-        if ($Descriptors.Count -ne 1 -or
-            $Descriptors[0].digest -notmatch '^sha256:[0-9a-f]{64}$') {
-            Fail "Archive index must contain one valid descriptor: $ArchivePath"
+        $Descriptors = $Index.manifests
+        if ($Descriptors -isnot [object[]] -or $Descriptors.Count -eq 0) {
+            Fail "Archive index must contain image descriptors: $ArchivePath"
         }
-        $DescriptorDigest = [string]$Descriptors[0].digest
-        $DescriptorName = "blobs/sha256/$($DescriptorDigest.Substring(7))"
-        $DescriptorRecord = Read-TarEntries $ArchivePath @($DescriptorName)
-        if (-not $DescriptorRecord.Values.ContainsKey($DescriptorName)) {
-            Fail "Archive descriptor is missing: $ArchivePath`:$DescriptorName"
-        }
-        $DescriptorBytes = [byte[]]$DescriptorRecord.Values[$DescriptorName]
-        if ("sha256:$(Get-Sha256Bytes $DescriptorBytes)" -cne $DescriptorDigest) {
-            Fail "Archive descriptor digest mismatch: $ArchivePath"
-        }
-        try {
-            $Descriptor = [Text.Encoding]::UTF8.GetString($DescriptorBytes) | ConvertFrom-Json
-        } catch {
-            Fail "Archive descriptor is invalid JSON: $ArchivePath"
-        }
-        if ([string]$Descriptor.config.digest -cne $ConfigDigest) {
-            $NestedDescriptors = @($Descriptor.manifests)
-            if ($NestedDescriptors.Count -eq 0) {
-                Fail "Archive descriptor/config digest mismatch: $ArchivePath"
+        $LoadedDescriptors = @()
+        foreach ($Descriptor in $Descriptors) {
+            if ($Descriptor -isnot [System.Management.Automation.PSCustomObject]) {
+                Fail "Archive descriptor is invalid: $ArchivePath"
             }
-            $NestedNames = @()
-            foreach ($NestedDescriptor in $NestedDescriptors) {
-                $NestedDigest = [string]$NestedDescriptor.digest
-                if ($NestedDigest -notmatch '^sha256:[0-9a-f]{64}$') {
-                    Fail "Archive nested descriptor digest is invalid: $ArchivePath"
-                }
-                $NestedNames += "blobs/sha256/$($NestedDigest.Substring(7))"
-            }
-            $NestedRecords = Read-TarEntries $ArchivePath $NestedNames
-            $MatchingNested = @()
-            foreach ($NestedDescriptor in $NestedDescriptors) {
-                $NestedDigest = [string]$NestedDescriptor.digest
-                $NestedName = "blobs/sha256/$($NestedDigest.Substring(7))"
-                if (-not $NestedRecords.Values.ContainsKey($NestedName)) {
-                    # Docker 29 can retain the source index while exporting only
-                    # the manifest blob for the selected local platform.
-                    continue
-                }
-                $NestedBytes = [byte[]]$NestedRecords.Values[$NestedName]
-                if ("sha256:$(Get-Sha256Bytes $NestedBytes)" -cne $NestedDigest) {
-                    Fail "Archive nested descriptor digest mismatch: $ArchivePath"
-                }
-                try {
-                    $NestedValue = [Text.Encoding]::UTF8.GetString(
-                        $NestedBytes
-                    ) | ConvertFrom-Json
-                } catch {
-                    Fail "Archive nested descriptor is invalid JSON: $ArchivePath"
-                }
-                if ([string]$NestedValue.config.digest -cne $ConfigDigest) {
-                    continue
-                }
-                if ($null -ne $NestedDescriptor.platform -and
-                    ($NestedDescriptor.platform.os -cne $Config.os -or
-                        $NestedDescriptor.platform.architecture -cne $Config.architecture)) {
-                    Fail "Archive nested descriptor platform mismatch: $ArchivePath"
-                }
-                $MatchingNested += $NestedDigest
-            }
-            if ($MatchingNested.Count -ne 1) {
-                Fail "Archive descriptor/config digest mismatch: $ArchivePath"
+            $DescriptorDigest = [string]$Descriptor.digest
+            [byte[]]$DescriptorBytes = Read-ArchiveSha256Blob `
+                $ArchivePath $DescriptorDigest "descriptor"
+            $DescriptorValue = ConvertFrom-ArchiveJsonObject `
+                $DescriptorBytes $ArchivePath "descriptor"
+            $Resolved = Resolve-MainManifestDigest `
+                $ArchivePath $DescriptorDigest $DescriptorValue $ConfigDigest $Config
+            $LoadedDescriptors += [PSCustomObject]@{
+                Descriptor = $Descriptor
+                Digest = $DescriptorDigest
+                Value = $DescriptorValue
+                Resolved = $Resolved
             }
         }
-        $ImageId = $DescriptorDigest
+        $MainDescriptors = @($LoadedDescriptors | Where-Object { $null -ne $_.Resolved })
+        if ($MainDescriptors.Count -ne 1) {
+            Fail "Archive main descriptor is not unique: $ArchivePath"
+        }
+        $ImageId = [string]$MainDescriptors[0].Digest
+        $MainManifestDigest = [string]$MainDescriptors[0].Resolved
+        foreach ($Loaded in $LoadedDescriptors) {
+            if ($null -eq $Loaded.Resolved) {
+                Test-ProvenanceAttachment `
+                    $ArchivePath $Loaded.Descriptor $Loaded.Value $MainManifestDigest
+            }
+        }
     }
     return [PSCustomObject]@{
         ImageId = $ImageId
