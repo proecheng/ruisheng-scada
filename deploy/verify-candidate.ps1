@@ -8,20 +8,146 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$PackageRoot = (Resolve-Path -LiteralPath $PackagePath).Path.TrimEnd("\", "/")
-$ComposeEnvPath = if ([string]::IsNullOrWhiteSpace($SiteEnvPath)) {
-    Join-Path $PackageRoot ".env.prod.example"
-} else {
-    (Resolve-Path -LiteralPath $SiteEnvPath).Path
+function Fail([string]$Message) {
+    throw "[verify] $Message"
 }
-$ManifestPath = Join-Path $PackageRoot "MANIFEST.json"
-$Manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $ManifestPath | ConvertFrom-Json
+
+function Get-ApprovedTrustSids([switch]$AllowTrustedInstaller) {
+    $AllowedSids = @("S-1-5-18", "S-1-5-32-544")
+    if ($AllowTrustedInstaller) {
+        $AllowedSids += "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+    }
+    return $AllowedSids
+}
+
+function Assert-ProtectedTrustAcl(
+    [string]$Path, [string]$Label = "trust path", [switch]$AllowTrustedInstaller
+) {
+    $Item = Get-Item -Force -LiteralPath $Path -ErrorAction Stop
+    if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail "publisher authenticity FAILED: $Label is linked"
+    }
+    $AllowedSids = Get-ApprovedTrustSids -AllowTrustedInstaller:$AllowTrustedInstaller
+    $Acl = Get-Acl -LiteralPath $Path
+    $OwnerSid = ([Security.Principal.NTAccount]$Acl.Owner).Translate(
+        [Security.Principal.SecurityIdentifier]
+    ).Value
+    if ($OwnerSid -notin $AllowedSids) {
+        Fail "publisher authenticity FAILED: $Label has an unapproved owner: $OwnerSid"
+    }
+    $UnsafeRights = [Security.AccessControl.FileSystemRights]::CreateFiles -bor
+        [Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+        [Security.AccessControl.FileSystemRights]::AppendData -bor
+        [Security.AccessControl.FileSystemRights]::WriteData -bor
+        [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($Rule in $Acl.Access) {
+        $Sid = $Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+        if ($Rule.AccessControlType -eq "Allow" -and
+            ($Rule.FileSystemRights -band $UnsafeRights) -ne 0 -and $Sid -notin $AllowedSids) {
+            Fail "publisher authenticity FAILED: $Label is writable by $Sid"
+        }
+    }
+}
+
+function Assert-ProtectedTrustAncestors(
+    [string]$Path, [string]$Label, [switch]$AllowTrustedInstaller
+) {
+    $AllowedSids = Get-ApprovedTrustSids -AllowTrustedInstaller:$AllowTrustedInstaller
+    $Current = (Get-Item -Force -LiteralPath $Path -ErrorAction Stop).Parent
+    $UnsafeParentRights = [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    while ($null -ne $Current) {
+        if (($Current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Fail "publisher authenticity FAILED: $Label ancestor is linked"
+        }
+        $Acl = Get-Acl -LiteralPath $Current.FullName
+        $OwnerSid = ([Security.Principal.NTAccount]$Acl.Owner).Translate(
+            [Security.Principal.SecurityIdentifier]
+        ).Value
+        if ($OwnerSid -notin $AllowedSids) {
+            Fail "publisher authenticity FAILED: $Label ancestor has an unapproved owner"
+        }
+        foreach ($Rule in $Acl.Access) {
+            if (($Rule.PropagationFlags -band
+                    [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
+                continue
+            }
+            $Sid = $Rule.IdentityReference.Translate(
+                [Security.Principal.SecurityIdentifier]
+            ).Value
+            if ($Rule.AccessControlType -eq "Allow" -and
+                ($Rule.FileSystemRights -band $UnsafeParentRights) -ne 0 -and
+                $Sid -notin $AllowedSids) {
+                Fail "publisher authenticity FAILED: $Label ancestor permits replacement by $Sid"
+            }
+        }
+        $Current = $Current.Parent
+    }
+}
+
+function Set-ProtectedSnapshotAcl([string]$Path) {
+    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $OwnerSidValue = if ($Identity.User.Value -eq "S-1-5-18") {
+        "S-1-5-18"
+    } else {
+        "S-1-5-32-544"
+    }
+    $Security = [Security.AccessControl.DirectorySecurity]::new()
+    $Security.SetAccessRuleProtection($true, $false)
+    $Security.SetOwner([Security.Principal.SecurityIdentifier]::new($OwnerSidValue))
+    $Inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $Propagation = [Security.AccessControl.PropagationFlags]::None
+    foreach ($SidValue in @("S-1-5-18", "S-1-5-32-544")) {
+        $Sid = [Security.Principal.SecurityIdentifier]::new($SidValue)
+        $Rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $Sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $Inheritance,
+            $Propagation,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$Security.AddAccessRule($Rule)
+    }
+    Set-Acl -LiteralPath $Path -AclObject $Security
+}
+
+function New-ProtectedSnapshotRoot([string]$Prefix) {
+    $RuishengRoot = "C:\ProgramData\Ruisheng"
+    Assert-ProtectedTrustAcl $RuishengRoot "snapshot base"
+    Assert-ProtectedTrustAncestors $RuishengRoot "snapshot base" -AllowTrustedInstaller
+    $WorkRoot = Join-Path $RuishengRoot "work"
+    if (-not (Test-Path -LiteralPath $WorkRoot)) {
+        [void](New-Item -ItemType Directory -LiteralPath $WorkRoot)
+    }
+    $WorkItem = Get-Item -Force -LiteralPath $WorkRoot -ErrorAction Stop
+    if (-not $WorkItem.PSIsContainer -or
+        ($WorkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail "publisher authenticity FAILED: snapshot work directory is missing or linked"
+    }
+    Set-ProtectedSnapshotAcl $WorkRoot
+    Assert-ProtectedTrustAcl $WorkRoot "snapshot work directory"
+    Assert-ProtectedTrustAncestors $WorkRoot "snapshot work directory" -AllowTrustedInstaller
+    $Snapshot = Join-Path $WorkRoot ($Prefix + [Guid]::NewGuid().ToString("N"))
+    [void](New-Item -ItemType Directory -LiteralPath $Snapshot)
+    Set-ProtectedSnapshotAcl $Snapshot
+    return $Snapshot
+}
+
 $Components = @("postgres", "redis", "api", "gw", "web")
 $FixedFiles = @(
     ".env.prod.example",
     "MANIFEST.json",
     "MANIFEST.md",
     "SHA256SUMS",
+    "SHA256SUMS.sig",
     "docker-compose.prod.yml",
     "nginx.conf",
     "site-acceptance-profile.md.example",
@@ -32,11 +158,318 @@ $FixedFiles = @(
     "verify-candidate.ps1",
     "verify-candidate.sh"
 )
-
-function Fail([string]$Message) {
-    throw "[verify] $Message"
+$SnapshotExpectedFiles = [System.Collections.Generic.HashSet[string]]::new(
+    [string[]]$FixedFiles, [System.StringComparer]::Ordinal
+)
+foreach ($Component in $Components) {
+    [void]$SnapshotExpectedFiles.Add("images/$Component.tar.gz")
 }
 
+$PackageItem = Get-Item -Force -LiteralPath $PackagePath -ErrorAction Stop
+if (-not $PackageItem.PSIsContainer -or
+    ($PackageItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    Fail "publisher authenticity FAILED: candidate directory is missing or linked"
+}
+$SourcePackageRoot = $PackageItem.FullName.TrimEnd("\", "/")
+$CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$CurrentPrincipal = [Security.Principal.WindowsPrincipal]::new($CurrentIdentity)
+if ($CurrentIdentity.User.Value -ne "S-1-5-18" -and -not $CurrentPrincipal.IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)) {
+    Fail "publisher authenticity FAILED: verifier must run elevated to protect its snapshot"
+}
+$SnapshotRoot = New-ProtectedSnapshotRoot "verified-candidate-"
+try {
+    [void](New-Item -ItemType Directory -LiteralPath (Join-Path $SnapshotRoot "images"))
+    $DockerConfig = Join-Path $SnapshotRoot "docker-config"
+    [void](New-Item -ItemType Directory -LiteralPath $DockerConfig)
+    Set-ProtectedSnapshotAcl $DockerConfig
+    [IO.File]::WriteAllText((Join-Path $DockerConfig "config.json"), "{}`n", [Text.Encoding]::ASCII)
+    $env:DOCKER_CONFIG = $DockerConfig
+    Remove-Item Env:DOCKER_CLI_PLUGIN_EXTRA_DIRS -ErrorAction SilentlyContinue
+    Remove-Item Env:DOCKER_HOST -ErrorAction SilentlyContinue
+    Remove-Item Env:DOCKER_CONTEXT -ErrorAction SilentlyContinue
+
+    $SnapshotActualFiles = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    Get-ChildItem -LiteralPath $SourcePackageRoot -Force -Recurse | ForEach-Object {
+        $Relative = $_.FullName.Substring($SourcePackageRoot.Length).
+            TrimStart("\", "/").Replace("\", "/")
+        if (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Fail "publisher authenticity FAILED: candidate contains a link: $Relative"
+        }
+        if ($_.PSIsContainer) {
+            if ($Relative -cne "images") {
+                Fail "publisher authenticity FAILED: candidate contains an extra directory: $Relative"
+            }
+        } else {
+            [void]$SnapshotActualFiles.Add($Relative)
+        }
+    }
+    $SnapshotMissing = @($SnapshotExpectedFiles | Where-Object {
+        -not $SnapshotActualFiles.Contains($_)
+    })
+    $SnapshotExtra = @($SnapshotActualFiles | Where-Object {
+        -not $SnapshotExpectedFiles.Contains($_)
+    })
+    if ($SnapshotMissing.Count -ne 0 -or $SnapshotExtra.Count -ne 0) {
+        Fail "publisher authenticity FAILED: candidate file allowlist mismatch: missing=$($SnapshotMissing -join ','), extra=$($SnapshotExtra -join ',')"
+    }
+    $SourceLengths = @{}
+    [Int64]$SnapshotBytes = 0
+    foreach ($Relative in $SnapshotExpectedFiles) {
+        $SourcePath = Join-Path $SourcePackageRoot $Relative
+        $SourceItem = Get-Item -Force -LiteralPath $SourcePath -ErrorAction Stop
+        if ($SourceItem.PSIsContainer -or
+            ($SourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Fail "publisher authenticity FAILED: candidate file changed or linked: $Relative"
+        }
+        $SourceLengths[$Relative] = [Int64]$SourceItem.Length
+        $SnapshotBytes += [Int64]$SourceItem.Length
+    }
+    [Int64]$SnapshotReserve = [Math]::Max(64MB, [Int64]($SnapshotBytes / 10))
+    $SnapshotDrive = (Get-Item -LiteralPath $SnapshotRoot -ErrorAction Stop).PSDrive
+    if ($null -eq $SnapshotDrive -or $SnapshotDrive.Free -lt ($SnapshotBytes + $SnapshotReserve)) {
+        Fail "publisher authenticity FAILED: insufficient free space for protected candidate snapshot"
+    }
+    foreach ($Relative in $SnapshotExpectedFiles) {
+        $SourcePath = Join-Path $SourcePackageRoot $Relative
+        $DestinationPath = Join-Path $SnapshotRoot $Relative
+        $SourceItem = Get-Item -Force -LiteralPath $SourcePath -ErrorAction Stop
+        if ($SourceItem.PSIsContainer -or
+            ($SourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Fail "publisher authenticity FAILED: candidate file changed or linked: $Relative"
+        }
+        $InputStream = $null
+        $OutputStream = $null
+        try {
+            $InputStream = [IO.File]::Open(
+                $SourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read
+            )
+            [Int64]$ExpectedLength = $SourceLengths[$Relative]
+            if ($InputStream.Length -ne $ExpectedLength) {
+                Fail "publisher authenticity FAILED: candidate file changed before snapshot: $Relative"
+            }
+            $OutputStream = [IO.File]::Open(
+                $DestinationPath,
+                [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write,
+                [IO.FileShare]::None
+            )
+            $Buffer = [byte[]]::new(1MB)
+            [Int64]$Copied = 0
+            while ($Copied -lt $ExpectedLength) {
+                $ReadLength = [int][Math]::Min($Buffer.Length, $ExpectedLength - $Copied)
+                $Read = $InputStream.Read($Buffer, 0, $ReadLength)
+                if ($Read -le 0) { break }
+                $OutputStream.Write($Buffer, 0, $Read)
+                $Copied += $Read
+            }
+            if ($Copied -ne $ExpectedLength -or $InputStream.ReadByte() -ne -1) {
+                Fail "publisher authenticity FAILED: candidate file size changed during snapshot: $Relative"
+            }
+        } finally {
+            if ($null -ne $OutputStream) { $OutputStream.Dispose() }
+            if ($null -ne $InputStream) { $InputStream.Dispose() }
+        }
+    }
+    $PackageRoot = $SnapshotRoot
+$ComposeEnvPath = if ([string]::IsNullOrWhiteSpace($SiteEnvPath)) {
+    Join-Path $PackageRoot ".env.prod.example"
+} else {
+    (Resolve-Path -LiteralPath $SiteEnvPath).Path
+}
+$TrustInput = Get-Item -Force -LiteralPath "C:\ProgramData\Ruisheng\trust" -ErrorAction Stop
+if (-not $TrustInput.PSIsContainer -or
+    ($TrustInput.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    Fail "publisher authenticity FAILED: external trust directory is missing or linked"
+}
+$TrustRoot = $TrustInput.FullName.TrimEnd("\", "/")
+if ($TrustRoot -eq $SourcePackageRoot -or
+    $TrustRoot.StartsWith("$SourcePackageRoot\", [StringComparison]::OrdinalIgnoreCase)) {
+    Fail "publisher authenticity FAILED: trust directory must be outside the candidate package"
+}
+$AllowedSigners = Join-Path $TrustRoot "release-allowed-signers"
+$FingerprintPath = Join-Path $TrustRoot "release-key-fingerprint"
+Assert-ProtectedTrustAcl $TrustRoot "trust directory"
+Assert-ProtectedTrustAncestors $TrustRoot "trust directory" -AllowTrustedInstaller
+foreach ($TrustFile in @($AllowedSigners, $FingerprintPath)) {
+    $Item = Get-Item -Force -LiteralPath $TrustFile -ErrorAction Stop
+    if ($Item.PSIsContainer -or ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail "publisher authenticity FAILED: trust file is missing or linked"
+    }
+    Assert-ProtectedTrustAcl $TrustFile "trust file"
+}
+$Ascii = [Text.Encoding]::ASCII
+$AllowedText = $Ascii.GetString([IO.File]::ReadAllBytes($AllowedSigners))
+if ($AllowedText -cnotmatch '^ruisheng-release ssh-ed25519 ([A-Za-z0-9+/]+={0,2})\n$') {
+    Fail "publisher authenticity FAILED: release-allowed-signers is not the approved single identity"
+}
+try { [byte[]]$KeyBlob = [Convert]::FromBase64String($Matches[1]) } catch {
+    Fail "publisher authenticity FAILED: release public key is not valid base64"
+}
+function Read-SshString([byte[]]$Value, [ref]$Offset) {
+    if ($Value.Length - $Offset.Value -lt 4) {
+        Fail "publisher authenticity FAILED: release public key blob is truncated"
+    }
+    $Length = [Net.IPAddress]::NetworkToHostOrder(
+        [BitConverter]::ToInt32($Value, $Offset.Value)
+    )
+    $Offset.Value += 4
+    if ($Length -lt 0 -or $Value.Length - $Offset.Value -lt $Length) {
+        Fail "publisher authenticity FAILED: release public key blob is truncated"
+    }
+    [byte[]]$Result = $Value[$Offset.Value..($Offset.Value + $Length - 1)]
+    $Offset.Value += $Length
+    return $Result
+}
+$KeyOffset = 0
+$KeyTypeBytes = Read-SshString $KeyBlob ([ref]$KeyOffset)
+$PublicKeyBytes = Read-SshString $KeyBlob ([ref]$KeyOffset)
+if ($Ascii.GetString($KeyTypeBytes) -cne "ssh-ed25519" -or
+    $PublicKeyBytes.Length -ne 32 -or $KeyOffset -ne $KeyBlob.Length) {
+    Fail "publisher authenticity FAILED: release public key is not canonical ssh-ed25519"
+}
+$Hasher = [Security.Cryptography.SHA256]::Create()
+try {
+    $DerivedFingerprint = "SHA256:" + [Convert]::ToBase64String(
+        $Hasher.ComputeHash($KeyBlob)
+    ).TrimEnd("=")
+} finally { $Hasher.Dispose() }
+$FingerprintText = $Ascii.GetString([IO.File]::ReadAllBytes($FingerprintPath))
+if ($FingerprintText -cne "$DerivedFingerprint`n") {
+    Fail "publisher authenticity FAILED: fingerprint does not match allowed-signers"
+}
+$SumsPath = Join-Path $PackageRoot "SHA256SUMS"
+$SignaturePath = Join-Path $PackageRoot "SHA256SUMS.sig"
+foreach ($SignedFile in @($SumsPath, $SignaturePath)) {
+    $Item = Get-Item -Force -LiteralPath $SignedFile -ErrorAction Stop
+    if ($Item.PSIsContainer -or ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail "publisher authenticity FAILED: signed object or signature is linked"
+    }
+}
+$SignatureText = $Ascii.GetString([IO.File]::ReadAllBytes($SignaturePath))
+if ($SignatureText -cnotmatch '^-----BEGIN SSH SIGNATURE-----\n((?:[A-Za-z0-9+/]+={0,2}\n)+)-----END SSH SIGNATURE-----\n$') {
+    Fail "publisher authenticity FAILED: SSH signature armor is not canonical"
+}
+try { [byte[]]$DecodedSignature = [Convert]::FromBase64String($Matches[1].Replace("`n", "")) } catch {
+    Fail "publisher authenticity FAILED: SSH signature armor is invalid base64"
+}
+if ($DecodedSignature.Length -lt 6 -or
+    $Ascii.GetString($DecodedSignature[0..5]) -cne "SSHSIG") {
+    Fail "publisher authenticity FAILED: SSH signature payload is invalid"
+}
+$EncodedSignature = [Convert]::ToBase64String($DecodedSignature)
+$CanonicalLines = for ($Offset = 0; $Offset -lt $EncodedSignature.Length; $Offset += 70) {
+    $EncodedSignature.Substring($Offset, [Math]::Min(70, $EncodedSignature.Length - $Offset))
+}
+$CanonicalSignature = "-----BEGIN SSH SIGNATURE-----`n" +
+    ($CanonicalLines -join "`n") + "`n-----END SSH SIGNATURE-----`n"
+if ($SignatureText -cne $CanonicalSignature) {
+    Fail "publisher authenticity FAILED: SSH signature armor is not canonical"
+}
+$SshKeygen = Join-Path ([Environment]::SystemDirectory) "OpenSSH\ssh-keygen.exe"
+if (-not (Test-Path -LiteralPath $SshKeygen -PathType Leaf)) {
+    Fail "publisher authenticity FAILED: system OpenSSH ssh-keygen is required"
+}
+Assert-ProtectedTrustAcl $SshKeygen "system ssh-keygen" -AllowTrustedInstaller
+Assert-ProtectedTrustAncestors $SshKeygen "system ssh-keygen" -AllowTrustedInstaller
+$Docker = Join-Path (
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+) "Docker\Docker\resources\bin\docker.exe"
+$DockerLabel = "Docker CLI"
+if (-not (Test-Path -LiteralPath $Docker -PathType Leaf)) {
+        Fail "publisher authenticity FAILED: fixed $DockerLabel is required"
+    }
+Assert-ProtectedTrustAcl $Docker "system $DockerLabel" -AllowTrustedInstaller
+Assert-ProtectedTrustAncestors $Docker "system $DockerLabel" -AllowTrustedInstaller
+$Start = [Diagnostics.ProcessStartInfo]::new()
+$Start.FileName = $SshKeygen
+$Start.UseShellExecute = $false
+$Start.RedirectStandardInput = $true
+$Start.RedirectStandardOutput = $true
+$Start.RedirectStandardError = $true
+foreach ($Argument in @("-Y", "verify", "-f", $AllowedSigners, "-I", "ruisheng-release", "-n", "ruisheng-candidate-v1", "-s", $SignaturePath)) {
+    [void]$Start.ArgumentList.Add($Argument)
+}
+$Process = [Diagnostics.Process]::Start($Start)
+$SshOutputTask = $Process.StandardOutput.ReadToEndAsync()
+$SshErrorTask = $Process.StandardError.ReadToEndAsync()
+[byte[]]$SumsBytes = [IO.File]::ReadAllBytes($SumsPath)
+$Process.StandardInput.BaseStream.Write($SumsBytes, 0, $SumsBytes.Length)
+$Process.StandardInput.Close()
+if (-not $Process.WaitForExit(30000)) {
+    $Process.Kill($true)
+    $Process.WaitForExit()
+    Fail "publisher authenticity FAILED: OpenSSH signature verification timed out"
+}
+$SshError = $SshErrorTask.GetAwaiter().GetResult()
+$SshOutputTask.GetAwaiter().GetResult() | Out-Null
+if ($Process.ExitCode -ne 0) {
+    Fail "publisher authenticity FAILED: OpenSSH signature verification failed: $($SshError.Trim())"
+}
+$AuthenticatedSums = @{}
+try {
+    $AuthenticatedSumsText = [Text.UTF8Encoding]::new($false, $true).GetString($SumsBytes)
+} catch {
+    Fail "publisher authenticity FAILED: SHA256SUMS is not valid UTF-8"
+}
+if (-not $AuthenticatedSumsText.EndsWith("`n") -or $AuthenticatedSumsText.Contains("`r")) {
+    Fail "publisher authenticity FAILED: SHA256SUMS must use canonical LF line endings"
+}
+$AuthenticatedLineNumber = 0
+($AuthenticatedSumsText.Substring(0, $AuthenticatedSumsText.Length - 1) -csplit "`n") |
+    ForEach-Object {
+        $AuthenticatedLineNumber++
+        if ($_ -cnotmatch '^([0-9a-f]{64})  ([^\\]+)$') {
+            Fail "publisher authenticity FAILED: invalid SHA256SUMS entry at line $AuthenticatedLineNumber"
+        }
+        $Relative = $Matches[2]
+        $Parts = $Relative.Split("/")
+        if ($Relative.StartsWith("/") -or $Parts.Contains("") -or
+            $Parts.Contains(".") -or $Parts.Contains("..")) {
+            Fail "publisher authenticity FAILED: unsafe SHA256SUMS path: $Relative"
+        }
+        if ($AuthenticatedSums.ContainsKey($Relative)) {
+            Fail "publisher authenticity FAILED: duplicate SHA256SUMS path: $Relative"
+        }
+        $AuthenticatedSums[$Relative] = $Matches[1]
+    }
+if (-not $AuthenticatedSums.ContainsKey("MANIFEST.json")) {
+    Fail "publisher authenticity FAILED: MANIFEST.json is absent from SHA256SUMS"
+}
+$ManifestPath = Join-Path $PackageRoot "MANIFEST.json"
+$ManifestBytes = [IO.File]::ReadAllBytes($ManifestPath)
+$ManifestHasher = [Security.Cryptography.SHA256]::Create()
+try {
+    $ManifestDigest = ([BitConverter]::ToString(
+        $ManifestHasher.ComputeHash($ManifestBytes)
+    )).Replace("-", "").ToLowerInvariant()
+} finally { $ManifestHasher.Dispose() }
+if ($ManifestDigest -cne $AuthenticatedSums["MANIFEST.json"]) {
+    Fail "publisher authenticity FAILED: SHA-256 mismatch for MANIFEST.json"
+}
+try {
+    $Manifest = [Text.UTF8Encoding]::new($false, $true).GetString($ManifestBytes) |
+        ConvertFrom-Json
+} catch {
+    Fail "publisher authenticity FAILED: cannot parse authenticated MANIFEST.json"
+}
+$ExpectedAuthenticity = @{
+    status = "SIGNED"; scheme = "openssh-sshsig"; publisher = "ruisheng-release"
+    namespace = "ruisheng-candidate-v1"; key_type = "ssh-ed25519"
+    key_fingerprint = $DerivedFingerprint; signed_object = "SHA256SUMS"
+    signature_file = "SHA256SUMS.sig"
+}
+if ($Manifest.schema_version -ne 2 -or
+    @($Manifest.authenticity.PSObject.Properties).Count -ne $ExpectedAuthenticity.Count -or
+    @($ExpectedAuthenticity.Keys | Where-Object {
+        $Manifest.authenticity.PSObject.Properties.Name -cnotcontains $_ -or
+        $Manifest.authenticity.$_ -cne $ExpectedAuthenticity[$_]
+    }).Count -ne 0) {
+    Fail "publisher authenticity FAILED: signed manifest authenticity contract is invalid"
+}
 function Test-SafeRelativePath([string]$Value) {
     $Parts = $Value.Split("/")
     if ([string]::IsNullOrWhiteSpace($Value) -or $Value.Contains("\") -or
@@ -414,8 +847,8 @@ function Get-DockerArchiveIdentity([string]$ArchivePath, [string]$ExpectedRefere
 if ($Manifest.candidate_id -notmatch '^[a-z0-9][a-z0-9._-]{0,62}$') {
     Fail "Invalid candidate ID"
 }
-if ($Manifest.authenticity.status -ne "BLOCKED") {
-    Fail "Manifest removed the publisher-authenticity BLOCKED gate"
+if ($Manifest.schema_version -ne 2 -or $Manifest.authenticity.status -ne "SIGNED") {
+    Fail "Manifest authenticity contract is invalid"
 }
 if (@($Manifest.images).Count -ne 5) {
     Fail "Manifest must contain five images"
@@ -470,34 +903,22 @@ Get-ChildItem -LiteralPath $PackageRoot -Force -Recurse | ForEach-Object {
 $Missing = @($ExpectedFiles | Where-Object { -not $ActualFiles.Contains($_) })
 $Extra = @($ActualFiles | Where-Object { -not $ExpectedFiles.Contains($_) })
 if ($Missing.Count -ne 0 -or $Extra.Count -ne 0) {
-    Fail "Candidate file allowlist mismatch: missing=$($Missing -join ','), extra=$($Extra -join ',')"
+    Fail "publisher authenticity FAILED: candidate file allowlist mismatch: missing=$($Missing -join ','), extra=$($Extra -join ',')"
 }
 
-$Sums = @{}
-$LineNumber = 0
-Get-Content -Encoding UTF8 -LiteralPath (Join-Path $PackageRoot "SHA256SUMS") | ForEach-Object {
-    $LineNumber++
-    if ($_ -notmatch '^([0-9a-f]{64})  (.+)$') {
-        Fail "Invalid SHA256SUMS entry at line $LineNumber"
-    }
-    $Digest = $Matches[1]
-    $Relative = $Matches[2]
-    Test-SafeRelativePath $Relative
-    if ($Sums.ContainsKey($Relative)) {
-        Fail "Duplicate SHA256SUMS path: $Relative"
-    }
-    $Sums[$Relative] = $Digest
-}
-$ExpectedSums = @($ExpectedFiles | Where-Object { $_ -ne "SHA256SUMS" })
+$Sums = $AuthenticatedSums
+$ExpectedSums = @($ExpectedFiles | Where-Object {
+    $_ -ne "SHA256SUMS" -and $_ -ne "SHA256SUMS.sig"
+})
 $MissingSums = @($ExpectedSums | Where-Object { -not $Sums.ContainsKey($_) })
 $ExtraSums = @($Sums.Keys | Where-Object { -not $ExpectedFiles.Contains($_) })
 if ($Sums.Count -ne $ExpectedSums.Count -or $MissingSums.Count -ne 0 -or $ExtraSums.Count -ne 0) {
-    Fail "SHA256SUMS allowlist mismatch: missing=$($MissingSums -join ','), extra=$($ExtraSums -join ',')"
+    Fail "publisher authenticity FAILED: SHA256SUMS allowlist mismatch: missing=$($MissingSums -join ','), extra=$($ExtraSums -join ',')"
 }
 foreach ($Relative in $ExpectedSums) {
     $Actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PackageRoot $Relative)).Hash.ToLowerInvariant()
     if ($Actual -ne $Sums[$Relative]) {
-        Fail "SHA-256 mismatch for ${Relative}: expected $($Sums[$Relative]), got $Actual"
+        Fail "publisher authenticity FAILED: SHA-256 mismatch for ${Relative}: expected $($Sums[$Relative]), got $Actual"
     }
 }
 foreach ($Image in $Manifest.images) {
@@ -513,17 +934,41 @@ foreach ($Image in $Manifest.images) {
     }
 }
 
-Write-Host "[verify] File allowlist, SHA-256, and archive identities passed."
-foreach ($Image in $Manifest.images) {
-    Write-Host "[verify] Loading $($Image.component) from $($Image.archive)"
-    & docker image load --input (Join-Path $PackageRoot $Image.archive) | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Fail "Docker load failed for $($Image.component)"
+$ArchiveHandles = @{}
+try {
+    foreach ($Image in $Manifest.images) {
+        $ArchivePath = Join-Path $PackageRoot $Image.archive
+        $Handle = [IO.File]::Open(
+            $ArchivePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read
+        )
+        $ArchiveHandles[[string]$Image.component] = $Handle
+        $Hasher = [Security.Cryptography.SHA256]::Create()
+        try {
+            $LockedDigest = ([BitConverter]::ToString(
+                $Hasher.ComputeHash($Handle)
+            )).Replace("-", "").ToLowerInvariant()
+        } finally { $Hasher.Dispose() }
+        $Handle.Position = 0
+        if ($LockedDigest -cne $Sums[[string]$Image.archive]) {
+            Fail "publisher authenticity FAILED: archive changed before load: $($Image.archive)"
+        }
+    }
+    Write-Host "[verify] Publisher authenticity VERIFIED; file allowlist, SHA-256, and archive identities passed."
+    foreach ($Image in $Manifest.images) {
+        Write-Host "[verify] Loading $($Image.component) from $($Image.archive)"
+        & $Docker image load --input (Join-Path $PackageRoot $Image.archive) | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Fail "Docker load failed for $($Image.component)"
+        }
+    }
+} finally {
+    foreach ($Handle in $ArchiveHandles.Values) {
+        if ($null -ne $Handle) { $Handle.Dispose() }
     }
 }
 
 foreach ($Image in $Manifest.images) {
-    $Raw = & docker image inspect $Image.candidate_reference --format '{{json .}}'
+    $Raw = & $Docker image inspect $Image.candidate_reference --format '{{json .}}'
     if ($LASTEXITCODE -ne 0) {
         Fail "Docker inspect failed for $($Image.component)"
     }
@@ -541,7 +986,7 @@ $ComposeArgs = @(
     "compose", "--env-file", $ComposeEnvPath,
     "-f", (Join-Path $PackageRoot "docker-compose.prod.yml")
 )
-$ResolvedImages = @(& docker @ComposeArgs config --images | Where-Object { $_ })
+$ResolvedImages = @(& $Docker @ComposeArgs config --images | Where-Object { $_ })
 if ($LASTEXITCODE -ne 0) {
     Fail "Docker Compose image rendering failed"
 }
@@ -554,7 +999,7 @@ $ApiReference = "ruisheng-candidate/api:$($Manifest.candidate_id)"
 if (@($ResolvedImages | Where-Object { $_ -eq $ApiReference }).Count -ne 2) {
     Fail "Compose migrate/api do not share exactly one API image"
 }
-$ComposeConfig = (& docker @ComposeArgs config --format json) | ConvertFrom-Json
+$ComposeConfig = (& $Docker @ComposeArgs config --format json) | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) {
     Fail "Docker Compose config rendering failed"
 }
@@ -585,19 +1030,16 @@ foreach ($Property in $ComposeConfig.services.PSObject.Properties) {
 }
 
 Write-Host "[verify] Integrity and loaded image identity passed."
-if ((Test-Path -LiteralPath (Join-Path (Split-Path $ComposeEnvPath) "site-health-acl.conf")) -and
-    (Test-Path -LiteralPath (Join-Path (Split-Path $ComposeEnvPath) "site-acceptance-profile.md"))) {
-    $SiteDir = Split-Path $ComposeEnvPath
-    & python (Join-Path $PackageRoot "validate-network-boundary.py") `
-        --compose (Join-Path $PackageRoot "docker-compose.prod.yml") `
-        --compose (Join-Path $PackageRoot "site-network.override.yml") `
-        --env-file $ComposeEnvPath `
-        --profile (Join-Path $SiteDir "site-acceptance-profile.md") `
-        --nginx-config (Join-Path $PackageRoot "nginx.conf") `
-        --acl-file (Join-Path $SiteDir "site-health-acl.conf")
-    if ($LASTEXITCODE -ne 0) { Fail "B-04 network boundary validation failed" }
-} else {
-    Write-Warning "B-04 network validation remains BLOCKED until site ACL and Profile are supplied."
-    exit 2
+Write-Host "[verify] Publisher authenticity VERIFIED; CAP-1/G0-03 authenticity gate passed."
+Write-Warning "B-04 remains BLOCKED; close it only through the independent field acceptance workflow."
+exit 2
+} finally {
+    if (Test-Path -LiteralPath $SnapshotRoot) {
+        try {
+            Remove-Item -LiteralPath $SnapshotRoot -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Error "[verify] protected work cleanup failed: ${SnapshotRoot}: $($_.Exception.Message)"
+            throw
+        }
+    }
 }
-Write-Warning "Publisher authenticity is not configured; CAP-1/G0-03 remain BLOCKED."

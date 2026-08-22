@@ -320,7 +320,11 @@ def test_export_script_delegates_atomic_candidate_generation() -> None:
     assert '--candidate-id "$CANDIDATE_ID"' in script
     assert '--target-platform "$TARGET_PLATFORM"' in script
     assert '--env-file "$ENV_FILE"' in script
-    assert '--output-root "$PROJECT_ROOT/dist/deploy"' in script
+    assert 'RELEASE_OUTPUT_ROOT="${RELEASE_OUTPUT_ROOT:-}"' in script
+    assert "RELEASE_OUTPUT_ROOT must name an administrator-protected publish directory." in script
+    assert '--output-root "$RELEASE_OUTPUT_ROOT"' in script
+    assert '--signing-identity "$SIGNING_IDENTITY"' in script
+    assert '--trust-directory "$TRUST_DIRECTORY"' in script
     assert "docker save" not in script
 
 
@@ -345,18 +349,36 @@ def test_verifiers_preserve_integrity_before_load_and_authenticity_block() -> No
     powershell = _read(ROOT / "deploy" / "verify-candidate.ps1")
     guide = _read(ROOT / "deploy" / "setup-customer.md")
 
-    assert bash.index("SHA-256, and archive identities passed") < bash.index("docker image load")
+    assert bash.index("SHA-256, and archive identities passed") < bash.index('"$DOCKER" image load')
     assert powershell.index("SHA-256, and archive identities passed") < powershell.index(
-        "docker image load"
+        "& $Docker image load"
     )
-    for document in (bash, powershell, guide):
+    assert bash.index("Publisher authenticity VERIFIED") < bash.index('"$DOCKER" image load')
+    assert powershell.index("Publisher authenticity VERIFIED") < powershell.index(
+        "& $Docker image load"
+    )
+    bootstrap_bash = _read(ROOT / "tools" / "release_trust" / "verify-publisher.sh")
+    bootstrap_powershell = _read(ROOT / "tools" / "release_trust" / "verify-publisher.ps1")
+    assert "docker image" not in bootstrap_bash
+    assert "docker compose" not in bootstrap_bash
+    assert "& docker" not in bootstrap_powershell
+    for document in (bash, powershell):
         assert "CAP-1/G0-03" in document
         assert "BLOCKED" in document
+        assert "publisher authenticity FAILED" in document
+    assert "B-04" in guide
     assert "不要编辑" in guide
     assert "站点 Compose override" in guide
-    assert guide.count("verify-candidate.sh . ../site/.env.prod") == 2
-    assert "verify-candidate.ps1 . ..\\site\\.env.prod" in guide
-    assert "verify-candidate.ps1 . $Site" in guide
+    assert (
+        guide.count(
+            "sudo /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash "
+            "/usr/local/lib/ruisheng/verify-publisher.sh . ../site/.env.prod"
+        )
+        == 2
+    )
+    assert "verify-publisher.ps1 . ..\\site\\.env.prod" in guide
+    assert "verify-publisher.ps1 . $Site" in guide
+    assert "不要从候选目录直接启动校验器" in guide
     assert "exit 2" in bash
     assert "exit 2" in powershell
     assert "sorted(keys - seen)" in guide
@@ -364,6 +386,129 @@ def test_verifiers_preserve_integrity_before_load_and_authenticity_block() -> No
     for line in guide.splitlines():
         if line.startswith("docker compose"):
             assert "--env-file" in line
+
+
+def test_release_verifiers_pin_trust_tools_and_authentication_order() -> None:
+    bash = _read(ROOT / "deploy" / "verify-candidate.sh")
+    powershell = _read(ROOT / "deploy" / "verify-candidate.ps1")
+    bootstrap_bash = _read(ROOT / "tools" / "release_trust" / "verify-publisher.sh")
+    bootstrap_powershell = _read(ROOT / "tools" / "release_trust" / "verify-publisher.ps1")
+    guide = _read(ROOT / "deploy" / "setup-customer.md")
+
+    assert 'TRUST_DIR_INPUT="/etc/ruisheng/trust"' in bash
+    assert 'TRUST_INPUT="/etc/ruisheng/trust"' in bootstrap_bash
+    assert "${3:-" not in bash
+    assert 'TRUST_INPUT="${2:-' not in bootstrap_bash
+    assert "TrustDirectory" not in powershell
+    assert "TrustDirectory" not in bootstrap_powershell
+    for script in (bash, bootstrap_bash):
+        assert 'PYTHON="/usr/bin/python3"' in script
+        assert 'SSH_KEYGEN="/usr/bin/ssh-keygen"' in script
+        assert "st_uid != 0" in script
+        assert "encoded_signature[offset:offset + 70]" in script or (
+            "encoded_signature[index:index + 70]" in script
+        )
+    assert "os.geteuid" not in bash
+    assert "if os.geteuid() != 0:" in bootstrap_bash
+    assert (
+        "sudo /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash "
+        "/usr/local/lib/ruisheng/verify-publisher.sh"
+    ) in guide
+    for script in (powershell, bootstrap_powershell):
+        assert "[Environment]::SystemDirectory" in script
+        assert "Get-Command ssh-keygen" not in script
+        assert "$Offset += 70" in script
+    assert 'tempfile.mkdtemp(prefix="publisher-snapshot-", dir=work)' in bootstrap_bash
+    assert 'str(package / "verify-candidate.sh")' in bootstrap_bash
+    assert "candidate_verifier_bytes" not in bootstrap_bash
+    assert 'New-ProtectedSnapshotRoot "publisher-snapshot-"' in bootstrap_powershell
+    assert (
+        '$CandidateVerifier = Join-Path $PackageRoot "verify-candidate.ps1"' in bootstrap_powershell
+    )
+    assert "$CandidateVerifierBytes" not in bootstrap_powershell
+    assert 'WORK_ROOT="/var/lib/ruisheng/work"' in bash
+    assert 'WORK_DIR="$("$PYTHON" -I -S - "$WORK_ROOT"' in bash
+    assert "MKTEMP=" not in bash
+    assert 'PACKAGE_DIR="$WORK_DIR/candidate"' in bash
+    assert 'New-ProtectedSnapshotRoot "verified-candidate-"' in powershell
+    assert "$PackageRoot = $SnapshotRoot" in powershell
+    assert (
+        'Assert-ProtectedTrustAncestors $SshKeygen "system ssh-keygen" -AllowTrustedInstaller'
+    ) in powershell
+    assert bash.rindex("sums_bytes = sums_path.read_bytes()") < bash.rindex(
+        "manifest = json.loads(manifest_bytes.decode"
+    )
+    assert powershell.index("$ManifestDigest -cne $AuthenticatedSums") < powershell.index(
+        "$Manifest = [Text.UTF8Encoding]"
+    )
+    assert "$NetworkExitCode" not in powershell
+    assert "$PythonLauncher" not in powershell
+    assert "independent field acceptance workflow" in bash
+    assert "independent field acceptance workflow" in powershell
+
+
+def test_release_verifiers_protect_privileged_execution_environment() -> None:
+    bash = _read(ROOT / "deploy" / "verify-candidate.sh")
+    powershell = _read(ROOT / "deploy" / "verify-candidate.ps1")
+    bootstrap_bash = _read(ROOT / "tools" / "release_trust" / "verify-publisher.sh")
+    bootstrap_powershell = _read(ROOT / "tools" / "release_trust" / "verify-publisher.ps1")
+
+    for script in (powershell, bootstrap_powershell):
+        assert "[IO.Path]::GetTempPath()" not in script
+        assert '"C:\\ProgramData\\Ruisheng"' in script
+        assert 'foreach ($SidValue in @("S-1-5-18", "S-1-5-32-544"))' in script
+        assert '"S-1-5-32-544", $Identity.User.Value' not in script
+        assert "DeleteSubdirectoriesAndFiles" in script
+        assert "WaitForExit(30000)" in script
+        assert "FileSystemRights]::Write -bor" not in script
+        assert "FileSystemRights]::Modify -bor" not in script
+        assert "FileSystemRights]::FullControl" in script
+        assert "PropagationFlags]::InheritOnly" in script
+    assert "$Docker = Join-Path" in powershell
+    assert '$DockerConfig = Join-Path $SnapshotRoot "docker-config"' in powershell
+    assert "Remove-Item Env:DOCKER_CLI_PLUGIN_EXTRA_DIRS" in powershell
+    for script in (powershell, bootstrap_powershell):
+        assert "Remove-Item Env:DOCKER_HOST" in script
+        assert "Remove-Item Env:DOCKER_CONTEXT" in script
+    assert "insufficient free space for protected candidate snapshot" in powershell
+    assert "$InputStream.ReadByte() -ne -1" in powershell
+    for script in (bash, bootstrap_bash):
+        assert 'PATH="/usr/bin:/bin"' in script
+        assert "unset BASH_ENV ENV CDPATH PYTHONHOME PYTHONPATH" in script
+        assert "DOCKER_CLI_PLUGIN_EXTRA_DIRS" in script
+        assert "DOCKER_HOST DOCKER_CONTEXT" in script
+        assert '"$PYTHON" -I -S' in script
+    assert '"DOCKER_CONFIG": str(run_root / "docker-config")' in bootstrap_bash
+    assert '"PATH": "/usr/bin:/bin", "LANG": "C", "HOME": "/root",' in bootstrap_bash
+    assert 'DOCKER_CONFIG="$WORK_DIR/docker-config"' in bash
+    assert "shutil.disk_usage(snapshot.parent).free < total_size + reserve" in bash
+    assert "input_stream.read(1)" in bash
+    assert "shutil.disk_usage(work).free < total_size + reserve" in bootstrap_bash
+    assert "input_stream.read(1)" in bootstrap_bash
+    implementation = _read(ROOT / "tools" / "release_artifacts.py")
+    assert 'workdir = Path("/var/lib/ruisheng/work")' in implementation
+    assert "snapshot_parent = _system_protected_workdir()" in implementation
+
+
+def test_builder_publishes_the_authenticated_snapshot() -> None:
+    implementation = _read(ROOT / "tools" / "release_artifacts.py")
+
+    assert 'identity_snapshot = package / ".release-signing-identity.pub"' in implementation
+    assert "with _protected_candidate_snapshot(" in implementation
+    verification = implementation.index("_verify_snapshot_contents(")
+    publication = implementation.index("os.replace(verified_snapshot, final_directory)")
+    assert verification < implementation.index("verified_snapshot", verification) < publication
+    assert "os.replace(temporary_directory, final_directory)" not in implementation
+    assert "allowed_signers_bytes: bytes" in implementation
+    assert (
+        'anchor_copy = package.parent / f".approved-allowed-signers-{uuid.uuid4().hex}"'
+        in implementation
+    )
+    assert "output.write(trust.allowed_signers_bytes)" in implementation
+    assert "shutil.disk_usage(snapshot_parent).free < total_size + reserve" in implementation
+    assert 'os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)' in implementation
+    assert "input_stream.read(1)" in implementation
+    assert "protected candidate snapshot cleanup failed" in implementation
 
 
 @pytest.mark.parametrize("compose_path", COMPOSE_FILES)

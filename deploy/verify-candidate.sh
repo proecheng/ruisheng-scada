@@ -1,38 +1,368 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
+PATH="/usr/bin:/bin"
+export PATH
+HOME="/root"
+export HOME
+unset BASH_ENV ENV CDPATH PYTHONHOME PYTHONPATH TMP TMPDIR TEMP DOCKER_CONFIG \
+  DOCKER_CLI_PLUGIN_EXTRA_DIRS DOCKER_HOST DOCKER_CONTEXT XDG_CONFIG_HOME
 
-PACKAGE_DIR="$(cd "${1:-.}" && pwd)"
+if [[ "$#" -gt 2 ]]; then
+  echo "usage: verify-candidate.sh [candidate-directory] [site-env-file]" >&2
+  exit 1
+fi
+PACKAGE_INPUT="${1:-.}"
+if [[ -L "$PACKAGE_INPUT" || ! -d "$PACKAGE_INPUT" ]]; then
+  echo "[verify] publisher authenticity FAILED: candidate directory is missing or linked" >&2
+  exit 1
+fi
+SOURCE_PACKAGE_DIR="$(cd "$PACKAGE_INPUT" && pwd)"
+TRUST_DIR_INPUT="/etc/ruisheng/trust"
+PYTHON="/usr/bin/python3"
+SSH_KEYGEN="/usr/bin/ssh-keygen"
+SHA256SUM="/usr/bin/sha256sum"
+DOCKER="/usr/bin/docker"
+RM="/bin/rm"
+GREP="/usr/bin/grep"
+CUT="/usr/bin/cut"
+SORT="/usr/bin/sort"
+DIFF="/usr/bin/diff"
+
+[[ -x "$PYTHON" ]] || { echo "[verify] publisher authenticity FAILED: /usr/bin/python3 is required" >&2; exit 1; }
+[[ -x "$SSH_KEYGEN" ]] || { echo "[verify] publisher authenticity FAILED: /usr/bin/ssh-keygen is required" >&2; exit 1; }
+[[ -x "$SHA256SUM" ]] || { echo "[verify] publisher authenticity FAILED: /usr/bin/sha256sum is required" >&2; exit 1; }
+[[ -x "$RM" ]] || { echo "[verify] publisher authenticity FAILED: /bin/rm is required" >&2; exit 1; }
+for tool in "$GREP" "$CUT" "$SORT" "$DIFF"; do
+  [[ -x "$tool" ]] || { echo "[verify] publisher authenticity FAILED: fixed system tool is required: $tool" >&2; exit 1; }
+done
+
+[[ "$EUID" -eq 0 ]] || { echo "[verify] publisher authenticity FAILED: verifier must run as root" >&2; exit 1; }
+WORK_ROOT="/var/lib/ruisheng/work"
+WORK_DIR="$("$PYTHON" -I -S - "$WORK_ROOT" "$PYTHON" "$SSH_KEYGEN" "$SHA256SUM" "$DOCKER" "$RM" "$GREP" "$CUT" "$SORT" "$DIFF" <<'PY'
+import pathlib
+import stat
+import sys
+import tempfile
+
+work = pathlib.Path(sys.argv[1])
+tools = [pathlib.Path(value) for value in sys.argv[2:]]
+
+def protected(path, label):
+    if path.is_symlink() or not path.exists():
+        raise SystemExit("[verify] publisher authenticity FAILED: {} is missing or linked: {}".format(label, path))
+    metadata = path.stat()
+    if metadata.st_uid != 0 or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise SystemExit("[verify] publisher authenticity FAILED: {} has unsafe ownership or permissions: {}".format(label, path))
+
+for directory in (pathlib.Path("/var"), pathlib.Path("/var/lib"), work.parent, work):
+    if not directory.exists():
+        directory.mkdir(mode=0o700)
+    protected(directory, "fixed work directory")
+protected(pathlib.Path("/"), "fixed work root")
+for tool in tools:
+    resolved = tool.resolve(strict=True)
+    protected(resolved, "fixed system tool")
+    for ancestor in resolved.parents:
+        protected(ancestor, "fixed system tool ancestor")
+print(tempfile.mkdtemp(prefix="verified-candidate-", dir=work))
+PY
+)"
+cleanup() {
+  status=$?
+  trap - EXIT
+  if ! "$RM" -rf -- "$WORK_DIR"; then
+    echo "[verify] protected work cleanup failed: $WORK_DIR" >&2
+    exit 1
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+PACKAGE_DIR="$WORK_DIR/candidate"
+DOCKER_CONFIG="$WORK_DIR/docker-config"
+export DOCKER_CONFIG
+mkdir -m 700 "$DOCKER_CONFIG"
+printf '{}\n' > "$DOCKER_CONFIG/config.json"
+chmod 600 "$DOCKER_CONFIG/config.json"
+LOCK_FILE="$WORK_DIR/image-lock.tsv"
+CONFIG_FILE="$WORK_DIR/compose-config.json"
+EXPECTED_FILE="$WORK_DIR/expected-images.txt"
+ACTUAL_FILE="$WORK_DIR/actual-images.txt"
+
+"$PYTHON" -I -S - "$SOURCE_PACKAGE_DIR" "$PACKAGE_DIR" <<'PY'
+import os
+import pathlib
+import shutil
+import stat
+import sys
+
+source = pathlib.Path(sys.argv[1])
+snapshot = pathlib.Path(sys.argv[2])
+fixed = {
+    ".env.prod.example",
+    "MANIFEST.json",
+    "MANIFEST.md",
+    "SHA256SUMS",
+    "SHA256SUMS.sig",
+    "docker-compose.prod.yml",
+    "nginx.conf",
+    "site-acceptance-profile.md.example",
+    "site-health-acl.conf.example",
+    "site-network.override.yml",
+    "setup-customer.md",
+    "validate-network-boundary.py",
+    "verify-candidate.ps1",
+    "verify-candidate.sh",
+}
+components = ("postgres", "redis", "api", "gw", "web")
+expected = fixed | {"images/{}.tar.gz".format(value) for value in components}
+
+def fail(message):
+    raise SystemExit("[verify] publisher authenticity FAILED: " + message)
+
+actual = set()
+initial_sizes = {}
+for current, directories, files in os.walk(source, followlinks=False):
+    current_path = pathlib.Path(current)
+    for name in directories:
+        path = current_path / name
+        relative = path.relative_to(source).as_posix()
+        if path.is_symlink() or relative != "images":
+            fail("candidate contains an unsafe directory: " + relative)
+    for name in files:
+        path = current_path / name
+        relative = path.relative_to(source).as_posix()
+        if path.is_symlink() or not path.is_file():
+            fail("candidate contains a linked or non-regular file: " + relative)
+        actual.add(relative)
+if actual != expected:
+    fail("candidate file allowlist mismatch: missing={}, extra={}".format(
+        sorted(expected - actual), sorted(actual - expected)
+    ))
+
+for relative in sorted(expected):
+    source_path = source / relative
+    metadata = source_path.stat()
+    if source_path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+        fail("candidate file is linked or non-regular: " + relative)
+    initial_sizes[relative] = metadata.st_size
+total_size = sum(initial_sizes.values())
+reserve = max(64 * 1024 * 1024, total_size // 10)
+if shutil.disk_usage(snapshot.parent).free < total_size + reserve:
+    fail("insufficient free space for protected candidate snapshot")
+
+snapshot.mkdir(mode=0o700)
+(snapshot / "images").mkdir(mode=0o700)
+try:
+    for relative in sorted(expected):
+        source_path = source / relative
+        destination = snapshot / relative
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(source_path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            expected_size = initial_sizes[relative]
+            if not stat.S_ISREG(opened.st_mode):
+                fail("candidate file is not regular: " + relative)
+            if opened.st_size != expected_size:
+                fail("candidate file changed before snapshot: " + relative)
+            with os.fdopen(descriptor, "rb", closefd=False) as input_stream:
+                with destination.open("xb") as output_stream:
+                    copied = 0
+                    while copied < expected_size:
+                        chunk = input_stream.read(min(1024 * 1024, expected_size - copied))
+                        if not chunk:
+                            break
+                        output_stream.write(chunk)
+                        copied += len(chunk)
+                    if copied != expected_size or input_stream.read(1):
+                        fail("candidate file size changed during snapshot: " + relative)
+        finally:
+            os.close(descriptor)
+        destination.chmod(0o600)
+except OSError as error:
+    fail("cannot create complete candidate snapshot: {}".format(error))
+PY
+
 SITE_ENV_INPUT="${2:-$PACKAGE_DIR/.env.prod.example}"
 if [[ ! -f "$SITE_ENV_INPUT" ]]; then
   echo "[verify] Compose environment file is missing: $SITE_ENV_INPUT" >&2
   exit 1
 fi
 SITE_ENV_FILE="$(cd "$(dirname "$SITE_ENV_INPUT")" && pwd)/$(basename "$SITE_ENV_INPUT")"
-LOCK_FILE="$(mktemp)"
-CONFIG_FILE="$(mktemp)"
-EXPECTED_FILE="$(mktemp)"
-ACTUAL_FILE="$(mktemp)"
-trap 'rm -f "$LOCK_FILE" "$CONFIG_FILE" "$EXPECTED_FILE" "$ACTUAL_FILE"' EXIT
 
-command -v python3 >/dev/null || { echo "[verify] python3 is required" >&2; exit 1; }
-command -v docker >/dev/null || { echo "[verify] Docker CLI is required" >&2; exit 1; }
+"$PYTHON" -I -S - "$PACKAGE_DIR" "$TRUST_DIR_INPUT" "$SSH_KEYGEN" <<'PY'
+import base64
+import hashlib
+import json
+import os
+import pathlib
+import re
+import stat
+import struct
+import subprocess
+import sys
 
-python3 - "$PACKAGE_DIR" > "$LOCK_FILE" <<'PY'
+root = pathlib.Path(sys.argv[1]).resolve()
+trust_input = pathlib.Path(sys.argv[2])
+ssh_keygen = pathlib.Path(sys.argv[3])
+
+def fail(message):
+    raise SystemExit("[verify] publisher authenticity FAILED: " + message)
+
+if trust_input.is_symlink() or not trust_input.is_dir():
+    fail("external trust directory is missing or linked")
+trust = trust_input.resolve()
+if trust == root or root in trust.parents:
+    fail("trust directory must be outside the candidate package")
+allowed = trust / "release-allowed-signers"
+fingerprint_path = trust / "release-key-fingerprint"
+for path in (allowed, fingerprint_path):
+    if path.is_symlink() or not path.is_file():
+        fail("trust file is missing or linked: " + path.name)
+def protected_with_ancestors(path, label):
+    absolute = path.absolute()
+    for current in (absolute, *absolute.parents):
+        if current.is_symlink() or not current.exists():
+            fail(label + " is missing or linked: " + str(current))
+        metadata = current.stat()
+        if metadata.st_uid != 0 or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            fail(label + " has unsafe ownership or write permissions: " + str(current))
+
+protected_with_ancestors(trust, "trust anchor")
+protected_with_ancestors(allowed, "allowed-signers")
+protected_with_ancestors(fingerprint_path, "fingerprint")
+protected_with_ancestors(ssh_keygen.resolve(strict=True), "system ssh-keygen")
+try:
+    allowed_text = allowed.read_bytes().decode("ascii")
+    fingerprint_text = fingerprint_path.read_bytes().decode("ascii")
+except (OSError, UnicodeDecodeError) as error:
+    fail("cannot read ASCII trust anchor: {}".format(error))
+match = re.fullmatch(r"ruisheng-release ssh-ed25519 ([A-Za-z0-9+/]+={0,2})\n", allowed_text)
+if match is None:
+    fail("release-allowed-signers is not the approved single identity")
+try:
+    blob = base64.b64decode(match.group(1), validate=True)
+    offset = 0
+    fields = []
+    for _ in range(2):
+        if len(blob) - offset < 4:
+            fail("public key blob is truncated")
+        length = struct.unpack(">I", blob[offset:offset + 4])[0]
+        offset += 4
+        fields.append(blob[offset:offset + length])
+        offset += length
+except (ValueError, struct.error):
+    fail("public key blob is invalid")
+if fields[0] != b"ssh-ed25519" or len(fields[1]) != 32 or offset != len(blob):
+    fail("public key is not canonical ssh-ed25519")
+derived = "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+fingerprint_match = re.fullmatch(r"(SHA256:[A-Za-z0-9+/]{43})\n", fingerprint_text)
+if fingerprint_match is None or fingerprint_match.group(1) != derived:
+    fail("fingerprint does not match allowed-signers")
+sums = root / "SHA256SUMS"
+signature = root / "SHA256SUMS.sig"
+if sums.is_symlink() or not sums.is_file() or signature.is_symlink() or not signature.is_file():
+    fail("signed object or signature is missing or linked")
+try:
+    signature_text = signature.read_bytes().decode("ascii")
+except (OSError, UnicodeDecodeError):
+    fail("SSH signature armor is not canonical")
+signature_match = re.fullmatch(
+    r"-----BEGIN SSH SIGNATURE-----\n((?:[A-Za-z0-9+/]+={0,2}\n)+)-----END SSH SIGNATURE-----\n",
+    signature_text,
+)
+if signature_match is None:
+    fail("SSH signature armor is not canonical")
+try:
+    decoded_signature = base64.b64decode(signature_match.group(1).replace("\n", ""), validate=True)
+except ValueError:
+    fail("SSH signature armor is invalid base64")
+if not decoded_signature.startswith(b"SSHSIG"):
+    fail("SSH signature payload is invalid")
+encoded_signature = base64.b64encode(decoded_signature).decode("ascii")
+canonical_signature = "-----BEGIN SSH SIGNATURE-----\n" + "\n".join(
+    encoded_signature[offset:offset + 70]
+    for offset in range(0, len(encoded_signature), 70)
+) + "\n-----END SSH SIGNATURE-----\n"
+if signature_text != canonical_signature:
+    fail("SSH signature armor is not canonical")
+try:
+    sums_bytes = sums.read_bytes()
+except OSError as error:
+    fail("cannot read SHA256SUMS: {}".format(error))
+try:
+    result = subprocess.run(
+        [str(ssh_keygen), "-Y", "verify", "-f", str(allowed), "-I", "ruisheng-release",
+         "-n", "ruisheng-candidate-v1", "-s", str(signature)],
+        input=sums_bytes, capture_output=True, timeout=30, check=False,
+    )
+except (OSError, subprocess.SubprocessError) as error:
+    fail("signature verifier failed: {}".format(error))
+if result.returncode != 0:
+    fail("OpenSSH signature verification failed")
+try:
+    sums_text = sums_bytes.decode("utf-8")
+except UnicodeDecodeError:
+    fail("SHA256SUMS is not valid UTF-8")
+if not sums_text.endswith("\n") or "\r" in sums_text:
+    fail("SHA256SUMS must use canonical LF line endings")
+authenticated_sums = {}
+for number, line in enumerate(sums_text.removesuffix("\n").split("\n"), 1):
+    entry = re.fullmatch(r"([0-9a-f]{64})  ([^\\\x00]+)", line)
+    if entry is None:
+        fail("invalid SHA256SUMS entry at line {}".format(number))
+    digest, relative = entry.groups()
+    path = pathlib.PurePosixPath(relative)
+    if path.is_absolute() or path.as_posix() != relative or any(
+        part in ("", ".", "..") for part in path.parts
+    ):
+        fail("unsafe SHA256SUMS path: " + relative)
+    if relative in authenticated_sums:
+        fail("duplicate SHA256SUMS path: " + relative)
+    authenticated_sums[relative] = digest
+try:
+    manifest_bytes = (root / "MANIFEST.json").read_bytes()
+except OSError as error:
+    fail("cannot read MANIFEST.json: {}".format(error))
+if authenticated_sums.get("MANIFEST.json") != hashlib.sha256(manifest_bytes).hexdigest():
+    fail("SHA-256 mismatch for MANIFEST.json")
+try:
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+except (OSError, UnicodeDecodeError, ValueError) as error:
+    fail("cannot parse signed manifest metadata: {}".format(error))
+expected = {
+    "status": "SIGNED", "scheme": "openssh-sshsig", "publisher": "ruisheng-release",
+    "namespace": "ruisheng-candidate-v1", "key_type": "ssh-ed25519",
+    "key_fingerprint": derived, "signed_object": "SHA256SUMS",
+    "signature_file": "SHA256SUMS.sig",
+}
+if manifest.get("schema_version") != 2 or manifest.get("authenticity") != expected:
+    fail("signed manifest authenticity contract is invalid")
+PY
+
+"$PYTHON" -I -S - "$PACKAGE_DIR" "$TRUST_DIR_INPUT" "$SSH_KEYGEN" > "$LOCK_FILE" <<'PY'
+import base64
 import gzip
 import hashlib
 import json
 import os
 import pathlib
 import re
+import stat
+import struct
+import subprocess
 import sys
 import tarfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
+trust_input = pathlib.Path(sys.argv[2])
+ssh_keygen = pathlib.Path(sys.argv[3])
 fixed = {
     ".env.prod.example",
     "MANIFEST.json",
     "MANIFEST.md",
     "SHA256SUMS",
+    "SHA256SUMS.sig",
     "docker-compose.prod.yml",
     "nginx.conf",
     "site-acceptance-profile.md.example",
@@ -249,16 +579,163 @@ def validate_provenance_attachment(
             statement, archive_label, main_manifest_digest
         )
 
+def protected_with_ancestors(path, label):
+    absolute = path.absolute()
+    for current in (absolute, *absolute.parents):
+        if current.is_symlink() or not current.exists():
+            fail(label + " is missing or linked: " + str(current))
+        metadata = current.stat()
+        if metadata.st_uid != 0 or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            fail(label + " has unsafe ownership or write permissions: " + str(current))
+
+if trust_input.is_symlink() or not trust_input.is_dir():
+    fail("publisher authenticity FAILED: external trust directory is missing or linked")
+trust = trust_input.resolve()
+if trust == root or root in trust.parents:
+    fail("publisher authenticity FAILED: trust directory must be outside the candidate package")
+allowed = trust / "release-allowed-signers"
+fingerprint_path = trust / "release-key-fingerprint"
+protected_with_ancestors(trust, "publisher authenticity FAILED: trust anchor")
+protected_with_ancestors(allowed, "publisher authenticity FAILED: allowed-signers")
+protected_with_ancestors(fingerprint_path, "publisher authenticity FAILED: fingerprint")
+protected_with_ancestors(
+    ssh_keygen.resolve(strict=True), "publisher authenticity FAILED: system ssh-keygen"
+)
 try:
-    manifest = json.loads((root / "MANIFEST.json").read_text(encoding="utf-8"))
+    allowed_text = allowed.read_bytes().decode("ascii")
+    fingerprint_text = fingerprint_path.read_bytes().decode("ascii")
+except (OSError, UnicodeDecodeError) as error:
+    fail("publisher authenticity FAILED: cannot read ASCII trust anchor: {}".format(error))
+allowed_match = re.fullmatch(
+    r"ruisheng-release ssh-ed25519 ([A-Za-z0-9+/]+={0,2})\n", allowed_text
+)
+if allowed_match is None:
+    fail("publisher authenticity FAILED: allowed-signers is not the approved identity")
+try:
+    key_blob = base64.b64decode(allowed_match.group(1), validate=True)
+    offset = 0
+    key_fields = []
+    for _ in range(2):
+        if len(key_blob) - offset < 4:
+            fail("publisher authenticity FAILED: public key blob is truncated")
+        length = struct.unpack(">I", key_blob[offset:offset + 4])[0]
+        offset += 4
+        if len(key_blob) - offset < length:
+            fail("publisher authenticity FAILED: public key blob is truncated")
+        key_fields.append(key_blob[offset:offset + length])
+        offset += length
+except (ValueError, struct.error):
+    fail("publisher authenticity FAILED: public key blob is invalid")
+if key_fields[0] != b"ssh-ed25519" or len(key_fields[1]) != 32 or offset != len(key_blob):
+    fail("publisher authenticity FAILED: public key is not canonical ssh-ed25519")
+fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(key_blob).digest()).decode().rstrip("=")
+if fingerprint_text != fingerprint + "\n":
+    fail("publisher authenticity FAILED: fingerprint does not match allowed-signers")
+
+sums_path = root / "SHA256SUMS"
+signature_path = root / "SHA256SUMS.sig"
+if sums_path.is_symlink() or not sums_path.is_file() or signature_path.is_symlink() or not signature_path.is_file():
+    fail("publisher authenticity FAILED: signed object or signature is missing or linked")
+try:
+    signature_text = signature_path.read_bytes().decode("ascii")
+except (OSError, UnicodeDecodeError):
+    fail("publisher authenticity FAILED: SSH signature armor is not canonical")
+signature_match = re.fullmatch(
+    r"-----BEGIN SSH SIGNATURE-----\n((?:[A-Za-z0-9+/]+={0,2}\n)+)-----END SSH SIGNATURE-----\n",
+    signature_text,
+)
+if signature_match is None:
+    fail("publisher authenticity FAILED: SSH signature armor is not canonical")
+try:
+    decoded_signature = base64.b64decode(
+        signature_match.group(1).replace("\n", ""), validate=True
+    )
+except ValueError:
+    fail("publisher authenticity FAILED: SSH signature armor is invalid base64")
+encoded_signature = base64.b64encode(decoded_signature).decode("ascii")
+canonical_signature = "-----BEGIN SSH SIGNATURE-----\n" + "\n".join(
+    encoded_signature[index:index + 70]
+    for index in range(0, len(encoded_signature), 70)
+) + "\n-----END SSH SIGNATURE-----\n"
+if not decoded_signature.startswith(b"SSHSIG") or signature_text != canonical_signature:
+    fail("publisher authenticity FAILED: SSH signature armor is not canonical")
+try:
+    sums_bytes = sums_path.read_bytes()
+    signature_result = subprocess.run(
+        [str(ssh_keygen), "-Y", "verify", "-f", str(allowed), "-I", "ruisheng-release",
+         "-n", "ruisheng-candidate-v1", "-s", str(signature_path)],
+        input=sums_bytes, capture_output=True, timeout=30, check=False,
+    )
+except (OSError, subprocess.SubprocessError) as error:
+    fail("publisher authenticity FAILED: signature verifier failed: {}".format(error))
+if signature_result.returncode != 0:
+    fail("publisher authenticity FAILED: OpenSSH signature verification failed")
+try:
+    sums_text = sums_bytes.decode("utf-8")
+except UnicodeDecodeError:
+    fail("publisher authenticity FAILED: SHA256SUMS is not valid UTF-8")
+if not sums_text.endswith("\n") or "\r" in sums_text:
+    fail("publisher authenticity FAILED: SHA256SUMS must use canonical LF line endings")
+sums = {}
+for number, line in enumerate(sums_text.removesuffix("\n").split("\n"), 1):
+    match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+    if match is None:
+        fail("publisher authenticity FAILED: invalid SHA256SUMS entry at line {}".format(number))
+    digest, relative = match.groups()
+    safe_path(relative)
+    if relative in sums:
+        fail("publisher authenticity FAILED: duplicate SHA256SUMS path: " + relative)
+    sums[relative] = digest
+
+expected_files = fixed | {"images/{}.tar.gz".format(value) for value in components}
+actual_files = set()
+for current, directories, files in os.walk(str(root), followlinks=False):
+    current_path = pathlib.Path(current)
+    for name in directories:
+        directory = current_path / name
+        relative = directory.relative_to(root).as_posix()
+        safe_path(relative)
+        if directory.is_symlink() or relative != "images":
+            fail("publisher authenticity FAILED: extra or unsafe directory: " + relative)
+    for name in files:
+        path = current_path / name
+        relative = path.relative_to(root).as_posix()
+        safe_path(relative)
+        if path.is_symlink() or not path.is_file():
+            fail("publisher authenticity FAILED: non-regular package file: " + relative)
+        actual_files.add(relative)
+if actual_files != expected_files:
+    fail("publisher authenticity FAILED: file allowlist mismatch: missing={}, extra={}".format(
+        sorted(expected_files - actual_files), sorted(actual_files - expected_files)
+    ))
+expected_sums = expected_files - {"SHA256SUMS", "SHA256SUMS.sig"}
+if set(sums) != expected_sums:
+    fail("publisher authenticity FAILED: SHA256SUMS allowlist mismatch: missing={}, extra={}".format(
+        sorted(expected_sums - set(sums)), sorted(set(sums) - expected_sums)
+    ))
+manifest_bytes = None
+for relative, expected_digest in sums.items():
+    path = root / relative
+    actual_digest = sha256(path)
+    if actual_digest != expected_digest:
+        fail("publisher authenticity FAILED: SHA-256 mismatch for {}: expected {}, got {}".format(
+            relative, expected_digest, actual_digest
+        ))
+    if relative == "MANIFEST.json":
+        manifest_bytes = path.read_bytes()
+        if hashlib.sha256(manifest_bytes).hexdigest() != expected_digest:
+            fail("publisher authenticity FAILED: MANIFEST.json changed while being authenticated")
+
+try:
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
 except Exception as error:
-    fail("cannot parse MANIFEST.json: {}".format(error))
+    fail("publisher authenticity FAILED: cannot parse authenticated MANIFEST.json: {}".format(error))
 
 candidate_id = manifest.get("candidate_id")
 if not isinstance(candidate_id, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", candidate_id) is None:
     fail("invalid candidate ID")
-if manifest.get("authenticity", {}).get("status") != "BLOCKED":
-    fail("manifest removed the publisher-authenticity BLOCKED gate")
+if manifest.get("schema_version") != 2 or manifest.get("authenticity", {}).get("status") != "SIGNED":
+    fail("manifest authenticity contract is invalid")
 target_os = manifest.get("target_os")
 target_arch = manifest.get("target_architecture")
 images = manifest.get("images")
@@ -304,29 +781,19 @@ for current, directories, files in os.walk(str(root), followlinks=False):
             fail("non-regular package file: " + relative)
         actual_files.add(relative)
 if actual_files != expected_files:
-    fail("file allowlist mismatch: missing={}, extra={}".format(
+    fail("publisher authenticity FAILED: file allowlist mismatch: missing={}, extra={}".format(
         sorted(expected_files - actual_files), sorted(actual_files - expected_files)
     ))
 
-sums = {}
-for number, line in enumerate((root / "SHA256SUMS").read_text(encoding="utf-8").splitlines(), 1):
-    match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
-    if match is None:
-        fail("invalid SHA256SUMS entry at line {}".format(number))
-    digest, relative = match.groups()
-    safe_path(relative)
-    if relative in sums:
-        fail("duplicate SHA256SUMS path: " + relative)
-    sums[relative] = digest
-expected_sums = expected_files - {"SHA256SUMS"}
+expected_sums = expected_files - {"SHA256SUMS", "SHA256SUMS.sig"}
 if set(sums) != expected_sums:
-    fail("SHA256SUMS allowlist mismatch: missing={}, extra={}".format(
+    fail("publisher authenticity FAILED: SHA256SUMS allowlist mismatch: missing={}, extra={}".format(
         sorted(expected_sums - set(sums)), sorted(set(sums) - expected_sums)
     ))
 for relative, expected_digest in sums.items():
     actual_digest = sha256(root / relative)
     if actual_digest != expected_digest:
-        fail("SHA-256 mismatch for {}: expected {}, got {}".format(
+        fail("publisher authenticity FAILED: SHA-256 mismatch for {}: expected {}, got {}".format(
             relative, expected_digest, actual_digest
         ))
 
@@ -411,74 +878,106 @@ for image in images:
         fail("archive identity mismatch for " + image["component"])
     fields = (
         image["component"], image["candidate_reference"], image["image_id"],
-        image["os"], image["architecture"], image["archive"]
+        image["os"], image["architecture"], image["archive"], sums[image["archive"]]
     )
     if any(not isinstance(field, str) or "\t" in field or "\n" in field for field in fields):
         fail("unsafe image lock field")
     print("\t".join(fields))
 PY
 
-echo "[verify] File allowlist, SHA-256, and archive identities passed."
-while IFS=$'\t' read -r component reference image_id image_os architecture archive; do
-  echo "[verify] Loading $component from $archive"
-  docker image load --input "$PACKAGE_DIR/$archive" >/dev/null
+[[ -x "$DOCKER" ]] || { echo "[verify] Docker CLI is required at /usr/bin/docker" >&2; exit 1; }
+[[ -d "/proc/$$/fd" ]] || { echo "[verify] publisher authenticity FAILED: /proc file descriptors are required" >&2; exit 1; }
+
+declare -a ARCHIVE_FDS=()
+declare -a ARCHIVE_FD_PATHS=()
+while IFS=$'\t' read -r component reference image_id image_os architecture archive digest; do
+  exec {archive_fd}<"$PACKAGE_DIR/$archive"
+  archive_fd_path="/proc/$$/fd/$archive_fd"
+  locked_digest="$($SHA256SUM "$archive_fd_path")"
+  locked_digest="${locked_digest%% *}"
+  if [[ "$locked_digest" != "$digest" ]]; then
+    echo "[verify] publisher authenticity FAILED: archive changed before load: $archive" >&2
+    exit 1
+  fi
+  ARCHIVE_FDS+=("$archive_fd")
+  ARCHIVE_FD_PATHS+=("$archive_fd_path")
 done < "$LOCK_FILE"
 
-while IFS=$'\t' read -r component reference image_id image_os architecture archive; do
+echo "[verify] Publisher authenticity VERIFIED; file allowlist, SHA-256, and archive identities passed."
+archive_index=0
+while IFS=$'\t' read -r component reference image_id image_os architecture archive digest; do
+  echo "[verify] Loading $component from $archive"
+  "$DOCKER" image load --input "${ARCHIVE_FD_PATHS[$archive_index]}" >/dev/null
+  archive_index=$((archive_index + 1))
+done < "$LOCK_FILE"
+for archive_fd in "${ARCHIVE_FDS[@]}"; do
+  exec {archive_fd}<&-
+done
+
+while IFS=$'\t' read -r component reference image_id image_os architecture archive digest; do
   mapfile -t metadata < <(
-    docker image inspect "$reference" \
+    "$DOCKER" image inspect "$reference" \
       --format '{{.Id}}{{println}}{{.Os}}{{println}}{{.Architecture}}{{println}}{{range .RepoTags}}{{println .}}{{end}}'
   )
   if [[ "${metadata[0]:-}" != "$image_id" || "${metadata[1]:-}" != "$image_os" || "${metadata[2]:-}" != "$architecture" ]]; then
     echo "[verify] Loaded identity mismatch for $component" >&2
     exit 1
   fi
-  if ! printf '%s\n' "${metadata[@]:3}" | grep -Fqx -- "$reference"; then
+  if ! printf '%s\n' "${metadata[@]:3}" | "$GREP" -Fqx -- "$reference"; then
     echo "[verify] Loaded candidate tag missing for $component: $reference" >&2
     exit 1
   fi
 done < "$LOCK_FILE"
 
-docker compose \
+"$DOCKER" compose \
   --env-file "$SITE_ENV_FILE" \
   -f "$PACKAGE_DIR/docker-compose.prod.yml" \
   config --images > "$ACTUAL_FILE"
-cut -f2 "$LOCK_FILE" | sort -u > "$EXPECTED_FILE"
-sort -u "$ACTUAL_FILE" -o "$ACTUAL_FILE"
-if ! diff -u "$EXPECTED_FILE" "$ACTUAL_FILE"; then
+"$CUT" -f2 "$LOCK_FILE" | "$SORT" -u > "$EXPECTED_FILE"
+"$SORT" -u "$ACTUAL_FILE" -o "$ACTUAL_FILE"
+if ! "$DIFF" -u "$EXPECTED_FILE" "$ACTUAL_FILE"; then
   echo "[verify] Compose image set does not match the manifest" >&2
   exit 1
 fi
-if [[ "$(grep -Fxc "ruisheng-candidate/api:$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["candidate_id"])' "$PACKAGE_DIR/MANIFEST.json")" < <(
-  docker compose --env-file "$SITE_ENV_FILE" \
+api_reference=""
+while IFS=$'\t' read -r component reference image_id image_os architecture archive digest; do
+  if [[ "$component" == "api" ]]; then
+    api_reference="$reference"
+  fi
+done < "$LOCK_FILE"
+if [[ -z "$api_reference" ]] || [[ "$("$GREP" -Fxc "$api_reference" < <(
+  "$DOCKER" compose --env-file "$SITE_ENV_FILE" \
     -f "$PACKAGE_DIR/docker-compose.prod.yml" config --images
 ))" -ne 2 ]]; then
   echo "[verify] Compose migrate/api do not share exactly one API image" >&2
   exit 1
 fi
 
-docker compose \
+"$DOCKER" compose \
   --env-file "$SITE_ENV_FILE" \
   -f "$PACKAGE_DIR/docker-compose.prod.yml" \
   config --format json > "$CONFIG_FILE"
-python3 - "$CONFIG_FILE" "$PACKAGE_DIR/MANIFEST.json" <<'PY'
+"$PYTHON" -I -S - "$CONFIG_FILE" "$LOCK_FILE" <<'PY'
 import json
 import sys
 
 services = json.load(open(sys.argv[1], encoding="utf-8")).get("services", {})
-manifest = json.load(open(sys.argv[2], encoding="utf-8"))
-candidate_id = manifest["candidate_id"]
+rows = [line.rstrip("\n").split("\t") for line in open(sys.argv[2], encoding="utf-8")]
+images = {row[0]: row for row in rows}
 expected_images = {
-    "postgres": f"ruisheng-candidate/postgres:{candidate_id}",
-    "redis": f"ruisheng-candidate/redis:{candidate_id}",
-    "migrate": f"ruisheng-candidate/api:{candidate_id}",
-    "api": f"ruisheng-candidate/api:{candidate_id}",
-    "gw": f"ruisheng-candidate/gw:{candidate_id}",
-    "web": f"ruisheng-candidate/web:{candidate_id}",
+    "postgres": images["postgres"][1],
+    "redis": images["redis"][1],
+    "migrate": images["api"][1],
+    "api": images["api"][1],
+    "gw": images["gw"][1],
+    "web": images["web"][1],
 }
 if set(services) != set(expected_images):
     raise SystemExit("[verify] Compose service set mismatch")
-expected_platform = f'{manifest["target_os"]}/{manifest["target_architecture"]}'
+platforms = {f"{row[3]}/{row[4]}" for row in rows}
+if len(platforms) != 1:
+    raise SystemExit("[verify] Image lock platform set mismatch")
+expected_platform = platforms.pop()
 for name, service in services.items():
     if service.get("image") != expected_images[name]:
         raise SystemExit("[verify] Compose image mismatch for service: " + name)
@@ -489,17 +988,6 @@ for name, service in services.items():
 PY
 
 echo "[verify] Integrity and loaded image identity passed."
-SITE_DIR="$(cd "$(dirname "$SITE_ENV_FILE")" && pwd)"
-if [[ -f "$SITE_DIR/site-health-acl.conf" && -f "$SITE_DIR/site-acceptance-profile.md" ]]; then
-  python3 "$PACKAGE_DIR/validate-network-boundary.py" \
-    --compose "$PACKAGE_DIR/docker-compose.prod.yml" \
-    --compose "$PACKAGE_DIR/site-network.override.yml" \
-    --env-file "$SITE_ENV_FILE" \
-    --profile "$SITE_DIR/site-acceptance-profile.md" \
-    --nginx-config "$PACKAGE_DIR/nginx.conf" \
-    --acl-file "$SITE_DIR/site-health-acl.conf"
-else
-  echo "[verify] B-04 network validation remains BLOCKED until site ACL and Profile are supplied." >&2
-  exit 2
-fi
-echo "[verify] Publisher authenticity is not configured; CAP-1/G0-03 remain BLOCKED."
+echo "[verify] Publisher authenticity VERIFIED; CAP-1/G0-03 authenticity gate passed."
+echo "[verify] B-04 remains BLOCKED; close it only through the independent field acceptance workflow." >&2
+exit 2

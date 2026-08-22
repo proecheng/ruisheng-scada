@@ -5,7 +5,8 @@
 - Windows 10/11（PowerShell 7.3+）或 Ubuntu 20.04+
 - 已安装 [Docker Desktop](https://www.docker.com/products/docker-desktop/)
   （Windows 用户安装 Docker Desktop；Linux 用户安装 Docker Engine + Docker Compose v2）
-- Linux 校验脚本需要系统自带的 `python3`
+- Linux 校验脚本需要系统自带的 `python3`；Windows 需要系统级 Python Launcher
+  `C:\Windows\py.exe`；两端都需要 OpenSSH `ssh-keygen -Y`
 - 80、5020、9090 端口未被占用
 - 内存：建议 4 GB 以上
 
@@ -13,22 +14,24 @@
 
 ### 1. 校验候选并加载镜像
 
-将完整候选目录复制到目标机器，在候选目录中打开终端。不要编辑、删除或添加候选目录中的任何文件；站点密钥和配置保存在候选目录外。
+将完整候选目录复制到目标机器，在候选目录中打开终端。不要编辑、删除或添加候选目录中的任何文件；站点密钥和配置保存在候选目录外。信任锚和外置引导校验器必须由管理员预先安装，不能从候选包复制：Windows 固定为 `C:\ProgramData\Ruisheng\trust`，Linux 固定为 `/etc/ruisheng/trust`。信任目录仅包含严格单行 `release-allowed-signers` 和 `release-key-fingerprint`，且只允许管理员/SYSTEM（Linux 为 root）写入。
 
-当前候选提供 SHA-256、归档身份和加载后镜像身份校验，但尚未配置获批的发布签名或可信分发机制。SHA-256 只能证明所收到文件之间自洽，不能证明发布者身份；即使脚本成功，CAP-1/G0-03 仍为 BLOCKED。
+只运行安装在候选外、受 ACL 保护的 bootstrap；它以固定 principal `ruisheng-release` 和 namespace `ruisheng-candidate-v1` 验证 `SHA256SUMS` 原始字节，把固定 allowlist 的完整候选复制到受保护快照并重新核对全包哈希，然后从该认证快照执行包内校验器。不要从候选目录直接启动校验器。Manifest 的 `SIGNED` 只是声明，不能单独称为 `VERIFIED`。
 
 **Windows（PowerShell）：**
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\verify-candidate.ps1 .
+C:\ProgramData\Ruisheng\bin\verify-publisher.ps1 .
 ```
 
-**Linux/Mac（Terminal）：**
+**Linux（Terminal）：**
 ```bash
-bash ./verify-candidate.sh .
+sudo /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash /usr/local/lib/ruisheng/verify-publisher.sh .
 ```
 
-脚本严格检查文件 allowlist、`SHA256SUMS`、五个归档、目标平台、候选标签、镜像 ID 及离线 Compose。任何缺失、额外、重复、路径越界、篡改或身份漂移都会在启动前失败；脚本不会访问 registry、构建或启动服务。此时站点 ACL/Profile 尚未创建，脚本会明确输出 B-04 `BLOCKED` 并以退出码 `2` 结束；这是预期结果，不能把它当作可启动信号，继续完成下一步站点配置。
+脚本严格检查外置信任锚、发布者签名、文件 allowlist、`SHA256SUMS`、五个归档、目标平台、候选标签、镜像 ID 及离线 Compose。真实性失败以退出码 `1` 结束且不会调用 Docker；脚本不会访问 registry、构建或启动服务。Linux 运行时快照固定在 `/var/lib/ruisheng/work`，Windows 固定在 `C:\ProgramData\Ruisheng\work`；这两个目录和每次运行创建的 Docker 配置均须保持管理员/root 保护，不能用临时目录、用户 Docker 配置或插件目录替代。
+
+即使站点 ACL 和 Profile 已经提供，发布者校验器也会明确输出 B-04 `BLOCKED` 并以退出码 `2` 结束。这是预期的安全边界：真实性与离线 Compose 校验不构成现场网络验收。只能在下一步通过独立的现场验收流程关闭 B-04，不能把退出码 `2` 当作可启动信号。
 
 ### 2. 配置环境变量
 
@@ -99,11 +102,11 @@ openssl rand -hex 24
 使用最终站点环境再次核对六个服务的候选标签和目标平台。校验失败时不得启动。网络 validator 必须使用基础 Compose 与只读站点 override 的实际渲染结果；禁止提供手工 rendered JSON：
 
 ```bash
-bash ./verify-candidate.sh . ../site/.env.prod
+sudo /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash /usr/local/lib/ruisheng/verify-publisher.sh . ../site/.env.prod
 ```
 
 ```powershell
-.\verify-candidate.ps1 . ..\site\.env.prod
+C:\ProgramData\Ruisheng\bin\verify-publisher.ps1 . ..\site\.env.prod
 ```
 
 ```bash
@@ -190,7 +193,7 @@ docker exec ruisheng-postgres pg_dump -U ruisheng_admin ruisheng > backup_$(date
 set -euo pipefail
 
 # 校验并加载新候选
-bash ./verify-candidate.sh .
+sudo /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash /usr/local/lib/ruisheng/verify-publisher.sh .
 
 # 原子更新六个发布字段，保留站点密码和运行参数
 python3 - .env.prod.example ../site/.env.prod <<'PY'
@@ -221,7 +224,7 @@ finally:
 PY
 
 # 用最终站点环境再次闭环候选标签和平台，然后停止旧版本
-bash ./verify-candidate.sh . ../site/.env.prod
+sudo /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash /usr/local/lib/ruisheng/verify-publisher.sh . ../site/.env.prod
 python3 ./validate-network-boundary.py \
   --compose ./docker-compose.prod.yml \
   --compose ./site-network.override.yml \
@@ -239,7 +242,7 @@ docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-fil
 
 ```powershell
 $ErrorActionPreference = "Stop"
-.\verify-candidate.ps1 .
+C:\ProgramData\Ruisheng\bin\verify-publisher.ps1 .
 $Keys = @("TARGET_PLATFORM", "POSTGRES_IMAGE", "REDIS_IMAGE", "API_IMAGE", "GW_IMAGE", "WEB_IMAGE")
 $Release = @{}
 Get-Content .env.prod.example | ForEach-Object {
@@ -266,7 +269,7 @@ try {
 } finally {
     Remove-Item -LiteralPath $TemporarySite -Force -ErrorAction SilentlyContinue
 }
-.\verify-candidate.ps1 . $Site
+C:\ProgramData\Ruisheng\bin\verify-publisher.ps1 . $Site
 py -3 .\validate-network-boundary.py `
   --compose .\docker-compose.prod.yml `
   --compose .\site-network.override.yml `
@@ -283,7 +286,20 @@ docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-fil
 | 现象 | 可能原因 | 解决方法 |
 |------|---------|---------|
 | 无法登录 | 管理员引导和凭据交接尚未交付 | 保持系统不对外开放，等待独立流程获批并完成 |
-| 候选校验通过但仍显示 BLOCKED | 尚未配置批准的发布签名/可信分发 | 不得将 SHA 当作发布者身份；等待 Profile 单独批准 |
+| 发布者真实性失败 | 锚、指纹、principal/namespace、签名或任一候选字节不匹配 | 禁止加载镜像，从批准渠道重新取得锚或完整候选；不得从候选内替换公钥 |
 | 候选校验报告 extra/missing | 候选目录被添加、删除或编辑 | 拒绝使用，从受信来源重新取得完整候选 |
 | 数据库启动失败 | 磁盘空间不足 | 清理磁盘，至少保留 5 GB |
 | API 报错 | 服务未就绪 | 等待 30 秒后重试 |
+
+## 发布人员：签名候选
+
+专用 Ed25519 私钥只保存在发布机当前用户目录，必须使用随机口令加密。口令只允许由当前用户 DPAPI 密文或交互式 `ssh-agent` 解锁，不得出现在命令参数、环境变量、Git、候选目录或日志中。`release-allowed-signers`、`release-key-fingerprint` 和签名身份必须在构建前由发布负责人核对；轮换密钥、principal 或 namespace 需要另行批准。
+
+候选发布根是安全边界，必须在构建前由管理员创建并限制为发布账户、Administrators 和 SYSTEM（Linux 为发布账户/root）可写；生成器会拒绝继承 `Authenticated Users`、普通用户或其他主体写权限的目录。不要使用项目目录下的 `dist/deploy`、下载目录或临时目录。示例受保护发布根：Windows `C:\ProgramData\Ruisheng\publisher-output`，Linux `$HOME/.local/share/ruisheng/publisher-output`（目录及其祖先不可被组或其他用户写入）。
+
+```bash
+RELEASE_OUTPUT_ROOT=/protected/release/output /bin/bash deploy/export-images.sh deploy-YYYYMMDD.N linux/amd64 \
+  /protected/release/ruisheng-release.pub /protected/release/trust
+```
+
+发布入口只接受与批准锚完全一致的 `ruisheng-release.pub`，并要求对应加密私钥已加载到 `ssh-agent`；私钥路径会被拒绝，从而避免脚本接触口令或未加密私钥。生成器对 `SHA256SUMS` 原始字节签名，立即使用批准的包外锚回验，失败时删除 staging、构建锁和本次候选标签；成功候选只包含 `SHA256SUMS.sig`，不包含公钥、私钥或 DPAPI 密文。

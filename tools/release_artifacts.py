@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import ctypes
 import gzip
 import hashlib
 import json
@@ -10,12 +13,15 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import threading
-from collections.abc import Mapping, Sequence
+import uuid
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -44,6 +50,7 @@ FIXED_PACKAGE_FILES = {
     "MANIFEST.json",
     "MANIFEST.md",
     "SHA256SUMS",
+    "SHA256SUMS.sig",
     "docker-compose.prod.yml",
     "nginx.conf",
     "site-acceptance-profile.md.example",
@@ -54,7 +61,21 @@ FIXED_PACKAGE_FILES = {
     "verify-candidate.ps1",
     "verify-candidate.sh",
 }
-HASHED_FIXED_FILES = FIXED_PACKAGE_FILES - {"SHA256SUMS"}
+HASHED_FIXED_FILES = FIXED_PACKAGE_FILES - {"SHA256SUMS", "SHA256SUMS.sig"}
+
+PUBLISHER = "ruisheng-release"
+SIGNATURE_NAMESPACE = "ruisheng-candidate-v1"
+SIGNATURE_SCHEME = "openssh-sshsig"
+SIGNATURE_KEY_TYPE = "ssh-ed25519"
+SIGNED_OBJECT = "SHA256SUMS"
+SIGNATURE_FILE = "SHA256SUMS.sig"
+ALLOWED_SIGNERS_FILE = "release-allowed-signers"
+FINGERPRINT_FILE = "release-key-fingerprint"
+FINGERPRINT_PATTERN = re.compile(r"SHA256:[A-Za-z0-9+/]{43}\Z")
+SSH_STRING_LENGTH_BYTES = 4
+ED25519_PUBLIC_KEY_BYTES = 32
+MANIFEST_SCHEMA_VERSION = 2
+SSHSIG_ARMOR_LINE_WIDTH = 70
 
 
 class ReleaseArtifactError(RuntimeError):
@@ -68,6 +89,7 @@ class Runner(Protocol):
         *,
         cwd: Path,
         env: Mapping[str, str] | None = None,
+        input_bytes: bytes | None = None,
     ) -> str: ...
 
     def image_exists(self, image: str, *, cwd: Path) -> bool: ...
@@ -84,6 +106,7 @@ class SubprocessRunner:
         *,
         cwd: Path,
         env: Mapping[str, str] | None = None,
+        input_bytes: bytes | None = None,
     ) -> str:
         command_env = os.environ.copy()
         if env:
@@ -95,8 +118,7 @@ class SubprocessRunner:
                 env=command_env,
                 check=True,
                 capture_output=True,
-                text=True,
-                encoding="utf-8",
+                input=input_bytes,
                 timeout=600,
             )
         except FileNotFoundError as error:
@@ -104,11 +126,14 @@ class SubprocessRunner:
         except subprocess.TimeoutExpired as error:
             raise ReleaseArtifactError(f"command timed out: {' '.join(args)}") from error
         except subprocess.CalledProcessError as error:
-            details = (error.stderr or error.stdout or "no output").strip()
+            details = error.stderr or error.stdout or b"no output"
+            if isinstance(details, bytes):
+                details = details.decode("utf-8", errors="replace")
+            details = details.strip()
             raise ReleaseArtifactError(
                 f"command failed ({error.returncode}): {' '.join(args)}: {details}"
             ) from error
-        return result.stdout.strip()
+        return result.stdout.decode("utf-8", errors="replace").strip()
 
     def image_exists(self, image: str, *, cwd: Path) -> bool:
         try:
@@ -246,6 +271,421 @@ class ArchiveIdentity:
     repo_tags: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ReleaseTrustAnchor:
+    directory: Path
+    allowed_signers: Path
+    fingerprint_file: Path
+    fingerprint: str
+    public_key_line: bytes
+    allowed_signers_bytes: bytes
+
+
+def _decode_ssh_string(value: bytes, offset: int = 0) -> tuple[bytes, int]:
+    if len(value) - offset < SSH_STRING_LENGTH_BYTES:
+        raise ReleaseArtifactError("release public key blob is truncated")
+    length = int.from_bytes(value[offset : offset + SSH_STRING_LENGTH_BYTES], "big")
+    start = offset + SSH_STRING_LENGTH_BYTES
+    end = start + length
+    if length > len(value) - start:
+        raise ReleaseArtifactError("release public key blob is truncated")
+    return value[start:end], end
+
+
+def _load_release_trust(trust_directory: Path) -> ReleaseTrustAnchor:
+    if trust_directory.is_symlink() or not trust_directory.is_dir():
+        raise ReleaseArtifactError("release trust path must be a regular external directory")
+    allowed_signers = trust_directory / ALLOWED_SIGNERS_FILE
+    fingerprint_file = trust_directory / FINGERPRINT_FILE
+    for path in (allowed_signers, fingerprint_file):
+        if path.is_symlink() or not path.is_file():
+            raise ReleaseArtifactError(f"release trust file is missing or linked: {path.name}")
+    try:
+        allowed_bytes = allowed_signers.read_bytes()
+        fingerprint_bytes = fingerprint_file.read_bytes()
+    except OSError as error:
+        raise ReleaseArtifactError(f"cannot read release trust anchor: {error}") from error
+    try:
+        allowed_line = allowed_bytes.decode("ascii")
+        fingerprint_line = fingerprint_bytes.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise ReleaseArtifactError("release trust anchor must contain ASCII only") from error
+    allowed_match = re.fullmatch(
+        rf"{re.escape(PUBLISHER)} {re.escape(SIGNATURE_KEY_TYPE)} ([A-Za-z0-9+/]+={{0,2}})\n",
+        allowed_line,
+    )
+    if allowed_match is None:
+        raise ReleaseArtifactError(
+            "release-allowed-signers must contain exactly the approved principal and one "
+            "ssh-ed25519 key"
+        )
+    try:
+        key_blob = base64.b64decode(allowed_match.group(1), validate=True)
+    except binascii.Error as error:
+        raise ReleaseArtifactError("release public key is not valid base64") from error
+    key_type, offset = _decode_ssh_string(key_blob)
+    public_key, offset = _decode_ssh_string(key_blob, offset)
+    if (
+        key_type != SIGNATURE_KEY_TYPE.encode("ascii")
+        or len(public_key) != ED25519_PUBLIC_KEY_BYTES
+        or offset != len(key_blob)
+    ):
+        raise ReleaseArtifactError("release public key is not a canonical ssh-ed25519 key")
+    derived_fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(key_blob).digest()).decode(
+        "ascii"
+    ).rstrip("=")
+    fingerprint_match = re.fullmatch(r"(SHA256:[A-Za-z0-9+/]{43})\n", fingerprint_line)
+    if fingerprint_match is None:
+        raise ReleaseArtifactError("release-key-fingerprint must contain one SHA256 fingerprint")
+    fingerprint = fingerprint_match.group(1)
+    if fingerprint != derived_fingerprint:
+        raise ReleaseArtifactError("release trust fingerprint does not match allowed-signers")
+    return ReleaseTrustAnchor(
+        directory=trust_directory.absolute(),
+        allowed_signers=allowed_signers.absolute(),
+        fingerprint_file=fingerprint_file.absolute(),
+        fingerprint=fingerprint,
+        public_key_line=(f"{SIGNATURE_KEY_TYPE} {allowed_match.group(1)}\n".encode("ascii")),
+        allowed_signers_bytes=allowed_bytes,
+    )
+
+
+def _ensure_external_trust(package: Path, trust: ReleaseTrustAnchor) -> None:
+    package = package.resolve()
+    trust_directory = trust.directory.resolve()
+    if trust_directory == package or package in trust_directory.parents:
+        raise ReleaseArtifactError("release trust anchor must be outside the candidate package")
+
+
+def _validate_fixed_system_tool(path: Path) -> None:
+    for current in (path, *path.parents):
+        if current.is_symlink() or not current.exists():
+            raise ReleaseArtifactError(f"fixed system tool path is missing or linked: {current}")
+        if os.name != "nt":
+            metadata = current.stat()
+            if metadata.st_uid != 0 or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                raise ReleaseArtifactError(
+                    f"fixed system tool path has unsafe ownership or permissions: {current}"
+                )
+
+
+def _system_ssh_keygen() -> Path:
+    if os.name == "nt":
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+        if length <= 0 or length >= len(buffer):
+            raise ReleaseArtifactError("cannot resolve the Windows system directory")
+        path = Path(buffer.value) / "OpenSSH" / "ssh-keygen.exe"
+    else:
+        path = Path("/usr/bin/ssh-keygen")
+    if path.is_symlink() or not path.is_file():
+        raise ReleaseArtifactError(f"fixed system OpenSSH ssh-keygen is unavailable: {path}")
+    _validate_fixed_system_tool(path)
+    return path
+
+
+def _validate_system_trust_permissions(trust: ReleaseTrustAnchor) -> None:
+    expected = _system_trust_directory().absolute()
+    if os.path.normcase(str(trust.directory)) != os.path.normcase(str(expected)):
+        raise ReleaseArtifactError("system verification must use the fixed release trust path")
+    if os.name == "nt":
+        return
+    for path in (
+        trust.directory,
+        trust.allowed_signers,
+        trust.fingerprint_file,
+        *trust.directory.parents,
+    ):
+        if path.is_symlink():
+            raise ReleaseArtifactError(f"system release trust path is linked: {path}")
+        metadata = path.stat()
+        if metadata.st_uid != 0 or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise ReleaseArtifactError(
+                f"system release trust path has unsafe ownership or permissions: {path}"
+            )
+
+
+def _system_protected_workdir() -> Path:
+    if os.name == "nt":
+        raise ReleaseArtifactError(
+            "Windows verification must use the ACL-validating external "
+            r"C:\ProgramData\Ruisheng\bin\verify-publisher.ps1 bootstrap"
+        )
+    workdir = Path("/var/lib/ruisheng/work")
+    try:
+        workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as error:
+        raise ReleaseArtifactError(
+            f"cannot create protected candidate snapshot directory: {error}"
+        ) from error
+    for path in (workdir, *workdir.parents):
+        if path.is_symlink() or not path.is_dir():
+            raise ReleaseArtifactError(f"protected candidate snapshot path is linked: {path}")
+        metadata = path.stat()
+        if metadata.st_uid != 0 or metadata.st_mode & 0o022:
+            raise ReleaseArtifactError(
+                f"protected candidate snapshot path is not root protected: {path}"
+            )
+    try:
+        os.chmod(workdir, 0o700)
+    except OSError as error:
+        raise ReleaseArtifactError(
+            f"cannot protect candidate snapshot directory: {error}"
+        ) from error
+    return workdir
+
+
+WINDOWS_PUBLISH_ROOT_VALIDATOR = r"""
+$ErrorActionPreference = "Stop"
+$current = Get-Item -Force -LiteralPath $env:RUISHENG_PUBLISH_ROOT
+$allowedSids = @(
+    [Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
+    "S-1-5-18",
+    "S-1-5-32-544",
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+) | Select-Object -Unique
+$directUnsafeRights = [Security.AccessControl.FileSystemRights]::CreateFiles -bor
+    [Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+    [Security.AccessControl.FileSystemRights]::AppendData -bor
+    [Security.AccessControl.FileSystemRights]::WriteData -bor
+    [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+    [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+    [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+    [Security.AccessControl.FileSystemRights]::Delete -bor
+    [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+    [Security.AccessControl.FileSystemRights]::TakeOwnership
+$ancestorUnsafeRights = [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+    [Security.AccessControl.FileSystemRights]::Delete -bor
+    [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+    [Security.AccessControl.FileSystemRights]::TakeOwnership
+$isDirect = $true
+while ($null -ne $current) {
+    if (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "publish root path is linked: $($current.FullName)"
+    }
+    $acl = Get-Acl -LiteralPath $current.FullName
+    $ownerSid = ([Security.Principal.NTAccount]$acl.Owner).Translate(
+        [Security.Principal.SecurityIdentifier]
+    ).Value
+    if ($ownerSid -notin $allowedSids) {
+        throw "publish root has an unapproved owner: $($current.FullName)"
+    }
+    $unsafeRights = if ($isDirect) { $directUnsafeRights } else { $ancestorUnsafeRights }
+    foreach ($rule in $acl.Access) {
+        if (($rule.PropagationFlags -band
+                [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
+            continue
+        }
+        $sid = $rule.IdentityReference.Translate(
+            [Security.Principal.SecurityIdentifier]
+        ).Value
+        if ($rule.AccessControlType -eq "Allow" -and
+            ($rule.FileSystemRights -band $unsafeRights) -ne 0 -and
+            $sid -notin $allowedSids) {
+            throw "publish root permits replacement by an unapproved identity: $($current.FullName)"
+        }
+    }
+    $isDirect = $false
+    $current = $current.Parent
+}
+"""
+
+
+def _windows_system_powershell() -> Path:
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+    if length <= 0 or length >= len(buffer):
+        raise ReleaseArtifactError("cannot resolve the Windows system directory")
+    path = Path(buffer.value) / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if path.is_symlink() or not path.is_file():
+        raise ReleaseArtifactError(f"fixed system PowerShell is unavailable: {path}")
+    _validate_fixed_system_tool(path)
+    return path
+
+
+def _validate_atomic_publish_root(output_root: Path) -> Path:
+    if output_root.is_symlink() or not output_root.is_dir():
+        raise ReleaseArtifactError("candidate publish root must be a regular directory")
+    for path in (output_root, *output_root.parents):
+        if path.is_symlink() or not path.is_dir():
+            raise ReleaseArtifactError(f"candidate publish root path is missing or linked: {path}")
+    if os.name == "nt":
+        powershell = _windows_system_powershell()
+        system_root = str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")).resolve())
+        result = subprocess.run(
+            [
+                str(powershell),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                WINDOWS_PUBLISH_ROOT_VALIDATOR,
+            ],
+            capture_output=True,
+            check=False,
+            env={
+                "PATH": str(powershell.parent),
+                "RUISHENG_PUBLISH_ROOT": str(output_root),
+                "SYSTEMROOT": system_root,
+                "WINDIR": system_root,
+            },
+            timeout=30,
+        )
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
+            raise ReleaseArtifactError(
+                "candidate publish root is not protected from replacement"
+                + (f": {details}" if details else "")
+            )
+    else:
+        trusted_uids = {0, os.geteuid()}  # type: ignore[attr-defined]
+        for path in (output_root, *output_root.parents):
+            metadata = path.stat()
+            if metadata.st_uid not in trusted_uids or metadata.st_mode & 0o022:
+                raise ReleaseArtifactError(
+                    f"candidate publish root has unsafe ownership or permissions: {path}"
+                )
+    return output_root.resolve()
+
+
+def _validate_sshsig_file(path: Path) -> None:
+    try:
+        value = path.read_bytes()
+    except OSError as error:
+        raise ReleaseArtifactError(f"cannot read SSH signature: {error}") from error
+    header = b"-----BEGIN SSH SIGNATURE-----\n"
+    footer = b"-----END SSH SIGNATURE-----\n"
+    if not value.startswith(header) or not value.endswith(footer):
+        raise ReleaseArtifactError("SSH signature armor is not canonical")
+    body = value[len(header) : -len(footer)]
+    lines = body.splitlines()
+    if not lines:
+        raise ReleaseArtifactError("SSH signature armor is not canonical")
+    try:
+        decoded = base64.b64decode(b"".join(lines), validate=True)
+    except binascii.Error as error:
+        raise ReleaseArtifactError("SSH signature armor is invalid base64") from error
+    if not decoded.startswith(b"SSHSIG"):
+        raise ReleaseArtifactError("SSH signature payload is invalid")
+    encoded = base64.b64encode(decoded)
+    canonical = (
+        header
+        + b"\n".join(
+            encoded[offset : offset + SSHSIG_ARMOR_LINE_WIDTH]
+            for offset in range(0, len(encoded), SSHSIG_ARMOR_LINE_WIDTH)
+        )
+        + b"\n"
+        + footer
+    )
+    if value != canonical:
+        raise ReleaseArtifactError("SSH signature armor is not canonical")
+
+
+def _verify_publisher_signature(package: Path, trust: ReleaseTrustAnchor, runner: Runner) -> bytes:
+    sums_path = package / SIGNED_OBJECT
+    signature_path = package / SIGNATURE_FILE
+    if sums_path.is_symlink() or not sums_path.is_file():
+        raise ReleaseArtifactError("publisher authenticity FAILED: SHA256SUMS is missing or linked")
+    if signature_path.is_symlink() or not signature_path.is_file():
+        raise ReleaseArtifactError(
+            "publisher authenticity FAILED: SHA256SUMS.sig is missing or linked"
+        )
+    try:
+        _validate_sshsig_file(signature_path)
+    except ReleaseArtifactError as error:
+        raise ReleaseArtifactError(f"publisher authenticity FAILED: {error}") from error
+    try:
+        signed_bytes = sums_path.read_bytes()
+    except OSError as error:
+        raise ReleaseArtifactError(
+            f"publisher authenticity FAILED: cannot read SHA256SUMS: {error}"
+        ) from error
+    anchor_copy = package.parent / f".approved-allowed-signers-{uuid.uuid4().hex}"
+    try:
+        with anchor_copy.open("xb") as output:
+            output.write(trust.allowed_signers_bytes)
+        os.chmod(anchor_copy, 0o600)
+        ssh_keygen = _system_ssh_keygen()
+        runner.run(
+            [
+                str(ssh_keygen),
+                "-Y",
+                "verify",
+                "-f",
+                str(anchor_copy),
+                "-I",
+                PUBLISHER,
+                "-n",
+                SIGNATURE_NAMESPACE,
+                "-s",
+                str(signature_path),
+            ],
+            cwd=package,
+            input_bytes=signed_bytes,
+        )
+    except (OSError, ReleaseArtifactError) as error:
+        raise ReleaseArtifactError(f"publisher authenticity FAILED: {error}") from error
+    finally:
+        anchor_copy.unlink(missing_ok=True)
+    return signed_bytes
+
+
+def _sign_sha256sums(
+    package: Path, signing_identity: Path, trust: ReleaseTrustAnchor, runner: Runner
+) -> None:
+    if signing_identity.is_symlink() or not signing_identity.is_file():
+        raise ReleaseArtifactError("signing identity is missing or linked")
+    if signing_identity.suffix.casefold() != ".pub":
+        raise ReleaseArtifactError(
+            "signing identity must be an agent-backed OpenSSH public key (.pub)"
+        )
+    try:
+        identity_bytes = signing_identity.read_bytes()
+    except OSError as error:
+        raise ReleaseArtifactError(f"cannot read signing identity: {error}") from error
+    identity_fields = identity_bytes.removesuffix(b"\n").split(maxsplit=2)
+    if (
+        len(identity_fields) not in {2, 3}
+        or not identity_bytes.endswith(b"\n")
+        or b"\n" in identity_bytes[:-1]
+        or b"\r" in identity_bytes
+        or identity_fields[:2] != trust.public_key_line.rstrip(b"\n").split()
+    ):
+        raise ReleaseArtifactError(
+            "signing identity does not match the approved agent-backed release key"
+        )
+    signature_path = package / SIGNATURE_FILE
+    identity_snapshot = package / ".release-signing-identity.pub"
+    signature_path.unlink(missing_ok=True)
+    identity_snapshot.unlink(missing_ok=True)
+    try:
+        with identity_snapshot.open("xb") as snapshot:
+            snapshot.write(identity_bytes)
+        os.chmod(identity_snapshot, 0o600)
+        ssh_keygen = _system_ssh_keygen()
+        runner.run(
+            [
+                str(ssh_keygen),
+                "-Y",
+                "sign",
+                "-U",
+                "-f",
+                str(identity_snapshot),
+                "-n",
+                SIGNATURE_NAMESPACE,
+                str(package / SIGNED_OBJECT),
+            ],
+            cwd=package,
+        )
+    finally:
+        identity_snapshot.unlink(missing_ok=True)
+    if signature_path.is_symlink() or not signature_path.is_file():
+        raise ReleaseArtifactError("ssh-keygen did not create SHA256SUMS.sig")
+    _verify_publisher_signature(package, trust, runner)
+
+
 def validate_candidate_id(candidate_id: str) -> str:
     if CANDIDATE_ID_PATTERN.fullmatch(candidate_id) is None:
         raise ReleaseArtifactError(
@@ -289,11 +729,19 @@ def _validate_relative_path(value: str) -> str:
 
 def _read_json_object(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        contents = path.read_bytes()
+    except OSError as error:
         raise ReleaseArtifactError(f"invalid JSON file {path}: {error}") from error
+    return _read_json_object_bytes(contents, label=str(path))
+
+
+def _read_json_object_bytes(contents: bytes, *, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(contents.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReleaseArtifactError(f"invalid JSON file {label}: {error}") from error
     if not isinstance(value, dict):
-        raise ReleaseArtifactError(f"JSON root must be an object: {path}")
+        raise ReleaseArtifactError(f"JSON root must be an object: {label}")
     return value
 
 
@@ -794,9 +1242,17 @@ def render_manifest_markdown(manifest: CandidateManifest) -> str:
             "",
             "## Authenticity Gate",
             "",
-            "File and image integrity can be verified, but publisher authenticity is not configured.",
-            "CAP-1 and G0-03 remain **BLOCKED** until the approved signature or trusted distribution "
-            "mechanism is applied.",
+            f"- Status declared by manifest: `{manifest.authenticity['status']}`",
+            f"- Scheme: `{manifest.authenticity['scheme']}`",
+            f"- Publisher: `{manifest.authenticity['publisher']}`",
+            f"- Namespace: `{manifest.authenticity['namespace']}`",
+            f"- Key type: `{manifest.authenticity['key_type']}`",
+            f"- Key fingerprint: `{manifest.authenticity['key_fingerprint']}`",
+            f"- Signed object: `{manifest.authenticity['signed_object']}`",
+            f"- Signature file: `{manifest.authenticity['signature_file']}`",
+            "",
+            "`SIGNED` is a package declaration. Only verification against the approved external "
+            "trust anchor establishes publisher authenticity as `VERIFIED`.",
             "",
         ]
     )
@@ -828,12 +1284,15 @@ def _write_sha256sums(package: Path, paths: Sequence[str]) -> None:
     (package / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
-def _parse_sha256sums(path: Path) -> dict[str, str]:
+def _parse_sha256sums_bytes(value: bytes) -> dict[str, str]:
     values: dict[str, str] = {}
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as error:
-        raise ReleaseArtifactError(f"cannot read SHA256SUMS: {error}") from error
+        text = value.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ReleaseArtifactError(f"cannot decode SHA256SUMS: {error}") from error
+    if not text.endswith("\n") or "\r" in text:
+        raise ReleaseArtifactError("SHA256SUMS must use canonical LF line endings")
+    lines = text.removesuffix("\n").split("\n")
     for line_number, line in enumerate(lines, start=1):
         match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
         if match is None:
@@ -844,6 +1303,14 @@ def _parse_sha256sums(path: Path) -> dict[str, str]:
             raise ReleaseArtifactError(f"duplicate SHA256SUMS path: {relative}")
         values[relative] = digest
     return values
+
+
+def _parse_sha256sums(path: Path) -> dict[str, str]:
+    try:
+        value = path.read_bytes()
+    except OSError as error:
+        raise ReleaseArtifactError(f"cannot read SHA256SUMS: {error}") from error
+    return _parse_sha256sums_bytes(value)
 
 
 def _manifest_from_dict(value: dict[str, Any]) -> CandidateManifest:
@@ -909,7 +1376,7 @@ def _validate_manifest(manifest: CandidateManifest) -> None:  # noqa: PLR0912, P
     if (
         not isinstance(manifest.schema_version, int)
         or isinstance(manifest.schema_version, bool)
-        or manifest.schema_version != 1
+        or manifest.schema_version != MANIFEST_SCHEMA_VERSION
     ):
         raise ReleaseArtifactError("unsupported manifest schema_version")
     try:
@@ -933,12 +1400,24 @@ def _validate_manifest(manifest: CandidateManifest) -> None:  # noqa: PLR0912, P
         )
     ):
         raise ReleaseArtifactError("manifest tools are invalid")
+    if not isinstance(manifest.authenticity, dict):
+        raise ReleaseArtifactError("manifest authenticity is invalid")
     expected_authenticity = {
-        "status": "BLOCKED",
-        "reason": "No approved publisher signature or trusted distribution mechanism is configured.",
+        "status": "SIGNED",
+        "scheme": SIGNATURE_SCHEME,
+        "publisher": PUBLISHER,
+        "namespace": SIGNATURE_NAMESPACE,
+        "key_type": SIGNATURE_KEY_TYPE,
+        "signed_object": SIGNED_OBJECT,
+        "signature_file": SIGNATURE_FILE,
     }
-    if manifest.authenticity != expected_authenticity:
-        raise ReleaseArtifactError("manifest must preserve the publisher-authenticity BLOCKED gate")
+    if set(manifest.authenticity) != {*expected_authenticity, "key_fingerprint"} or any(
+        manifest.authenticity.get(key) != value for key, value in expected_authenticity.items()
+    ):
+        raise ReleaseArtifactError("manifest authenticity contract is invalid")
+    fingerprint = manifest.authenticity.get("key_fingerprint")
+    if not isinstance(fingerprint, str) or FINGERPRINT_PATTERN.fullmatch(fingerprint) is None:
+        raise ReleaseArtifactError("manifest release key fingerprint is invalid")
     if tuple(image.component for image in manifest.images) != COMPONENTS:
         raise ReleaseArtifactError(
             "manifest must contain postgres, redis, api, gw, and web in order"
@@ -1089,35 +1568,175 @@ def _validate_compose(package: Path, manifest: CandidateManifest, runner: Runner
             raise ReleaseArtifactError(f"candidate Compose service can pull: {name}")
 
 
-def verify_package(package: Path, runner: Runner) -> CandidateManifest:
+def _expected_candidate_files() -> set[str]:
+    return FIXED_PACKAGE_FILES | {f"images/{component}.tar.gz" for component in COMPONENTS}
+
+
+@contextmanager
+def _protected_candidate_snapshot(  # noqa: PLR0912, PLR0915
+    package: Path, *, parent: Path | None = None
+) -> Iterator[Path]:
+    if package.is_symlink() or not package.is_dir():
+        raise ReleaseArtifactError(
+            "publisher authenticity FAILED: candidate directory is missing or linked"
+        )
     package = package.resolve()
-    manifest_path = package / "MANIFEST.json"
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise ReleaseArtifactError("candidate package is missing a regular MANIFEST.json")
-    manifest = _manifest_from_dict(_read_json_object(manifest_path))
-    _validate_manifest(manifest)
-    expected_files = FIXED_PACKAGE_FILES | {image.archive for image in manifest.images}
+    expected_files = _expected_candidate_files()
     actual_files = _package_file_set(package)
     if actual_files != expected_files:
         missing = sorted(expected_files - actual_files)
         extra = sorted(actual_files - expected_files)
         raise ReleaseArtifactError(
-            f"candidate file allowlist mismatch: missing={missing}, extra={extra}"
+            "publisher authenticity FAILED: candidate file allowlist mismatch: "
+            f"missing={missing}, extra={extra}"
         )
-    sums = _parse_sha256sums(package / "SHA256SUMS")
-    expected_hashed_files = expected_files - {"SHA256SUMS"}
+    initial_sizes: dict[str, int] = {}
+    for relative in sorted(expected_files):
+        source = package / relative
+        if source.is_symlink():
+            raise ReleaseArtifactError(
+                f"publisher authenticity FAILED: candidate file changed or linked: {relative}"
+            )
+        metadata = source.stat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ReleaseArtifactError(
+                f"publisher authenticity FAILED: candidate file is not regular: {relative}"
+            )
+        initial_sizes[relative] = metadata.st_size
+    total_size = sum(initial_sizes.values())
+    snapshot_parent = Path(parent) if parent is not None else Path(tempfile.gettempdir())
+    reserve = max(64 * 1024 * 1024, total_size // 10)
+    if shutil.disk_usage(snapshot_parent).free < total_size + reserve:
+        raise ReleaseArtifactError(
+            "publisher authenticity FAILED: insufficient free space for protected candidate "
+            "snapshot"
+        )
+    temporary = tempfile.mkdtemp(prefix="ruisheng-verified-candidate-", dir=snapshot_parent)
+    snapshot = Path(temporary)
+    try:
+        os.chmod(snapshot, 0o700)
+        (snapshot / "images").mkdir(mode=0o700)
+        try:
+            for relative in sorted(expected_files):
+                source = package / relative
+                destination = snapshot / relative
+                if source.is_symlink() or not source.is_file():
+                    raise ReleaseArtifactError(
+                        f"publisher authenticity FAILED: candidate file changed or linked: "
+                        f"{relative}"
+                    )
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(source, flags)
+                try:
+                    opened = os.fstat(descriptor)
+                    expected_size = initial_sizes[relative]
+                    if not stat.S_ISREG(opened.st_mode) or opened.st_size != expected_size:
+                        raise ReleaseArtifactError(
+                            "publisher authenticity FAILED: candidate file changed before "
+                            f"snapshot: {relative}"
+                        )
+                    copied = 0
+                    with (
+                        os.fdopen(descriptor, "rb", closefd=False) as input_stream,
+                        destination.open("xb") as output_stream,
+                    ):
+                        while copied < expected_size:
+                            chunk = input_stream.read(min(1024 * 1024, expected_size - copied))
+                            if not chunk:
+                                break
+                            output_stream.write(chunk)
+                            copied += len(chunk)
+                        if copied != expected_size or input_stream.read(1):
+                            raise ReleaseArtifactError(
+                                "publisher authenticity FAILED: candidate file size changed "
+                                f"during snapshot: {relative}"
+                            )
+                    os.chmod(destination, 0o600)
+                finally:
+                    os.close(descriptor)
+        except OSError as error:
+            raise ReleaseArtifactError(
+                f"publisher authenticity FAILED: cannot create protected candidate snapshot: "
+                f"{error}"
+            ) from error
+        yield snapshot
+    finally:
+        if snapshot.exists():
+            try:
+                shutil.rmtree(snapshot)
+            except OSError as error:
+                active_error = sys.exception()
+                if active_error is None:
+                    raise ReleaseArtifactError(
+                        f"protected candidate snapshot cleanup failed: {snapshot}: {error}"
+                    ) from error
+                active_error.add_note(
+                    f"protected candidate snapshot cleanup failed: {snapshot}: {error}"
+                )
+
+
+def _verify_snapshot_contents(  # noqa: PLR0912
+    package: Path,
+    runner: Runner,
+    *,
+    trust: ReleaseTrustAnchor,
+    validate_compose: bool,
+) -> CandidateManifest:
+    package = package.resolve()
+    _ensure_external_trust(package, trust)
+    signed_sums_bytes = _verify_publisher_signature(package, trust, runner)
+    sums = _parse_sha256sums_bytes(signed_sums_bytes)
+    expected_files = _expected_candidate_files()
+    actual_files = _package_file_set(package)
+    if actual_files != expected_files:
+        missing = sorted(expected_files - actual_files)
+        extra = sorted(actual_files - expected_files)
+        raise ReleaseArtifactError(
+            f"publisher authenticity FAILED: candidate file allowlist mismatch: "
+            f"missing={missing}, extra={extra}"
+        )
+    expected_hashed_files = expected_files - {"SHA256SUMS", "SHA256SUMS.sig"}
     if set(sums) != expected_hashed_files:
         missing = sorted(expected_hashed_files - set(sums))
         extra = sorted(set(sums) - expected_hashed_files)
         raise ReleaseArtifactError(
-            f"SHA256SUMS allowlist mismatch: missing={missing}, extra={extra}"
+            f"publisher authenticity FAILED: SHA256SUMS allowlist mismatch: "
+            f"missing={missing}, extra={extra}"
+        )
+    manifest_path = package / "MANIFEST.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ReleaseArtifactError(
+            "publisher authenticity FAILED: candidate package is missing a regular MANIFEST.json"
+        )
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+    except OSError as error:
+        raise ReleaseArtifactError(
+            f"publisher authenticity FAILED: cannot read MANIFEST.json: {error}"
+        ) from error
+    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    if manifest_digest != sums["MANIFEST.json"]:
+        raise ReleaseArtifactError(
+            "publisher authenticity FAILED: SHA-256 mismatch for MANIFEST.json: "
+            f"expected {sums['MANIFEST.json']}, got {manifest_digest}"
         )
     for relative, expected_digest in sums.items():
+        if relative == "MANIFEST.json":
+            continue
         actual_digest = sha256_file(package / relative)
         if actual_digest != expected_digest:
             raise ReleaseArtifactError(
-                f"SHA-256 mismatch for {relative}: expected {expected_digest}, got {actual_digest}"
+                f"publisher authenticity FAILED: SHA-256 mismatch for {relative}: "
+                f"expected {expected_digest}, got {actual_digest}"
             )
+    manifest = _manifest_from_dict(
+        _read_json_object_bytes(manifest_bytes, label=str(manifest_path))
+    )
+    _validate_manifest(manifest)
+    if manifest.authenticity["key_fingerprint"] != trust.fingerprint:
+        raise ReleaseArtifactError(
+            "publisher authenticity FAILED: manifest fingerprint does not match approved trust"
+        )
     expected_markdown = render_manifest_markdown(manifest)
     if (package / "MANIFEST.md").read_text(encoding="utf-8") != expected_markdown:
         raise ReleaseArtifactError("MANIFEST.md does not match MANIFEST.json")
@@ -1138,27 +1757,67 @@ def verify_package(package: Path, runner: Runner) -> CandidateManifest:
                 f"archive identity mismatch for {image.component}: "
                 f"expected {expected_identity}, got {actual_identity}"
             )
-    _validate_compose(package, manifest, runner)
+    if validate_compose:
+        _validate_compose(package, manifest, runner)
     return manifest
 
 
-def load_and_verify_images(package: Path, manifest: CandidateManifest, runner: Runner) -> None:
-    for image in manifest.images:
-        runner.run(
-            ["docker", "image", "load", "--input", str(package / image.archive)], cwd=package
-        )
-    for image in manifest.images:
-        inspected = inspect_image(image.candidate_reference, runner, root=package)
-        expected = (image.image_id, image.os, image.architecture)
-        actual = (inspected.image_id, inspected.os, inspected.architecture)
-        if actual != expected:
-            raise ReleaseArtifactError(
-                f"loaded image identity mismatch for {image.component}: expected {expected}, got {actual}"
+def verify_package(
+    package: Path,
+    runner: Runner,
+    *,
+    trust_directory: Path,
+    require_system_trust: bool = False,
+) -> CandidateManifest:
+    trust = _load_release_trust(trust_directory)
+    snapshot_parent: Path | None = None
+    if require_system_trust:
+        _validate_system_trust_permissions(trust)
+        snapshot_parent = _system_protected_workdir()
+    with _protected_candidate_snapshot(package, parent=snapshot_parent) as snapshot:
+        return _verify_snapshot_contents(snapshot, runner, trust=trust, validate_compose=True)
+
+
+def load_and_verify_images(
+    package: Path,
+    runner: Runner,
+    *,
+    trust_directory: Path,
+    require_system_trust: bool = False,
+) -> CandidateManifest:
+    trust = _load_release_trust(trust_directory)
+    snapshot_parent: Path | None = None
+    if require_system_trust:
+        _validate_system_trust_permissions(trust)
+        snapshot_parent = _system_protected_workdir()
+    with _protected_candidate_snapshot(package, parent=snapshot_parent) as snapshot:
+        manifest = _verify_snapshot_contents(snapshot, runner, trust=trust, validate_compose=True)
+        for image in manifest.images:
+            runner.run(
+                [
+                    "docker",
+                    "image",
+                    "load",
+                    "--input",
+                    str(snapshot / image.archive),
+                ],
+                cwd=snapshot,
             )
-        if image.candidate_reference not in inspected.repo_tags:
-            raise ReleaseArtifactError(
-                f"loaded image tag is missing for {image.component}: {image.candidate_reference}"
-            )
+        for image in manifest.images:
+            inspected = inspect_image(image.candidate_reference, runner, root=snapshot)
+            expected = (image.image_id, image.os, image.architecture)
+            actual = (inspected.image_id, inspected.os, inspected.architecture)
+            if actual != expected:
+                raise ReleaseArtifactError(
+                    f"loaded image identity mismatch for {image.component}: "
+                    f"expected {expected}, got {actual}"
+                )
+            if image.candidate_reference not in inspected.repo_tags:
+                raise ReleaseArtifactError(
+                    f"loaded image tag is missing for {image.component}: "
+                    f"{image.candidate_reference}"
+                )
+        return manifest
 
 
 def _git_state(root: Path, runner: Runner) -> tuple[str, str]:
@@ -1274,6 +1933,8 @@ def build_candidate(  # noqa: PLR0912, PLR0915
     postgres_source: str,
     redis_source: str,
     runner: Runner,
+    signing_identity: Path,
+    trust_directory: Path,
     check_clean: bool = True,
     prebuilt_app_sources: Mapping[str, str] | None = None,
     pull_base_images: bool = True,
@@ -1282,6 +1943,10 @@ def build_candidate(  # noqa: PLR0912, PLR0915
     candidate_id = validate_candidate_id(candidate_id)
     target_os, target_architecture = parse_target_platform(target_platform)
     root = root.resolve()
+    trust = _load_release_trust(trust_directory)
+    if signing_identity.is_symlink():
+        raise ReleaseArtifactError("signing identity is missing or linked")
+    signing_identity = signing_identity.resolve()
     env_file = env_file.resolve()
     if not env_file.is_file():
         raise ReleaseArtifactError(f"production environment file does not exist: {env_file}")
@@ -1291,12 +1956,22 @@ def build_candidate(  # noqa: PLR0912, PLR0915
         source_commit = runner.run(["git", "rev-parse", "HEAD"], cwd=root)
         if SOURCE_COMMIT_PATTERN.fullmatch(source_commit) is None:
             raise ReleaseArtifactError("git rev-parse did not return a full lowercase commit")
-    final_directory = output_root.resolve() / candidate_id
+    output_root = output_root.absolute()
+    if output_root.is_symlink():
+        raise ReleaseArtifactError("candidate publish root must not be linked")
+    final_directory = output_root / candidate_id
     if final_directory.exists():
         raise ReleaseArtifactError(f"candidate ID already exists: {final_directory}")
     references = candidate_image_references(candidate_id)
     _ensure_candidate_tags_absent(references, runner, root=root)
-    final_directory.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        output_root.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise ReleaseArtifactError(f"cannot create candidate publish root: {error}") from error
+    output_root = _validate_atomic_publish_root(output_root)
+    final_directory = output_root / candidate_id
+    if final_directory.exists():
+        raise ReleaseArtifactError(f"candidate ID already exists: {final_directory}")
     resolved_lock_root = (
         lock_root or Path(tempfile.gettempdir()) / "ruisheng-release-artifact-locks"
     ).resolve()
@@ -1354,6 +2029,7 @@ def build_candidate(  # noqa: PLR0912, PLR0915
         "gw": f"docker-build://ruisheng-gw/Dockerfile@{source_commit}",
         "web": f"docker-build://ruisheng-web/Dockerfile@{source_commit}",
     }
+    published = False
     try:
         (temporary_directory / "images").mkdir()
         for component, source in (("postgres", postgres_source), ("redis", redis_source)):
@@ -1434,7 +2110,7 @@ def build_candidate(  # noqa: PLR0912, PLR0915
         alembic_head = _alembic_head(root, runner)
         images = tuple(partial_images)
         manifest = CandidateManifest(
-            schema_version=1,
+            schema_version=MANIFEST_SCHEMA_VERSION,
             candidate_id=candidate_id,
             source_commit=source_commit,
             generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
@@ -1451,22 +2127,34 @@ def build_candidate(  # noqa: PLR0912, PLR0915
             ),
             tools=_tool_versions(root, runner),
             authenticity={
-                "status": "BLOCKED",
-                "reason": "No approved publisher signature or trusted distribution mechanism is configured.",
+                "status": "SIGNED",
+                "scheme": SIGNATURE_SCHEME,
+                "publisher": PUBLISHER,
+                "namespace": SIGNATURE_NAMESPACE,
+                "key_type": SIGNATURE_KEY_TYPE,
+                "key_fingerprint": trust.fingerprint,
+                "signed_object": SIGNED_OBJECT,
+                "signature_file": SIGNATURE_FILE,
             },
             images=images,
         )
         _write_manifests(temporary_directory, manifest)
         hashed_files = HASHED_FIXED_FILES | {image.archive for image in images}
         _write_sha256sums(temporary_directory, tuple(hashed_files))
-        verify_package(temporary_directory, runner)
-        if check_clean:
-            final_commit, _dirty = _git_state(root, runner)
-            if final_commit != source_commit:
-                raise ReleaseArtifactError(
-                    "tracked release inputs changed HEAD while the candidate was being built"
-                )
-        os.replace(temporary_directory, final_directory)
+        _sign_sha256sums(temporary_directory, signing_identity, trust, runner)
+        with _protected_candidate_snapshot(
+            temporary_directory, parent=output_root
+        ) as verified_snapshot:
+            _verify_snapshot_contents(verified_snapshot, runner, trust=trust, validate_compose=True)
+            if check_clean:
+                final_commit, _dirty = _git_state(root, runner)
+                if final_commit != source_commit:
+                    raise ReleaseArtifactError(
+                        "tracked release inputs changed HEAD while the candidate was being built"
+                    )
+            shutil.rmtree(temporary_directory)
+            os.replace(verified_snapshot, final_directory)
+        published = True
         return final_directory
     except BaseException as error:
         shutil.rmtree(temporary_directory, ignore_errors=True)
@@ -1475,7 +2163,30 @@ def build_candidate(  # noqa: PLR0912, PLR0915
             error.add_note("candidate tag cleanup failed: " + "; ".join(cleanup_errors))
         raise
     finally:
-        lock_path.unlink(missing_ok=True)
+        active_error = sys.exception()
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError as lock_error:
+            if active_error is not None:
+                active_error.add_note(
+                    f"candidate build lock cleanup failed: {lock_path}: {lock_error}"
+                )
+            else:
+                rollback_errors: list[str] = []
+                if published:
+                    try:
+                        shutil.rmtree(final_directory)
+                    except OSError as rollback_error:
+                        rollback_errors.append(
+                            f"candidate directory rollback failed: {rollback_error}"
+                        )
+                    rollback_errors.extend(_remove_candidate_tags(references, runner, root=root))
+                release_error = ReleaseArtifactError(
+                    f"candidate build lock cleanup failed: {lock_path}: {lock_error}"
+                )
+                if rollback_errors:
+                    release_error.add_note("; ".join(rollback_errors))
+                raise release_error from lock_error
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1485,13 +2196,21 @@ def _build_parser() -> argparse.ArgumentParser:
     build.add_argument("--candidate-id", required=True)
     build.add_argument("--target-platform", required=True)
     build.add_argument("--env-file", type=Path, required=True)
-    build.add_argument("--output-root", type=Path, default=Path("dist/deploy"))
+    build.add_argument("--output-root", type=Path, required=True)
     build.add_argument("--postgres-source", default="timescale/timescaledb:2.16.1-pg15")
     build.add_argument("--redis-source", default="redis:7-alpine")
+    build.add_argument("--signing-identity", type=Path, required=True)
+    build.add_argument("--trust-directory", type=Path, required=True)
     verify = subparsers.add_parser("verify", help="verify a candidate without starting services")
     verify.add_argument("package", type=Path)
     verify.add_argument("--load", action="store_true", help="load and inspect the five images")
     return parser
+
+
+def _system_trust_directory() -> Path:
+    if os.name == "nt":
+        return Path("C:/ProgramData/Ruisheng/trust")
+    return Path("/etc/ruisheng/trust")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1509,15 +2228,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                 postgres_source=args.postgres_source,
                 redis_source=args.redis_source,
                 runner=runner,
+                signing_identity=args.signing_identity,
+                trust_directory=args.trust_directory,
             )
             print(f"Candidate created: {destination}")
         else:
-            manifest = verify_package(args.package, runner)
+            if os.name == "nt":
+                raise ReleaseArtifactError(
+                    "Windows verification must use the ACL-validating external "
+                    r"C:\ProgramData\Ruisheng\bin\verify-publisher.ps1 bootstrap"
+                )
             if args.load:
-                load_and_verify_images(args.package.resolve(), manifest, runner)
+                manifest = load_and_verify_images(
+                    args.package,
+                    runner,
+                    trust_directory=_system_trust_directory(),
+                    require_system_trust=True,
+                )
+            else:
+                manifest = verify_package(
+                    args.package,
+                    runner,
+                    trust_directory=_system_trust_directory(),
+                    require_system_trust=True,
+                )
             print(
-                f"Integrity verified for {manifest.candidate_id}; publisher authenticity is not "
-                "configured. CAP-1/G0-03 remain BLOCKED."
+                f"Publisher authenticity VERIFIED and integrity verified for "
+                f"{manifest.candidate_id}."
             )
     except ReleaseArtifactError as error:
         print(f"release artifact error: {error}", file=sys.stderr)

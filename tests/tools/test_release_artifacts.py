@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -14,7 +15,9 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from tools import release_artifacts
 from tools.release_artifacts import (
     COMPONENTS,
     FIXED_PACKAGE_FILES,
@@ -35,6 +38,68 @@ CANDIDATE_ID = "deploy-20260819.1"
 PLATFORM = "linux/amd64"
 
 
+def _fake_key_blob(seed: bytes = b"r" * 32) -> bytes:
+    key_type = b"ssh-ed25519"
+    return len(key_type).to_bytes(4, "big") + key_type + len(seed).to_bytes(4, "big") + seed
+
+
+def _ssh_string(value: bytes) -> bytes:
+    return len(value).to_bytes(4, "big") + value
+
+
+def _write_test_sshsig(path: Path, payload: bytes, private_key: Ed25519PrivateKey) -> None:
+    namespace = b"ruisheng-candidate-v1"
+    hash_algorithm = b"sha512"
+    signed_payload = (
+        b"SSHSIG"
+        + _ssh_string(namespace)
+        + _ssh_string(b"")
+        + _ssh_string(hash_algorithm)
+        + _ssh_string(hashlib.sha512(payload).digest())
+    )
+    signature_blob = _ssh_string(b"ssh-ed25519") + _ssh_string(private_key.sign(signed_payload))
+    public_blob = _fake_key_blob(private_key.public_key().public_bytes_raw())
+    binary_signature = (
+        b"SSHSIG"
+        + (1).to_bytes(4, "big")
+        + _ssh_string(public_blob)
+        + _ssh_string(namespace)
+        + _ssh_string(b"")
+        + _ssh_string(hash_algorithm)
+        + _ssh_string(signature_blob)
+    )
+    encoded = base64.b64encode(binary_signature)
+    body = b"\n".join(encoded[index : index + 70] for index in range(0, len(encoded), 70))
+    path.write_bytes(b"-----BEGIN SSH SIGNATURE-----\n" + body + b"\n-----END SSH SIGNATURE-----\n")
+
+
+def _write_fake_release_trust(tmp_path: Path) -> tuple[Path, Path]:
+    trust = tmp_path / "release-trust"
+    trust.mkdir(exist_ok=True)
+    blob = _fake_key_blob()
+    encoded = base64.b64encode(blob).decode("ascii")
+    fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode(
+        "ascii"
+    ).rstrip("=")
+    (trust / "release-allowed-signers").write_text(
+        f"ruisheng-release ssh-ed25519 {encoded}\n", encoding="ascii", newline="\n"
+    )
+    (trust / "release-key-fingerprint").write_text(
+        fingerprint + "\n", encoding="ascii", newline="\n"
+    )
+    identity = tmp_path / "release-signing-identity.pub"
+    identity.write_text(
+        f"ssh-ed25519 {encoded} test-agent-backed-release\n",
+        encoding="ascii",
+        newline="\n",
+    )
+    return trust, identity
+
+
+def _trust_for_package(package: Path) -> Path:
+    return package.parents[2] / "release-trust"
+
+
 class FakeRunner:
     def __init__(self) -> None:
         self.commands: list[tuple[tuple[str, ...], dict[str, str]]] = []
@@ -42,12 +107,14 @@ class FakeRunner:
         self.configs: dict[str, bytes] = {}
         self.dirty = ""
         self.fail_save_component: str | None = None
+        self.fail_signature = False
         self.compose_image_override: list[str] | None = None
         self.compose_service_override: dict[str, dict[str, str]] | None = None
         self.image_inspect_errors: dict[str, str] = {}
         self.final_commit = COMMIT
         self.git_head_calls = 0
         self.loaded: list[str] = []
+        self.signed_payload: bytes | None = None
         self._add_source("timescale/timescaledb:2.16.1-pg15", "postgres")
         self._add_source("redis:7-alpine", "redis")
 
@@ -74,11 +141,34 @@ class FakeRunner:
         *,
         cwd: Path,
         env: Mapping[str, str] | None = None,
+        input_bytes: bytes | None = None,
     ) -> str:
-        del cwd
         command = tuple(str(arg) for arg in args)
         command_env = dict(env or {})
         self.commands.append((command, command_env))
+        if Path(command[0]).name.casefold() in {"ssh-keygen", "ssh-keygen.exe"} and command[
+            1:3
+        ] == ("-Y", "sign"):
+            if self.fail_signature:
+                raise ReleaseArtifactError("injected signature failure")
+            signed_object = Path(command[-1])
+            self.signed_payload = signed_object.read_bytes()
+            signed_object.with_name(signed_object.name + ".sig").write_bytes(
+                b"-----BEGIN SSH SIGNATURE-----\nU1NIU0lHZmFrZQ==\n-----END SSH SIGNATURE-----\n"
+            )
+            return ""
+        if Path(command[0]).name.casefold() in {"ssh-keygen", "ssh-keygen.exe"} and command[
+            1:3
+        ] == ("-Y", "verify"):
+            if self.signed_payload is not None and input_bytes != self.signed_payload:
+                raise ReleaseArtifactError("signature input mismatch")
+            if (
+                not (cwd / "SHA256SUMS.sig")
+                .read_bytes()
+                .startswith(b"-----BEGIN SSH SIGNATURE-----\n")
+            ):
+                raise ReleaseArtifactError("invalid fake signature")
+            return "Good signature"
         if command == ("git", "rev-parse", "HEAD"):
             self.git_head_calls += 1
             return COMMIT if self.git_head_calls == 1 else self.final_commit
@@ -480,10 +570,11 @@ def _run_powershell_archive_identity(
 ) -> subprocess.CompletedProcess[str]:
     command = r"""
 $source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
-$start = $source.IndexOf('function Fail')
+$start = $source.IndexOf('function Test-SafeRelativePath')
 $end = $source.IndexOf('if ($Manifest.candidate_id')
 if ($start -lt 0 -or $end -lt 0) { throw 'Archive function block not found' }
-. ([scriptblock]::Create($source.Substring($start, $end - $start)))
+. ([scriptblock]::Create('function Fail([string]$Message) { throw "[verify] $Message" }' +
+    [Environment]::NewLine + $source.Substring($start, $end - $start)))
 Get-DockerArchiveIdentity $env:RS_ARCHIVE_PATH $env:RS_ARCHIVE_REFERENCE |
     ConvertTo-Json -Compress
 """
@@ -529,6 +620,14 @@ def production_env(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture(autouse=True)
+def protected_publish_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pytest's temporary tree is deliberately shared; model the pre-provisioned release root.
+    monkeypatch.setattr(
+        release_artifacts, "_validate_atomic_publish_root", lambda path: path.resolve()
+    )
+
+
 def _build(
     tmp_path: Path,
     production_env: Path,
@@ -536,6 +635,7 @@ def _build(
     *,
     candidate_id: str = CANDIDATE_ID,
 ) -> Path:
+    trust, identity = _write_fake_release_trust(tmp_path)
     return build_candidate(
         root=ROOT,
         output_root=tmp_path / "dist" / "deploy",
@@ -545,6 +645,8 @@ def _build(
         postgres_source="timescale/timescaledb:2.16.1-pg15",
         redis_source="redis:7-alpine",
         runner=runner,
+        signing_identity=identity,
+        trust_directory=trust,
         lock_root=tmp_path / "candidate-locks",
     )
 
@@ -560,14 +662,21 @@ def test_build_candidate_closes_five_image_manifest_and_sha_contract(
     assert {
         path.relative_to(package).as_posix() for path in package.rglob("*") if path.is_file()
     } == (FIXED_PACKAGE_FILES | {f"images/{component}.tar.gz" for component in COMPONENTS})
-    manifest = verify_package(package, runner)
+    manifest = verify_package(package, runner, trust_directory=_trust_for_package(package))
     assert tuple(image.component for image in manifest.images) == COMPONENTS
     assert len({image.archive for image in manifest.images}) == 5
     assert len({image.candidate_reference for image in manifest.images}) == 5
     assert len({image.image_id for image in manifest.images}) == 5
     assert manifest.source_commit == COMMIT
     assert manifest.alembic_head == "0012_alarm_notification_runtime"
-    assert manifest.authenticity["status"] == "BLOCKED"
+    assert manifest.schema_version == 2
+    assert manifest.authenticity["status"] == "SIGNED"
+    assert manifest.authenticity["publisher"] == "ruisheng-release"
+    assert manifest.authenticity["namespace"] == "ruisheng-candidate-v1"
+    assert "SHA256SUMS.sig" not in {
+        line.split("  ", 1)[1]
+        for line in (package / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    }
     assert (package / "MANIFEST.md").read_text(encoding="utf-8") == render_manifest_markdown(
         manifest
     )
@@ -587,7 +696,8 @@ def test_build_candidate_closes_five_image_manifest_and_sha_contract(
 def test_logical_identity_is_stable_for_the_same_immutable_inputs(
     tmp_path: Path, production_env: Path
 ) -> None:
-    manifest = verify_package(_build(tmp_path, production_env, FakeRunner()), FakeRunner())
+    package = _build(tmp_path, production_env, FakeRunner())
+    manifest = verify_package(package, FakeRunner(), trust_directory=_trust_for_package(package))
 
     first = compute_logical_identity(
         candidate_id=manifest.candidate_id,
@@ -725,6 +835,168 @@ def test_partial_archive_failure_removes_all_temporary_output(
     )
 
 
+def test_signature_failure_removes_staging_tags_and_lock(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    runner.fail_signature = True
+
+    with pytest.raises(ReleaseArtifactError, match="injected signature failure"):
+        _build(tmp_path, production_env, runner)
+
+    output_root = tmp_path / "dist" / "deploy"
+    assert list(output_root.iterdir()) == []
+    assert not (tmp_path / "candidate-locks" / f"{CANDIDATE_ID}.lock").exists()
+    assert not any(
+        reference in runner.images
+        for reference in candidate_image_references(CANDIDATE_ID).values()
+    )
+
+
+def test_signing_rejects_private_or_mismatched_identity(tmp_path: Path) -> None:
+    trust, identity = _write_fake_release_trust(tmp_path)
+    anchor = release_artifacts._load_release_trust(trust)
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "SHA256SUMS").write_bytes(b"0" * 64 + b"  payload\n")
+    private_identity = tmp_path / "release-signing-identity"
+    private_identity.write_text("unencrypted private material", encoding="ascii")
+
+    with pytest.raises(ReleaseArtifactError, match="agent-backed.*public key"):
+        release_artifacts._sign_sha256sums(package, private_identity, anchor, FakeRunner())
+
+    identity.write_text("ssh-ed25519 invalid mismatched-key\n", encoding="ascii")
+    with pytest.raises(ReleaseArtifactError, match="does not match the approved"):
+        release_artifacts._sign_sha256sums(package, identity, anchor, FakeRunner())
+
+
+def test_build_rejects_linked_agent_identity_before_docker(
+    tmp_path: Path, production_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trust, _identity = _write_fake_release_trust(tmp_path)
+    linked_identity = tmp_path / "linked-release-identity.pub"
+    original_is_symlink = Path.is_symlink
+
+    def report_identity_link(path: Path) -> bool:
+        return path == linked_identity or original_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", report_identity_link)
+    runner = FakeRunner()
+
+    with pytest.raises(ReleaseArtifactError, match="signing identity is missing or linked"):
+        build_candidate(
+            root=ROOT,
+            output_root=tmp_path / "dist" / "deploy",
+            candidate_id=CANDIDATE_ID,
+            target_platform=PLATFORM,
+            env_file=production_env,
+            postgres_source="timescale/timescaledb:2.16.1-pg15",
+            redis_source="redis:7-alpine",
+            runner=runner,
+            signing_identity=linked_identity,
+            trust_directory=trust,
+            lock_root=tmp_path / "candidate-locks",
+        )
+
+    assert not runner.commands
+
+
+def test_lock_cleanup_failure_rolls_back_published_candidate(
+    tmp_path: Path,
+    production_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = FakeRunner()
+    final_directory = tmp_path / "dist" / "deploy" / CANDIDATE_ID
+    lock_path = tmp_path / "candidate-locks" / f"{CANDIDATE_ID}.lock"
+    original_unlink = os.unlink
+
+    def fail_final_lock_cleanup(path: str | bytes, *args: object, **kwargs: object) -> None:
+        if Path(path).name == lock_path.name:
+            raise OSError("injected final lock cleanup failure")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", fail_final_lock_cleanup)
+    with pytest.raises(ReleaseArtifactError, match="candidate build lock cleanup failed"):
+        _build(tmp_path, production_env, runner)
+
+    assert not final_directory.exists()
+    assert lock_path.exists()
+    assert not any(
+        reference in runner.images
+        for reference in candidate_image_references(CANDIDATE_ID).values()
+    )
+
+
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="OpenSSH is unavailable")
+def test_openssh_signature_binds_exact_sums_bytes_and_external_anchor(tmp_path: Path) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_blob = _fake_key_blob(private_key.public_key().public_bytes_raw())
+    public_key = base64.b64encode(public_blob).decode("ascii")
+    trust = tmp_path / "trust"
+    trust.mkdir()
+    (trust / "release-allowed-signers").write_text(
+        f"ruisheng-release ssh-ed25519 {public_key}\n",
+        encoding="ascii",
+        newline="\n",
+    )
+    fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(public_blob).digest()).decode(
+        "ascii"
+    ).rstrip("=")
+    (trust / "release-key-fingerprint").write_text(
+        fingerprint + "\n", encoding="ascii", newline="\n"
+    )
+    package = tmp_path / "package"
+    package.mkdir()
+    sums = package / "SHA256SUMS"
+    original = b"0" * 64 + b"  payload\n"
+    sums.write_bytes(original)
+    anchor = release_artifacts._load_release_trust(trust)
+    runner = release_artifacts.SubprocessRunner()
+
+    signature = package / "SHA256SUMS.sig"
+    _write_test_sshsig(signature, original, private_key)
+    release_artifacts._verify_publisher_signature(package, anchor, runner)
+
+    sums.write_bytes(original + b"\n")
+    with pytest.raises(ReleaseArtifactError, match="publisher authenticity FAILED"):
+        release_artifacts._verify_publisher_signature(package, anchor, runner)
+
+    sums.write_bytes(original)
+    original_signature = signature.read_bytes()
+    signature.write_bytes(original_signature + b"tampered")
+    with pytest.raises(ReleaseArtifactError, match="publisher authenticity FAILED"):
+        release_artifacts._verify_publisher_signature(package, anchor, runner)
+    signature.write_bytes(original_signature)
+
+    encoded = b"".join(original_signature.splitlines()[1:-1])
+    rewrapped = b"\n".join(encoded[index : index + 64] for index in range(0, len(encoded), 64))
+    signature.write_bytes(
+        b"-----BEGIN SSH SIGNATURE-----\n" + rewrapped + b"\n-----END SSH SIGNATURE-----\n"
+    )
+    with pytest.raises(ReleaseArtifactError, match="SSH signature armor is not canonical"):
+        release_artifacts._verify_publisher_signature(package, anchor, runner)
+    signature.write_bytes(original_signature)
+
+    replacement = Ed25519PrivateKey.generate()
+    replacement_blob = _fake_key_blob(replacement.public_key().public_bytes_raw())
+    replacement_key = base64.b64encode(replacement_blob).decode("ascii")
+    (trust / "release-allowed-signers").write_text(
+        f"ruisheng-release ssh-ed25519 {replacement_key}\n",
+        encoding="ascii",
+        newline="\n",
+    )
+    replacement_fingerprint = "SHA256:" + base64.b64encode(
+        hashlib.sha256(replacement_blob).digest()
+    ).decode("ascii").rstrip("=")
+    (trust / "release-key-fingerprint").write_text(
+        replacement_fingerprint + "\n", encoding="ascii", newline="\n"
+    )
+    replacement_anchor = release_artifacts._load_release_trust(trust)
+    with pytest.raises(ReleaseArtifactError, match="publisher authenticity FAILED"):
+        release_artifacts._verify_publisher_signature(package, replacement_anchor, runner)
+
+
 def test_tracked_inputs_changing_during_build_rejects_candidate_and_tags(
     tmp_path: Path, production_env: Path
 ) -> None:
@@ -774,10 +1046,110 @@ def test_verify_rejects_extra_missing_and_tampered_files(
 ) -> None:
     runner = FakeRunner()
     package = _build(tmp_path, production_env, runner)
+    runner.commands.clear()
     mutation(package)  # type: ignore[operator]
 
     with pytest.raises(ReleaseArtifactError, match=error):
-        verify_package(package, runner)
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+    assert not any(command[0] == "docker" for command, _env in runner.commands)
+
+
+def test_sign_and_verify_use_only_fixed_system_ssh_keygen(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+    ssh_commands = [
+        command
+        for command, _env in runner.commands
+        if len(command) >= 3
+        and command[1:3] == ("-Y", "sign")
+        or len(command) >= 3
+        and command[1:3] == ("-Y", "verify")
+    ]
+    assert ssh_commands
+    assert {command[0] for command in ssh_commands} == {str(release_artifacts._system_ssh_keygen())}
+    sign_command = next(command for command in ssh_commands if command[1:3] == ("-Y", "sign"))
+    assert "-U" in sign_command
+    identity_argument = Path(sign_command[sign_command.index("-f") + 1])
+    assert identity_argument.name == ".release-signing-identity.pub"
+    assert not identity_argument.exists()
+    assert not (package / identity_argument.name).exists()
+
+
+def test_builder_requires_a_protected_atomic_publish_root() -> None:
+    implementation = (ROOT / "tools" / "release_artifacts.py").read_text(encoding="utf-8")
+
+    assert "def _validate_atomic_publish_root(output_root: Path) -> Path:" in implementation
+    assert "WINDOWS_PUBLISH_ROOT_VALIDATOR" in implementation
+    assert "publish root permits replacement by an unapproved identity" in implementation
+    assert "output_root = _validate_atomic_publish_root(output_root)" in implementation
+    assert "parent=output_root" in implementation
+
+
+def test_verify_and_load_use_complete_snapshot_for_all_docker_calls(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    runner.commands.clear()
+
+    load_and_verify_images(package, runner, trust_directory=_trust_for_package(package))
+
+    docker_commands = [command for command, _env in runner.commands if command[0] == "docker"]
+    assert docker_commands
+    assert all(str(package) not in argument for command in docker_commands for argument in command)
+    loaded_paths = [
+        Path(command[-1])
+        for command in docker_commands
+        if command[:3] == ("docker", "image", "load")
+    ]
+    assert len(loaded_paths) == len(COMPONENTS)
+    assert len({path.parents[1] for path in loaded_paths}) == 1
+
+
+def test_windows_cli_verify_fails_closed_before_trust_or_docker(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(release_artifacts.os, "name", "nt")
+
+    result = release_artifacts.main(["verify", "candidate", "--load"])
+
+    assert result == 1
+    assert r"C:\ProgramData\Ruisheng\bin\verify-publisher.ps1" in capsys.readouterr().err
+
+
+def test_manifest_is_hashed_before_untrusted_json_is_parsed(
+    tmp_path: Path, production_env: Path
+) -> None:
+    build_runner = FakeRunner()
+    package = _build(tmp_path, production_env, build_runner)
+
+    class ManifestSwapRunner(FakeRunner):
+        def run(self, args: Sequence[str], **kwargs: object) -> str:
+            result = super().run(args, **kwargs)  # type: ignore[arg-type]
+            command = tuple(str(argument) for argument in args)
+            if Path(command[0]).name.casefold() in {"ssh-keygen", "ssh-keygen.exe"} and command[
+                1:3
+            ] == ("-Y", "verify"):
+                (Path(kwargs["cwd"]) / "MANIFEST.json").write_text(
+                    "{not-json", encoding="utf-8", newline="\n"
+                )
+            return result
+
+    runner = ManifestSwapRunner()
+    runner.signed_payload = (package / "SHA256SUMS").read_bytes()
+
+    with pytest.raises(
+        ReleaseArtifactError,
+        match="publisher authenticity FAILED: SHA-256 mismatch for MANIFEST.json",
+    ):
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+    assert not any(command[0] == "docker" for command, _env in runner.commands)
 
 
 @pytest.mark.parametrize(
@@ -793,11 +1165,12 @@ def test_verify_rejects_sha_path_escape(
 ) -> None:
     runner = FakeRunner()
     package = _build(tmp_path, production_env, runner)
-    with (package / "SHA256SUMS").open("a", encoding="utf-8") as sums:
+    with (package / "SHA256SUMS").open("a", encoding="utf-8", newline="\n") as sums:
         sums.write(bad_line + "\n")
+    runner.signed_payload = (package / "SHA256SUMS").read_bytes()
 
     with pytest.raises(ReleaseArtifactError, match="unsafe package path"):
-        verify_package(package, runner)
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
 
 
 def test_archive_tag_collision_or_drift_is_rejected(tmp_path: Path) -> None:
@@ -943,7 +1316,7 @@ def test_compose_image_drift_is_rejected(tmp_path: Path, production_env: Path) -
     verify_runner.compose_image_override = ["wrong/image:tag"] * 6
 
     with pytest.raises(ReleaseArtifactError, match="Compose image set mismatch"):
-        verify_package(package, verify_runner)
+        verify_package(package, verify_runner, trust_directory=_trust_for_package(package))
 
 
 @pytest.mark.parametrize("drift", ("image", "platform"))
@@ -973,7 +1346,7 @@ def test_compose_service_mapping_and_platform_drift_are_rejected(
         verify_runner.compose_service_override["web"]["platform"] = "linux/arm64"
 
     with pytest.raises(ReleaseArtifactError, match=f"Compose {drift} mismatch"):
-        verify_package(package, verify_runner)
+        verify_package(package, verify_runner, trust_directory=_trust_for_package(package))
 
 
 @pytest.mark.parametrize(
@@ -1004,10 +1377,12 @@ def test_manifest_invalid_scalar_is_rejected_as_release_error(
         )
         + "\n",
         encoding="utf-8",
+        newline="\n",
     )
+    runner.signed_payload = sums_path.read_bytes()
 
     with pytest.raises(ReleaseArtifactError, match=error):
-        verify_package(package, runner)
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
 
 
 def test_load_verification_rejects_loaded_image_identity_drift(
@@ -1015,7 +1390,7 @@ def test_load_verification_rejects_loaded_image_identity_drift(
 ) -> None:
     runner = FakeRunner()
     package = _build(tmp_path, production_env, runner)
-    manifest = verify_package(package, runner)
+    verify_package(package, runner, trust_directory=_trust_for_package(package))
     api_reference = candidate_image_references(CANDIDATE_ID)["api"]
     runner.images[api_reference] = {
         **runner.images[api_reference],
@@ -1023,21 +1398,48 @@ def test_load_verification_rejects_loaded_image_identity_drift(
     }
 
     with pytest.raises(ReleaseArtifactError, match="loaded image identity mismatch for api"):
-        load_and_verify_images(package, manifest, runner)
+        load_and_verify_images(
+            package,
+            runner,
+            trust_directory=_trust_for_package(package),
+        )
 
     assert len(runner.loaded) == 5
 
 
-def test_generated_manifest_preserves_blocked_authenticity_language(
+def test_archive_change_before_load_is_rejected_before_any_docker_call(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    verify_package(package, runner, trust_directory=_trust_for_package(package))
+    runner.commands.clear()
+    runner.loaded.clear()
+    (package / "images" / "web.tar.gz").write_bytes(b"changed after verification")
+
+    with pytest.raises(ReleaseArtifactError, match="SHA-256 mismatch for images/web.tar.gz"):
+        load_and_verify_images(
+            package,
+            runner,
+            trust_directory=_trust_for_package(package),
+        )
+
+    assert runner.loaded == []
+    assert not any(command[0] == "docker" for command, _env in runner.commands)
+
+
+def test_generated_manifest_declares_signed_external_trust_contract(
     tmp_path: Path, production_env: Path
 ) -> None:
     package = _build(tmp_path, production_env, FakeRunner())
     manifest_value = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
     markdown = (package / "MANIFEST.md").read_text(encoding="utf-8")
 
-    assert manifest_value["authenticity"]["status"] == "BLOCKED"
-    assert "CAP-1 and G0-03 remain **BLOCKED**" in markdown
-    assert "signature" in manifest_value["authenticity"]["reason"].casefold()
+    assert manifest_value["schema_version"] == 2
+    assert manifest_value["authenticity"]["status"] == "SIGNED"
+    assert manifest_value["authenticity"]["signed_object"] == "SHA256SUMS"
+    assert manifest_value["authenticity"]["signature_file"] == "SHA256SUMS.sig"
+    assert "external trust anchor" in markdown
 
 
 def test_manifest_dataclass_has_only_expected_public_contract_fields() -> None:
@@ -1054,3 +1456,10 @@ def test_manifest_dataclass_has_only_expected_public_contract_fields() -> None:
         "target_os",
         "tools",
     }
+
+
+def test_verify_cli_does_not_accept_a_caller_selected_trust_path() -> None:
+    parser = release_artifacts._build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["verify", "candidate", "--trust-directory", "attacker-selected-trust"])
