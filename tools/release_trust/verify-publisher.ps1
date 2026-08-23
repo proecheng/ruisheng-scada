@@ -13,6 +13,16 @@ if ($PSVersionTable.PSVersion -lt [version]"7.3") {
     Fail "PowerShell 7.3 or newer is required"
 }
 
+function ConvertTo-CmdSafePath([string]$Path, [string]$Label) {
+    $UnsafeCharacters = [char[]]@(
+        '"', ' ', "`t", '%', '!', '&', '|', '<', '>', '^', '(', ')', "`r", "`n"
+    )
+    if ($Path -cnotmatch '^[A-Za-z]:\\' -or $Path.IndexOfAny($UnsafeCharacters) -ge 0) {
+        Fail "$Label cannot be safely passed to the system command processor"
+    }
+    return $Path
+}
+
 function Get-ApprovedSids([switch]$AllowTrustedInstaller) {
     $AllowedSids = @("S-1-5-18", "S-1-5-32-544")
     if ($AllowTrustedInstaller) {
@@ -179,6 +189,12 @@ if (-not (Test-Path -LiteralPath $SshKeygen -PathType Leaf)) {
 }
 Assert-ProtectedAcl $SshKeygen "system ssh-keygen" -AllowTrustedInstaller
 Assert-ProtectedAncestors $SshKeygen "system ssh-keygen" -AllowTrustedInstaller
+$Cmd = Join-Path ([Environment]::SystemDirectory) "cmd.exe"
+if (-not (Test-Path -LiteralPath $Cmd -PathType Leaf)) {
+    Fail "system command processor is required"
+}
+Assert-ProtectedAcl $Cmd "system command processor" -AllowTrustedInstaller
+Assert-ProtectedAncestors $Cmd "system command processor" -AllowTrustedInstaller
 $FingerprintOutput = & $SshKeygen -l -E sha256 -f $AllowedSigners 2>$null
 if ($LASTEXITCODE -ne 0 -or $FingerprintOutput -notmatch '^256 (SHA256:[A-Za-z0-9+/]{43}) ') {
     Fail "allowed-signers does not contain a valid Ed25519 key"
@@ -313,21 +329,25 @@ $CanonicalSignature = "-----BEGIN SSH SIGNATURE-----`n" +
 if ($SignatureText -cne $CanonicalSignature) {
     Fail "SSH signature armor is not canonical"
 }
+$SafeSshKeygen = ConvertTo-CmdSafePath $SshKeygen "system ssh-keygen path"
+$SafeAllowedSigners = ConvertTo-CmdSafePath $AllowedSigners "allowed-signers path"
+$SafeSignaturePath = ConvertTo-CmdSafePath $SignaturePath "signature path"
+$SafeSumsPath = ConvertTo-CmdSafePath $SumsPath "SHA256SUMS path"
+$CommandLine = "$SafeSshKeygen -Y verify -f $SafeAllowedSigners " +
+    "-I ruisheng-release -n ruisheng-candidate-v1 -s $SafeSignaturePath " +
+    "< $SafeSumsPath"
 $Start = [Diagnostics.ProcessStartInfo]::new()
-$Start.FileName = $SshKeygen
+$Start.FileName = $Cmd
 $Start.UseShellExecute = $false
-$Start.RedirectStandardInput = $true
 $Start.RedirectStandardOutput = $true
 $Start.RedirectStandardError = $true
-foreach ($Argument in @("-Y", "verify", "-f", $AllowedSigners, "-I", "ruisheng-release", "-n", "ruisheng-candidate-v1", "-s", $SignaturePath)) {
+foreach ($Argument in @("/d", "/q", "/v:off", "/c", $CommandLine)) {
     [void]$Start.ArgumentList.Add($Argument)
 }
+[byte[]]$SumsBytes = [IO.File]::ReadAllBytes($SumsPath)
 $Process = [Diagnostics.Process]::Start($Start)
 $SshOutputTask = $Process.StandardOutput.ReadToEndAsync()
 $SshErrorTask = $Process.StandardError.ReadToEndAsync()
-[byte[]]$SumsBytes = [IO.File]::ReadAllBytes($SumsPath)
-$Process.StandardInput.BaseStream.Write($SumsBytes, 0, $SumsBytes.Length)
-$Process.StandardInput.Close()
 if (-not $Process.WaitForExit(30000)) {
     $Process.Kill($true)
     $Process.WaitForExit()

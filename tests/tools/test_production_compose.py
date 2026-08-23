@@ -418,6 +418,13 @@ def test_release_verifiers_pin_trust_tools_and_authentication_order() -> None:
         assert "[Environment]::SystemDirectory" in script
         assert "Get-Command ssh-keygen" not in script
         assert "$Offset += 70" in script
+        assert 'Join-Path ([Environment]::SystemDirectory) "cmd.exe"' in script
+        assert "ConvertTo-CmdSafePath" in script
+        assert "$Start.FileName = $Cmd" in script
+        assert 'foreach ($Argument in @("/d", "/q", "/v:off", "/c", $CommandLine))' in script
+        assert '"< $SafeSumsPath"' in script
+        assert "RedirectStandardInput" not in script
+        assert "StandardInput.BaseStream" not in script
     assert 'tempfile.mkdtemp(prefix="publisher-snapshot-", dir=work)' in bootstrap_bash
     assert 'str(package / "verify-candidate.sh")' in bootstrap_bash
     assert "candidate_verifier_bytes" not in bootstrap_bash

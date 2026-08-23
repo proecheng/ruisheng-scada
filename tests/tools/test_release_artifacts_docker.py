@@ -106,6 +106,71 @@ def _run(command: list[str], *, input_text: str | None = None) -> str:
     return result.stdout
 
 
+def _prepare_publish_root(tmp_path: Path, token: str) -> Path:
+    if os.name == "nt":
+        protected_base = Path(
+            os.environ.get(
+                "RUN_RELEASE_E2E_OUTPUT_ROOT",
+                r"C:\ProgramData\Ruisheng\publisher-output\e2e-tests",
+            )
+        )
+        output_root = protected_base / token
+    else:
+        output_root = tmp_path / "dist" / "deploy"
+    output_root.mkdir(parents=True)
+    if os.name != "nt":
+        output_root.chmod(0o700)
+        return output_root
+
+    powershell = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / (
+        r"System32\WindowsPowerShell\v1.0\powershell.exe"
+    )
+    protect_acl = r"""
+$ErrorActionPreference = "Stop"
+$path = $env:RUISHENG_E2E_PUBLISH_ROOT
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$security = [Security.AccessControl.DirectorySecurity]::new()
+$security.SetOwner($identity.User)
+$security.SetAccessRuleProtection($true, $false)
+$inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [Security.AccessControl.InheritanceFlags]::ObjectInherit
+foreach ($sid in @(
+    $identity.User,
+    [Security.Principal.SecurityIdentifier]::new("S-1-5-18"),
+    [Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+)) {
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+        $sid,
+        [Security.AccessControl.FileSystemRights]::FullControl,
+        $inheritance,
+        [Security.AccessControl.PropagationFlags]::None,
+        [Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$security.AddAccessRule($rule)
+}
+[IO.Directory]::SetAccessControl($path, $security)
+"""
+    environment = os.environ.copy()
+    environment["RUISHENG_E2E_PUBLISH_ROOT"] = str(output_root)
+    subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            protect_acl,
+        ],
+        check=True,
+        capture_output=True,
+        env=environment,
+        timeout=30,
+    )
+    return output_root
+
+
 def _build_provenance_sources(tmp_path: Path, source_images: dict[str, str]) -> None:
     build_context = tmp_path / "provenance-build"
     build_context.mkdir()
@@ -179,6 +244,7 @@ def test_small_scratch_images_close_generation_load_and_tamper_contract(  # noqa
         component: f"ruisheng-b03-source/{component}:{token}" for component in COMPONENTS
     }
     candidate_images = candidate_image_references(candidate_id)
+    output_root = _prepare_publish_root(tmp_path, token)
     if SYSTEM_SIGNING_IDENTITY:
         signing_identity = Path(SYSTEM_SIGNING_IDENTITY)
         trust_directory = (
@@ -213,7 +279,7 @@ def test_small_scratch_images_close_generation_load_and_tamper_contract(  # noqa
         _build_provenance_sources(tmp_path, source_images)
         package = build_candidate(
             root=ROOT,
-            output_root=tmp_path / "dist" / "deploy",
+            output_root=output_root,
             candidate_id=candidate_id,
             target_platform="linux/amd64",
             env_file=ROOT / ".env.prod.example",
@@ -349,3 +415,5 @@ def test_small_scratch_images_close_generation_load_and_tamper_contract(  # noqa
                 capture_output=True,
                 timeout=30,
             )
+        if os.name == "nt":
+            shutil.rmtree(output_root, ignore_errors=True)
