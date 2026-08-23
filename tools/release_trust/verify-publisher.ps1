@@ -27,9 +27,7 @@ function Assert-ProtectedAcl(
     }
     $AllowedSids = Get-ApprovedSids -AllowTrustedInstaller:$AllowTrustedInstaller
     $Acl = Get-Acl -LiteralPath $Path
-    $OwnerSid = ([Security.Principal.NTAccount]$Acl.Owner).Translate(
-        [Security.Principal.SecurityIdentifier]
-    ).Value
+    $OwnerSid = $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
     if ($OwnerSid -notin $AllowedSids) { Fail "$Label has an unapproved owner: $OwnerSid" }
     $UnsafeRights = [Security.AccessControl.FileSystemRights]::CreateFiles -bor
         [Security.AccessControl.FileSystemRights]::CreateDirectories -bor
@@ -42,9 +40,18 @@ function Assert-ProtectedAcl(
         [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
         [Security.AccessControl.FileSystemRights]::TakeOwnership
     foreach ($Rule in $Acl.Access) {
-        $Sid = $Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-        if ($Rule.AccessControlType -eq "Allow" -and
-            ($Rule.FileSystemRights -band $UnsafeRights) -ne 0 -and $Sid -notin $AllowedSids) {
+        if ($Rule.AccessControlType -ne "Allow" -or
+            ($Rule.FileSystemRights -band $UnsafeRights) -eq 0) {
+            continue
+        }
+        try {
+            $Sid = $Rule.IdentityReference.Translate(
+                [Security.Principal.SecurityIdentifier]
+            ).Value
+        } catch {
+            Fail "$Label has an unresolvable writable identity"
+        }
+        if ($Sid -notin $AllowedSids) {
             Fail "$Label is writable by an unapproved identity: $Sid"
         }
     }
@@ -64,9 +71,7 @@ function Assert-ProtectedAncestors(
             Fail "$Label ancestor is linked: $($Current.FullName)"
         }
         $Acl = Get-Acl -LiteralPath $Current.FullName
-        $OwnerSid = ([Security.Principal.NTAccount]$Acl.Owner).Translate(
-            [Security.Principal.SecurityIdentifier]
-        ).Value
+        $OwnerSid = $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
         if ($OwnerSid -notin $AllowedSids) {
             Fail "$Label ancestor has an unapproved owner: $OwnerSid"
         }
@@ -75,12 +80,18 @@ function Assert-ProtectedAncestors(
                     [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
                 continue
             }
-            $Sid = $Rule.IdentityReference.Translate(
-                [Security.Principal.SecurityIdentifier]
-            ).Value
-            if ($Rule.AccessControlType -eq "Allow" -and
-                ($Rule.FileSystemRights -band $UnsafeParentRights) -ne 0 -and
-                $Sid -notin $AllowedSids) {
+            if ($Rule.AccessControlType -ne "Allow" -or
+                ($Rule.FileSystemRights -band $UnsafeParentRights) -eq 0) {
+                continue
+            }
+            try {
+                $Sid = $Rule.IdentityReference.Translate(
+                    [Security.Principal.SecurityIdentifier]
+                ).Value
+            } catch {
+                Fail "$Label ancestor has an unresolvable replacement identity"
+            }
+            if ($Sid -notin $AllowedSids) {
                 Fail "$Label ancestor permits replacement by: $Sid"
             }
         }

@@ -464,6 +464,10 @@ def test_release_verifiers_protect_privileged_execution_environment() -> None:
         assert "FileSystemRights]::Modify -bor" not in script
         assert "FileSystemRights]::FullControl" in script
         assert "PropagationFlags]::InheritOnly" in script
+        assert script.count(".GetOwner([Security.Principal.SecurityIdentifier]).Value") == 2
+        assert script.index("($Rule.FileSystemRights -band $UnsafeRights) -eq 0") < script.index(
+            "$Rule.IdentityReference.Translate"
+        )
     assert "$Docker = Join-Path" in powershell
     assert '$DockerConfig = Join-Path $SnapshotRoot "docker-config"' in powershell
     assert "Remove-Item Env:DOCKER_CLI_PLUGIN_EXTRA_DIRS" in powershell
@@ -488,6 +492,12 @@ def test_release_verifiers_protect_privileged_execution_environment() -> None:
     implementation = _read(ROOT / "tools" / "release_artifacts.py")
     assert 'workdir = Path("/var/lib/ruisheng/work")' in implementation
     assert "snapshot_parent = _system_protected_workdir()" in implementation
+    assert (
+        "$ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value" in implementation
+    )
+    assert implementation.index(
+        "($rule.FileSystemRights -band $unsafeRights) -eq 0"
+    ) < implementation.index("$rule.IdentityReference.Translate")
 
 
 def test_builder_publishes_the_authenticated_snapshot() -> None:

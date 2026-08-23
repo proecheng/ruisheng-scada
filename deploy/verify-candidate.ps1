@@ -29,9 +29,7 @@ function Assert-ProtectedTrustAcl(
     }
     $AllowedSids = Get-ApprovedTrustSids -AllowTrustedInstaller:$AllowTrustedInstaller
     $Acl = Get-Acl -LiteralPath $Path
-    $OwnerSid = ([Security.Principal.NTAccount]$Acl.Owner).Translate(
-        [Security.Principal.SecurityIdentifier]
-    ).Value
+    $OwnerSid = $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
     if ($OwnerSid -notin $AllowedSids) {
         Fail "publisher authenticity FAILED: $Label has an unapproved owner: $OwnerSid"
     }
@@ -46,9 +44,18 @@ function Assert-ProtectedTrustAcl(
         [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
         [Security.AccessControl.FileSystemRights]::TakeOwnership
     foreach ($Rule in $Acl.Access) {
-        $Sid = $Rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-        if ($Rule.AccessControlType -eq "Allow" -and
-            ($Rule.FileSystemRights -band $UnsafeRights) -ne 0 -and $Sid -notin $AllowedSids) {
+        if ($Rule.AccessControlType -ne "Allow" -or
+            ($Rule.FileSystemRights -band $UnsafeRights) -eq 0) {
+            continue
+        }
+        try {
+            $Sid = $Rule.IdentityReference.Translate(
+                [Security.Principal.SecurityIdentifier]
+            ).Value
+        } catch {
+            Fail "publisher authenticity FAILED: $Label has an unresolvable writable identity"
+        }
+        if ($Sid -notin $AllowedSids) {
             Fail "publisher authenticity FAILED: $Label is writable by $Sid"
         }
     }
@@ -68,9 +75,7 @@ function Assert-ProtectedTrustAncestors(
             Fail "publisher authenticity FAILED: $Label ancestor is linked"
         }
         $Acl = Get-Acl -LiteralPath $Current.FullName
-        $OwnerSid = ([Security.Principal.NTAccount]$Acl.Owner).Translate(
-            [Security.Principal.SecurityIdentifier]
-        ).Value
+        $OwnerSid = $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
         if ($OwnerSid -notin $AllowedSids) {
             Fail "publisher authenticity FAILED: $Label ancestor has an unapproved owner"
         }
@@ -79,12 +84,18 @@ function Assert-ProtectedTrustAncestors(
                     [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
                 continue
             }
-            $Sid = $Rule.IdentityReference.Translate(
-                [Security.Principal.SecurityIdentifier]
-            ).Value
-            if ($Rule.AccessControlType -eq "Allow" -and
-                ($Rule.FileSystemRights -band $UnsafeParentRights) -ne 0 -and
-                $Sid -notin $AllowedSids) {
+            if ($Rule.AccessControlType -ne "Allow" -or
+                ($Rule.FileSystemRights -band $UnsafeParentRights) -eq 0) {
+                continue
+            }
+            try {
+                $Sid = $Rule.IdentityReference.Translate(
+                    [Security.Principal.SecurityIdentifier]
+                ).Value
+            } catch {
+                Fail "publisher authenticity FAILED: $Label ancestor has an unresolvable replacement identity"
+            }
+            if ($Sid -notin $AllowedSids) {
                 Fail "publisher authenticity FAILED: $Label ancestor permits replacement by $Sid"
             }
         }

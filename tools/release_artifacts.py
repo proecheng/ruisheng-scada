@@ -464,9 +464,7 @@ while ($null -ne $current) {
         throw "publish root path is linked: $($current.FullName)"
     }
     $acl = Get-Acl -LiteralPath $current.FullName
-    $ownerSid = ([Security.Principal.NTAccount]$acl.Owner).Translate(
-        [Security.Principal.SecurityIdentifier]
-    ).Value
+    $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
     if ($ownerSid -notin $allowedSids) {
         throw "publish root has an unapproved owner: $($current.FullName)"
     }
@@ -476,12 +474,18 @@ while ($null -ne $current) {
                 [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
             continue
         }
-        $sid = $rule.IdentityReference.Translate(
-            [Security.Principal.SecurityIdentifier]
-        ).Value
-        if ($rule.AccessControlType -eq "Allow" -and
-            ($rule.FileSystemRights -band $unsafeRights) -ne 0 -and
-            $sid -notin $allowedSids) {
+        if ($rule.AccessControlType -ne "Allow" -or
+            ($rule.FileSystemRights -band $unsafeRights) -eq 0) {
+            continue
+        }
+        try {
+            $sid = $rule.IdentityReference.Translate(
+                [Security.Principal.SecurityIdentifier]
+            ).Value
+        } catch {
+            throw "publish root has an unresolvable replacement identity: $($current.FullName)"
+        }
+        if ($sid -notin $allowedSids) {
             throw "publish root permits replacement by an unapproved identity: $($current.FullName)"
         }
     }
