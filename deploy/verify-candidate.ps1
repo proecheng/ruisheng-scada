@@ -203,11 +203,10 @@ if ($CurrentIdentity.User.Value -ne "S-1-5-18" -and -not $CurrentPrincipal.IsInR
     Fail "publisher authenticity FAILED: verifier must run elevated to protect its snapshot"
 }
 $SnapshotRoot = New-ProtectedSnapshotRoot "verified-candidate-"
+$DockerConfig = $null
 try {
     [void](New-Item -ItemType Directory -Path (Join-Path $SnapshotRoot "images"))
-    $DockerConfig = Join-Path $SnapshotRoot "docker-config"
-    [void](New-Item -ItemType Directory -Path $DockerConfig)
-    Set-ProtectedSnapshotAcl $DockerConfig
+    $DockerConfig = New-ProtectedSnapshotRoot "docker-config-"
     [IO.File]::WriteAllText((Join-Path $DockerConfig "config.json"), "{}`n", [Text.Encoding]::ASCII)
     $env:DOCKER_CONFIG = $DockerConfig
     Remove-Item Env:DOCKER_CLI_PLUGIN_EXTRA_DIRS -ErrorAction SilentlyContinue
@@ -1068,11 +1067,15 @@ Write-Host "[verify] Publisher authenticity VERIFIED; CAP-1/G0-03 authenticity g
 Write-Warning "B-04 remains BLOCKED; close it only through the independent field acceptance workflow."
 exit 2
 } finally {
-    if (Test-Path -LiteralPath $SnapshotRoot) {
+    foreach ($ProtectedPath in @($DockerConfig, $SnapshotRoot)) {
+        if ([string]::IsNullOrWhiteSpace($ProtectedPath) -or
+            -not (Test-Path -LiteralPath $ProtectedPath)) {
+            continue
+        }
         try {
-            Remove-Item -LiteralPath $SnapshotRoot -Recurse -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $ProtectedPath -Recurse -Force -ErrorAction Stop
         } catch {
-            Write-Error "[verify] protected work cleanup failed: ${SnapshotRoot}: $($_.Exception.Message)"
+            Write-Error "[verify] protected work cleanup failed: ${ProtectedPath}: $($_.Exception.Message)"
             throw
         }
     }

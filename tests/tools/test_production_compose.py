@@ -478,7 +478,9 @@ def test_release_verifiers_protect_privileged_execution_environment() -> None:
             "$Rule.IdentityReference.Translate"
         )
     assert "$Docker = Join-Path" in powershell
-    assert '$DockerConfig = Join-Path $SnapshotRoot "docker-config"' in powershell
+    assert '$DockerConfig = New-ProtectedSnapshotRoot "docker-config-"' in powershell
+    assert '$DockerConfig = Join-Path $SnapshotRoot "docker-config"' not in powershell
+    assert "foreach ($ProtectedPath in @($DockerConfig, $SnapshotRoot))" in powershell
     assert "Remove-Item Env:DOCKER_CLI_PLUGIN_EXTRA_DIRS" in powershell
     for script in (powershell, bootstrap_powershell):
         assert "Remove-Item Env:DOCKER_HOST" in script
