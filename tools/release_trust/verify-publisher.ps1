@@ -9,6 +9,9 @@ $ErrorActionPreference = "Stop"
 Remove-Item Env:DOCKER_HOST -ErrorAction SilentlyContinue
 Remove-Item Env:DOCKER_CONTEXT -ErrorAction SilentlyContinue
 function Fail([string]$Message) { throw "[publisher] authenticity FAILED: $Message" }
+if ($PSVersionTable.PSVersion -lt [version]"7.3") {
+    Fail "PowerShell 7.3 or newer is required"
+}
 
 function Get-ApprovedSids([switch]$AllowTrustedInstaller) {
     $AllowedSids = @("S-1-5-18", "S-1-5-32-544")
@@ -130,7 +133,7 @@ function New-ProtectedSnapshotRoot([string]$Prefix) {
     Assert-ProtectedAncestors $RuishengRoot "snapshot base" -AllowTrustedInstaller
     $WorkRoot = Join-Path $RuishengRoot "work"
     if (-not (Test-Path -LiteralPath $WorkRoot)) {
-        [void](New-Item -ItemType Directory -LiteralPath $WorkRoot)
+        [void](New-Item -ItemType Directory -Path $WorkRoot)
     }
     $WorkItem = Get-Item -Force -LiteralPath $WorkRoot -ErrorAction Stop
     if (-not $WorkItem.PSIsContainer -or
@@ -141,7 +144,7 @@ function New-ProtectedSnapshotRoot([string]$Prefix) {
     Assert-ProtectedAcl $WorkRoot "snapshot work directory"
     Assert-ProtectedAncestors $WorkRoot "snapshot work directory" -AllowTrustedInstaller
     $Snapshot = Join-Path $WorkRoot ($Prefix + [Guid]::NewGuid().ToString("N"))
-    [void](New-Item -ItemType Directory -LiteralPath $Snapshot)
+    [void](New-Item -ItemType Directory -Path $Snapshot)
     Set-ProtectedSnapshotAcl $Snapshot
     return $Snapshot
 }
@@ -222,7 +225,7 @@ if ($Missing.Count -ne 0 -or $Extra.Count -ne 0) {
 
 $SnapshotRoot = New-ProtectedSnapshotRoot "publisher-snapshot-"
 try {
-    [void](New-Item -ItemType Directory -LiteralPath (Join-Path $SnapshotRoot "images"))
+    [void](New-Item -ItemType Directory -Path (Join-Path $SnapshotRoot "images"))
     $SourceLengths = @{}
     [Int64]$SnapshotBytes = 0
     foreach ($Relative in $Expected) {

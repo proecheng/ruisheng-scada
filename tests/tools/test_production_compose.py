@@ -456,6 +456,8 @@ def test_release_verifiers_protect_privileged_execution_environment() -> None:
     for script in (powershell, bootstrap_powershell):
         assert "[IO.Path]::GetTempPath()" not in script
         assert '"C:\\ProgramData\\Ruisheng"' in script
+        assert '$PSVersionTable.PSVersion -lt [version]"7.3"' in script
+        assert "New-Item -ItemType Directory -LiteralPath" not in script
         assert 'foreach ($SidValue in @("S-1-5-18", "S-1-5-32-544"))' in script
         assert '"S-1-5-32-544", $Identity.User.Value' not in script
         assert "DeleteSubdirectoriesAndFiles" in script

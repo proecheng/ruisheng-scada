@@ -11,6 +11,9 @@ $ErrorActionPreference = "Stop"
 function Fail([string]$Message) {
     throw "[verify] $Message"
 }
+if ($PSVersionTable.PSVersion -lt [version]"7.3") {
+    Fail "PowerShell 7.3 or newer is required"
+}
 
 function Get-ApprovedTrustSids([switch]$AllowTrustedInstaller) {
     $AllowedSids = @("S-1-5-18", "S-1-5-32-544")
@@ -136,7 +139,7 @@ function New-ProtectedSnapshotRoot([string]$Prefix) {
     Assert-ProtectedTrustAncestors $RuishengRoot "snapshot base" -AllowTrustedInstaller
     $WorkRoot = Join-Path $RuishengRoot "work"
     if (-not (Test-Path -LiteralPath $WorkRoot)) {
-        [void](New-Item -ItemType Directory -LiteralPath $WorkRoot)
+        [void](New-Item -ItemType Directory -Path $WorkRoot)
     }
     $WorkItem = Get-Item -Force -LiteralPath $WorkRoot -ErrorAction Stop
     if (-not $WorkItem.PSIsContainer -or
@@ -147,7 +150,7 @@ function New-ProtectedSnapshotRoot([string]$Prefix) {
     Assert-ProtectedTrustAcl $WorkRoot "snapshot work directory"
     Assert-ProtectedTrustAncestors $WorkRoot "snapshot work directory" -AllowTrustedInstaller
     $Snapshot = Join-Path $WorkRoot ($Prefix + [Guid]::NewGuid().ToString("N"))
-    [void](New-Item -ItemType Directory -LiteralPath $Snapshot)
+    [void](New-Item -ItemType Directory -Path $Snapshot)
     Set-ProtectedSnapshotAcl $Snapshot
     return $Snapshot
 }
@@ -191,9 +194,9 @@ if ($CurrentIdentity.User.Value -ne "S-1-5-18" -and -not $CurrentPrincipal.IsInR
 }
 $SnapshotRoot = New-ProtectedSnapshotRoot "verified-candidate-"
 try {
-    [void](New-Item -ItemType Directory -LiteralPath (Join-Path $SnapshotRoot "images"))
+    [void](New-Item -ItemType Directory -Path (Join-Path $SnapshotRoot "images"))
     $DockerConfig = Join-Path $SnapshotRoot "docker-config"
-    [void](New-Item -ItemType Directory -LiteralPath $DockerConfig)
+    [void](New-Item -ItemType Directory -Path $DockerConfig)
     Set-ProtectedSnapshotAcl $DockerConfig
     [IO.File]::WriteAllText((Join-Path $DockerConfig "config.json"), "{}`n", [Text.Encoding]::ASCII)
     $env:DOCKER_CONFIG = $DockerConfig
