@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .core.management_auth import normalize_sha256_digest
 
 
 class Config(BaseSettings):
@@ -14,6 +16,7 @@ class Config(BaseSettings):
         env_prefix="API_",
         extra="forbid",
         case_sensitive=False,
+        hide_input_in_errors=True,
     )
 
     listen_host: str = Field(default="127.0.0.1")
@@ -24,6 +27,10 @@ class Config(BaseSettings):
     redis_url: str = Field(..., description="redis-py URL")
 
     jwt_secret: str = Field(..., min_length=32)
+    management_token_sha256: str | None = Field(
+        default=None,
+        description="SHA-256 digest of the management Bearer token",
+    )
     jwt_access_ttl_sec: int = Field(default=900, ge=60)
     jwt_refresh_ttl_sec: int = Field(default=7 * 24 * 3600, ge=3600)
     otp_ttl_sec: int = Field(default=300, ge=60)
@@ -64,8 +71,10 @@ class Config(BaseSettings):
     notification_max_attempts: int = Field(default=5, ge=1, le=20)
     notification_event_max_age_sec: int = Field(default=7 * 24 * 3600, ge=3600, le=180 * 86400)
 
+    env: Literal["dev", "test", "prod"] = Field(default="dev")
+
     @model_validator(mode="after")
-    def _validate_enabled_notification_providers(self) -> Config:
+    def _validate_runtime_security(self) -> Config:
         if self.notification_email_enabled and not (
             self.notification_email_host
             and self.notification_email_user
@@ -80,9 +89,16 @@ class Config(BaseSettings):
             raise ValueError(
                 "notification lease must exceed provider timeout by at least 5 seconds"
             )
+        if self.env == "prod" and self.management_token_sha256 is None:
+            raise ValueError("production requires API_MANAGEMENT_TOKEN_SHA256")
         return self
 
-    env: Literal["dev", "test", "prod"] = Field(default="dev")
+    @field_validator("management_token_sha256", mode="before")
+    @classmethod
+    def _validate_management_token_digest(cls, value: object) -> str | None:
+        if value is not None and not isinstance(value, str):
+            raise ValueError("management token digest must be a string")
+        return normalize_sha256_digest(value)
 
     @model_validator(mode="before")
     @classmethod

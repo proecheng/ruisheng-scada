@@ -29,7 +29,7 @@ Plan 5 的网络安全门槛尚未获得可验证证据：生产 Compose 将 Web
 
 - id: CAP-3
   intent: 批准的监控主体可以读取运行探针和指标，而其他主体无法访问管理面。
-  success: API 的 live/ready/metrics 和 GW 的 health/ready/metrics 仅从 Profile 批准的运维/监控路径可达，用户、设备和未批准网段的探测均被拒绝；控制不依赖这些端点当前不存在的应用鉴权。
+  success: API 的 live/ready/metrics 和 GW 的 health/ready/metrics 仅从 Profile 批准的运维/监控路径并携带独立管理凭据时可达，用户、设备、未批准网段和无/错凭据的 Docker hairpin 探测均被拒绝；来源 ACL 与管理凭据必须同时满足，任一控制不得替代另一个。
 
 - id: CAP-4
   intent: 发布和运维人员可以在不修改候选基础文件的前提下应用并校验站点网络差异。
@@ -45,7 +45,7 @@ Plan 5 的网络安全门槛尚未获得可验证证据：生产 Compose 将 Web
 - Web 只向批准的用户网络开放；认证、令牌、WebSocket 或控制流量经过共享或不受信网络时必须使用 HTTPS/WSS，明文入口不得承载这些流量或形成可绕过的直达路径。
 - `gw:5020` 只向批准的设备网络开放，`gw:9090` 只向批准的运维/监控网络开放；设备协议不被假定自带传输加密，跨共享或不受信链路必须有批准的隔离或加密控制。
 - API、PostgreSQL 和 Redis 只能在应用内部网络被所需服务访问，不得通过宿主机端口、host network、未受控代理或等效路径直接暴露。
-- API `/api/health/live`、`/api/health/ready`、`/api/health/metrics` 与 GW `/health`、`/ready`、`/metrics` 当前均无应用鉴权；实现必须使用网络隔离、受控管理入口或经验证的等效控制，不能把未实现的鉴权当作证据。
+- API `/api/health/live`、`/api/health/ready`、`/api/health/metrics` 与 GW `/health`、`/ready`、`/metrics` 必须同时使用来源 ACL 和独立 Bearer 管理凭据；生产环境只接收批准站点高熵令牌的 SHA-256 摘要，缺失或非法摘要必须 fail closed，明文令牌不得进入 Git、镜像、Compose 环境、日志或共享验收证据。
 - WebSocket 当前通过查询参数携带访问令牌；在协议改变或代理日志明确去除查询参数并通过泄漏测试前，不得启用会持久化完整请求目标的访问日志。
 - 签名候选的基础 Compose 和 Nginx 配置不得在现场直接编辑；站点差异必须位于独立、受控、可校验并可恢复的 Profile/override 中，秘密不得进入 Git、镜像或验收附件。
 - Docker 端口发布与宿主机防火墙必须同时检查 IPv4 和 IPv6；未启用的地址族须有显式禁用证据，不能以未执行探测代替。

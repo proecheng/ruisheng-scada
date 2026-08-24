@@ -91,7 +91,11 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
 
     # 0. Health endpoint (starts before DB check so /health always responds)
     health_state = HealthState()
-    health_app = create_health_app(health_state, config.health_allowed_cidrs)
+    health_app = create_health_app(
+        health_state,
+        config.health_allowed_cidrs,
+        config.health_token_sha256,
+    )
     runner = web.AppRunner(health_app)
     await runner.setup()
     health_site = web.TCPSite(runner, config.health_host, config.health_port)
@@ -437,6 +441,7 @@ async def run_gw_service_for_test(
     from ruisheng_gw.config import Config  # noqa: PLC0415
 
     cfg = Config(
+        env="test",
         listen_host="127.0.0.1",
         listen_port=port,
         database_url=postgres_url,

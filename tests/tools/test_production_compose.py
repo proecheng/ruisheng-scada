@@ -235,6 +235,21 @@ def test_required_runtime_variables_are_on_their_owning_services(
 
 
 @pytest.mark.parametrize(("compose_path", "env_path"), zip(COMPOSE_FILES, ENV_FILES, strict=True))
+def test_management_digest_is_injected_only_into_api_and_gw(
+    compose_path: Path, env_path: Path
+) -> None:
+    values = _parse_env(env_path)
+    services = _render_compose(compose_path, env_path)["services"]
+    digest = values["MANAGEMENT_TOKEN_SHA256"]
+
+    assert services["api"]["environment"]["API_MANAGEMENT_TOKEN_SHA256"] == digest
+    assert services["gw"]["environment"]["GW_HEALTH_TOKEN_SHA256"] == digest
+    for service_name in ("postgres", "redis", "migrate", "web"):
+        environment = services[service_name].get("environment", {})
+        assert not any("MANAGEMENT_TOKEN" in key or "HEALTH_TOKEN" in key for key in environment)
+
+
+@pytest.mark.parametrize(("compose_path", "env_path"), zip(COMPOSE_FILES, ENV_FILES, strict=True))
 def test_notification_provider_defaults_are_disabled_and_credentials_are_empty(
     compose_path: Path, env_path: Path
 ) -> None:

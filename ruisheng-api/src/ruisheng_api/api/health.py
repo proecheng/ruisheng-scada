@@ -4,12 +4,27 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
 
+from ..core.management_auth import management_bearer_matches
 from ..core.response import ok
 
-router = APIRouter(prefix="/api/health", tags=["health"])
+
+async def _require_management_token(request: Request) -> None:
+    expected_digest: str | None = request.app.state.management_token_sha256
+    if not management_bearer_matches(request.headers.get("Authorization"), expected_digest):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="management access denied",
+        )
+
+
+router = APIRouter(
+    prefix="/api/health",
+    tags=["health"],
+    dependencies=[Depends(_require_management_token)],
+)
 
 
 @router.get("/live")

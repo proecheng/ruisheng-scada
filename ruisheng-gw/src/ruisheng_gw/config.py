@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 from ipaddress import ip_address, ip_network
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from ruisheng_gw.management_auth import normalize_sha256_digest
 
 
 class SerialPortConfig(BaseModel):
@@ -24,18 +26,24 @@ class Config(BaseSettings):
         env_prefix="GW_",
         extra="forbid",  # 对 .env / 直接 kwargs 生效
         case_sensitive=False,
+        hide_input_in_errors=True,
     )
 
     listen_host: str = Field(..., description="TCP server bind host")
     listen_port: int = Field(..., ge=1, le=65535)
     database_url: str = Field(..., description="asyncpg URL")
     redis_url: str = Field(..., description="redis URL")
+    env: Literal["dev", "test", "prod"] = Field(default="prod")
 
     health_port: int = Field(default=9090, ge=1, le=65535)
     health_host: str = Field(default="127.0.0.1", description="health server bind host")
     health_allowed_cidrs: str = Field(
         default="127.0.0.1/32,::1/128",
         description="comma-separated source CIDRs for health endpoints",
+    )
+    health_token_sha256: str | None = Field(
+        default=None,
+        description="SHA-256 digest of the health endpoint Bearer token",
     )
 
     @field_validator("health_host")
@@ -61,6 +69,13 @@ class Config(BaseSettings):
                 raise ValueError("health_allowed_cidrs must not contain a default route")
         return ",".join(subjects)
 
+    @field_validator("health_token_sha256", mode="before")
+    @classmethod
+    def _validate_health_token_digest(cls, value: object) -> str | None:
+        if value is not None and not isinstance(value, str):
+            raise ValueError("health token digest must be a string")
+        return normalize_sha256_digest(value)
+
     poll_concurrency_per_bus: int = Field(default=1, ge=1, le=1)  # RS485 物理约束：1
 
     batch_queue_maxsize: int = Field(default=10000, ge=100)
@@ -84,6 +99,8 @@ class Config(BaseSettings):
             if sp.port in seen:
                 raise ValueError(f"duplicate serial port in config: {sp.port}")
             seen.add(sp.port)
+        if self.env == "prod" and self.health_token_sha256 is None:
+            raise ValueError("production requires GW_HEALTH_TOKEN_SHA256")
         return self
 
     wal_dir: str = Field(default="/var/log/ruisheng/gw/wal")  # Windows 由 wal.py 改写

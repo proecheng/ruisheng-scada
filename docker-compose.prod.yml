@@ -69,6 +69,7 @@ services:
       API_GW_DB_URL: postgresql+asyncpg://ruisheng_gw:${RUISHENG_GW_PASSWORD}@postgres:5432/ruisheng
       API_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       API_JWT_SECRET: ${JWT_SECRET}
+      API_MANAGEMENT_TOKEN_SHA256: ${MANAGEMENT_TOKEN_SHA256:?MANAGEMENT_TOKEN_SHA256 must be set}
       API_ENV: prod
       API_NOTIFICATION_WECHAT_ENABLED: ${API_NOTIFICATION_WECHAT_ENABLED:-false}
       API_NOTIFICATION_EMAIL_ENABLED: ${API_NOTIFICATION_EMAIL_ENABLED:-false}
@@ -106,9 +107,11 @@ services:
     environment:
       GW_LISTEN_HOST: "0.0.0.0"
       GW_LISTEN_PORT: "5020"
+      GW_ENV: prod
       GW_HEALTH_HOST: ${GW_HEALTH_HOST:-0.0.0.0}
       GW_HEALTH_PORT: "9090"
-      GW_HEALTH_ALLOWED_CIDRS: ${GW_HEALTH_ALLOWED_CIDRS:-127.0.0.1/32,::1/128}
+      GW_HEALTH_ALLOWED_CIDRS: ${GW_HEALTH_ALLOWED_CIDRS:?GW_HEALTH_ALLOWED_CIDRS must be set}
+      GW_HEALTH_TOKEN_SHA256: ${MANAGEMENT_TOKEN_SHA256:?MANAGEMENT_TOKEN_SHA256 must be set}
       GW_DATABASE_URL: postgresql+asyncpg://ruisheng_gw:${RUISHENG_GW_PASSWORD}@postgres:5432/ruisheng
       GW_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       GW_WAL_DIR: /var/lib/ruisheng-gw/wal
@@ -138,3 +141,11 @@ volumes:
   ruisheng-pgdata:
   ruisheng-redisdata:
   ruisheng-gw-wal:
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${APP_NETWORK_SUBNET:-10.254.250.0/24}
+          gateway: ${APP_NETWORK_GATEWAY:-10.254.250.1}

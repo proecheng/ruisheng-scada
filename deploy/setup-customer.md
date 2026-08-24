@@ -49,7 +49,7 @@ New-Item -ItemType Directory -Force ..\site | Out-Null
 Copy-Item .env.prod.example ..\site\.env.prod
 ```
 
-用文本编辑器打开 `../site/.env.prod`，仅将所有 `CHANGE_ME_*` 替换为真实密码；候选脚本写入的 `TARGET_PLATFORM` 和五个镜像标签不得修改。将 `WEB_HEALTH_ACL_FILE` 改为 `../site/site-health-acl.conf`，使只读站点文件不会从候选默认示例加载：
+用文本编辑器打开 `../site/.env.prod`，将密码类 `CHANGE_ME_*` 替换为真实密码，并将 `MANAGEMENT_TOKEN_SHA256` 替换为批准管理令牌的 SHA-256 摘要；候选脚本写入的 `TARGET_PLATFORM` 和五个镜像标签不得修改。将 `WEB_HEALTH_ACL_FILE` 改为 `../site/site-health-acl.conf`，使只读站点文件不会从候选默认示例加载：
 
 | 变量 | 说明 |
 |------|------|
@@ -58,20 +58,27 @@ Copy-Item .env.prod.example ..\site\.env.prod
 | `RUISHENG_API_PASSWORD` | API 数据库角色密码 |
 | `REDIS_PASSWORD` | Redis 访问密码 |
 | `JWT_SECRET` | JWT 签名密钥（≥32 字符随机字符串） |
+| `MANAGEMENT_TOKEN_SHA256` | 高熵管理 Bearer 令牌的 SHA-256（64 位小写十六进制）；不得填写或保存原始令牌 |
 
 网络变量默认只绑定到回环地址，不能把模板值当作现场批准。将受控网络 Profile、TLS 终止点和防火墙/ACL 方案确认后，再把以下变量改为批准的具体宿主机地址和端口；不要使用 `0.0.0.0`、`::` 或空值作为旁路。
 
 | 变量 | 作用 |
 |------|------|
+| `APP_NETWORK_SUBNET` / `APP_NETWORK_GATEWAY` | 固定 Docker 应用 bridge 及网关；必须与 Profile 和现场无冲突路由一致 |
 | `WEB_BIND_HOST` / `WEB_BIND_PORT` | Web 宿主机入口 |
 | `GW_DEVICE_BIND_HOST` / `GW_DEVICE_BIND_PORT` | GW 设备 TCP 入口 |
 | `GW_HEALTH_BIND_HOST` / `GW_HEALTH_BIND_PORT` | GW health/ready/metrics 管理入口 |
 | `GW_HEALTH_HOST` | 容器内 health listener；模板为 Docker 可达的 `0.0.0.0`，宿主暴露仍由 `GW_HEALTH_BIND_HOST` 控制 |
-| `GW_HEALTH_ALLOWED_CIDRS` | GW health/ready/metrics 源 CIDR，必须与 Profile 的运维/监控网段和站点 ACL 完全一致 |
+| `GW_HEALTH_ALLOWED_CIDRS` | GW 容器实际观察到的管理探针源，必须与 Profile 的“管理端点容器观察来源”和站点 ACL 完全一致 |
+| `MANAGEMENT_TOKEN_SHA256` | 同时注入 API/GW 的不可逆摘要；普通容器、Web/Nginx 和迁移服务不得接收原始令牌或摘要 |
 | `WEB_HEALTH_ACL_FILE` | 候选外部的只读 ACL 文件，必须指向 `../site/site-health-acl.conf` |
 | 站点 Compose override | 将候选目录外的 health ACL 以只读方式挂载到 `/etc/nginx/site-health-acl.conf` |
 
-从候选目录复制 ACL 和 Profile 模板到站点目录后，只按已批准的监控 CIDR 修改 `allow` 行，并保留最后的 `deny all;`。Profile 的审批、网段、三组宿主绑定、传输模式、TLS/旁路、防火墙和探测位置字段必须全部填写；任何 `UNRESOLVED` 或默认路由都保持 BLOCKED。不要修改候选基础 Compose。
+从候选目录复制 ACL 和 Profile 模板到站点目录后，先确认 `APP_NETWORK_SUBNET` 不与宿主、VPN、客户 LAN 或现有 Docker 网络冲突，并记录固定 `APP_NETWORK_GATEWAY`。Windows Docker Desktop 经宿主发布端口转发时，容器通常看到的是该精确网关地址而不是原始监控地址；因此 ACL `allow`、`GW_HEALTH_ALLOWED_CIDRS` 和 Profile 的“管理端点容器观察来源”应写精确网关主机路由（IPv4 为 `/32`），不得写整个 bridge。Docker hairpin 也可能被改写成同一网关，故 API/GW 还必须验证独立 Bearer 管理凭据；原始运维/监控 CIDR仍由批准的宿主绑定、防火墙或上游入口限制，不能信任客户端可写的 `X-Forwarded-For`。保留最后的 `deny all;`。
+
+在批准的密码管理器或监控平台中生成至少 32 随机字节的 URL-safe 管理令牌，并只向监控采集器交付原始值。站点 `.env.prod` 和 Profile 只记录其 SHA-256 摘要；Git、候选、镜像、Compose 环境、命令历史、截图和共享证据不得出现原始令牌。轮换时先更新批准 Profile 和站点摘要，用 `docker compose --env-file ../site/.env.prod -f docker-compose.prod.yml -f site-network.override.yml up -d --force-recreate api gw` 重建 API/GW，再更新监控采集器并验证新令牌成功、旧令牌返回 403、容器环境摘要已经更新；完成正反向探测后销毁旧令牌。`docker compose restart` 不会重新加载 `.env.prod`，不得用于凭据轮换。
+
+Profile 的审批、原始网段、Docker 子网/网关、容器观察来源、三组宿主绑定、管理认证方案/摘要/责任人、传输模式、TLS/旁路、防火墙和探测位置字段必须全部填写；任何 `UNRESOLVED`、非法摘要或默认路由都保持 BLOCKED。静态 validator 的 PASS 只表示配置内部一致，不能替代四类来源、无/错凭据、监听清单、防火墙和重启后的现场正反向探测。不要修改候选基础 Compose。
 
 当 Web 使用非回环绑定时，TLS 字段不能只写“已配置”或复制说明文字，必须使用 validator 可解析的显式证据：`HTTPS_WSS` 至少填写 `termination=...; certificate=...; domain=...; firewall=...; direct_http=deny; direct_ws=deny`；隔离可信 HTTP 至少填写 `isolation=...; firewall=...; direct_http=trusted-only; direct_ws=trusted-only`。值应为脱敏的终止点、证书保管引用、域名和防火墙规则标识，不要写私钥。
 

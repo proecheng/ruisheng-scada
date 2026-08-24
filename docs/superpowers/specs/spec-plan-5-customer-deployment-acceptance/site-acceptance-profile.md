@@ -32,6 +32,9 @@
 | 用户网段（CIDR，逗号分隔） | UNRESOLVED |
 | 设备网段（CIDR，逗号分隔） | UNRESOLVED |
 | 运维/监控网段（CIDR，逗号分隔） | UNRESOLVED |
+| Docker 应用网络子网（CIDR） | UNRESOLVED |
+| Docker 应用网络网关（IP） | UNRESOLVED |
+| 管理端点容器观察来源（CIDR，逗号分隔） | UNRESOLVED |
 | 外部服务网段（CIDR，逗号分隔或批准 N/A） | UNRESOLVED |
 | 未批准探测源（CIDR，逗号分隔） | UNRESOLVED |
 | Web 宿主绑定（IP:端口） | UNRESOLVED |
@@ -41,6 +44,9 @@
 | TLS 终止、证书及 Web 直连旁路防护 | UNRESOLVED 或 LOOPBACK_ONLY |
 | API health/metrics 访问主体和 ACL | UNRESOLVED |
 | GW health/ready/metrics 源 ACL/防火墙 | UNRESOLVED |
+| 管理端点认证方案（固定 BEARER_SHA256） | UNRESOLVED |
+| 管理端点令牌 SHA-256（64 位小写十六进制） | UNRESOLVED |
+| 管理端点凭据生成、保管、轮换和恢复负责人 | UNRESOLVED |
 | IPv4/IPv6 启用或禁用位置与证据 | UNRESOLVED |
 | 防火墙平台、配置负责人、复核人及持久化 | UNRESOLVED |
 | 用户、设备、监控和未批准源探测位置 | UNRESOLVED |
