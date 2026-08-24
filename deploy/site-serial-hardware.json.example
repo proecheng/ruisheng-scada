@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "adapter": {
+    "vendor_id": "0403",
+    "product_id": "6001",
+    "serial_number": "CHANGE_ME_UNIQUE_USB_SERIAL",
+    "stable_path": "/dev/ruisheng-rs485",
+    "wsl_distribution": "docker-desktop",
+    "retry_seconds": 5
+  },
+  "device": {
+    "dev_number": "UNRESOLVED",
+    "brand": "UNRESOLVED",
+    "model": "UNRESOLVED",
+    "protocol": "UNRESOLVED",
+    "point_map_reference": "UNRESOLVED"
+  },
+  "serial": {
+    "baud_rate": null,
+    "data_bits": null,
+    "parity": "UNRESOLVED",
+    "stop_bits": null,
+    "modbus_addr": null
+  },
+  "approval": {
+    "polling_approved": false,
+    "approved_by": "UNRESOLVED",
+    "approved_at": "UNRESOLVED"
+  }
+}

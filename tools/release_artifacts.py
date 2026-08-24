@@ -56,8 +56,14 @@ FIXED_PACKAGE_FILES = {
     "site-acceptance-profile.md.example",
     "site-health-acl.conf.example",
     "site-network.override.yml",
+    "site-serial-hardware.json.example",
+    "site-serial.env.example",
+    "site-serial.override.yml",
     "setup-customer.md",
+    "install_serial_hardware_task.ps1",
+    "serial_hardware_attach.ps1",
     "validate-network-boundary.py",
+    "validate_serial_hardware.py",
     "verify-candidate.ps1",
     "verify-candidate.sh",
 }
@@ -1876,6 +1882,14 @@ def _copy_candidate_files(root: Path, package: Path, replacements: Mapping[str, 
     shutil.copyfile(
         source_deploy / "site-network.override.yml", package / "site-network.override.yml"
     )
+    shutil.copyfile(
+        source_deploy / "site-serial-hardware.json.example",
+        package / "site-serial-hardware.json.example",
+    )
+    shutil.copyfile(source_deploy / "site-serial.env.example", package / "site-serial.env.example")
+    shutil.copyfile(
+        source_deploy / "site-serial.override.yml", package / "site-serial.override.yml"
+    )
     shutil.copyfile(source_deploy / "setup-customer.md", package / "setup-customer.md")
     shutil.copyfile(source_deploy / "verify-candidate.sh", package / "verify-candidate.sh")
     shutil.copyfile(source_deploy / "verify-candidate.ps1", package / "verify-candidate.ps1")
@@ -1891,6 +1905,16 @@ def _copy_candidate_files(root: Path, package: Path, replacements: Mapping[str, 
     )
     shutil.copyfile(
         root / "tools" / "validate_network_boundary.py", package / "validate-network-boundary.py"
+    )
+    shutil.copyfile(
+        root / "tools" / "validate_serial_hardware.py", package / "validate_serial_hardware.py"
+    )
+    shutil.copyfile(
+        root / "tools" / "serial_hardware_attach.ps1", package / "serial_hardware_attach.ps1"
+    )
+    shutil.copyfile(
+        root / "tools" / "install_serial_hardware_task.ps1",
+        package / "install_serial_hardware_task.ps1",
     )
     template = (source_deploy / ".env.prod.example").read_text(encoding="utf-8")
     candidate_replacements = dict(replacements)

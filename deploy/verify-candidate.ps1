@@ -177,8 +177,14 @@ $FixedFiles = @(
     "site-acceptance-profile.md.example",
     "site-health-acl.conf.example",
     "site-network.override.yml",
+    "site-serial-hardware.json.example",
+    "site-serial.env.example",
+    "site-serial.override.yml",
     "setup-customer.md",
+    "install_serial_hardware_task.ps1",
+    "serial_hardware_attach.ps1",
     "validate-network-boundary.py",
+    "validate_serial_hardware.py",
     "verify-candidate.ps1",
     "verify-candidate.sh"
 )

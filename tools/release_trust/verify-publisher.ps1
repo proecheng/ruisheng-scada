@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)][string]$PackagePath,
-    [Parameter(Position = 1)][string]$SiteEnvPath = ""
+    [Parameter(Position = 1)][string]$SiteEnvPath = "",
+    [switch]$InstallSerialTools
 )
 
 $ErrorActionPreference = "Stop"
@@ -137,6 +138,41 @@ function Set-ProtectedSnapshotAcl([string]$Path) {
     Set-Acl -LiteralPath $Path -AclObject $Security
 }
 
+function Install-AuthenticatedSerialTools([string]$AuthenticatedRoot) {
+    $DestinationRoot = "C:\Ruisheng"
+    foreach ($Directory in @(
+        $DestinationRoot,
+        (Join-Path $DestinationRoot "tools"),
+        (Join-Path $DestinationRoot "site"),
+        (Join-Path $DestinationRoot "audit")
+    )) {
+        if (-not (Test-Path -LiteralPath $Directory)) {
+            [void](New-Item -ItemType Directory -Path $Directory)
+        }
+        $Item = Get-Item -Force -LiteralPath $Directory -ErrorAction Stop
+        if (-not $Item.PSIsContainer -or
+            ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Fail "serial tool destination is missing or linked: $Directory"
+        }
+        Set-ProtectedSnapshotAcl $Directory
+        Assert-ProtectedAcl $Directory "serial tool destination"
+    }
+    $ToolRoot = Join-Path $DestinationRoot "tools"
+    foreach ($Relative in @(
+        "serial_hardware_attach.ps1",
+        "install_serial_hardware_task.ps1",
+        "validate_serial_hardware.py"
+    )) {
+        $Source = Join-Path $AuthenticatedRoot $Relative
+        $Destination = Join-Path $ToolRoot $Relative
+        $Temporary = "$Destination.new"
+        Copy-Item -LiteralPath $Source -Destination $Temporary -Force
+        Move-Item -LiteralPath $Temporary -Destination $Destination -Force
+        Assert-ProtectedAcl $Destination "installed serial tool"
+    }
+    Write-Host "[publisher] INSTALLED: authenticated serial tools in C:\Ruisheng\tools"
+}
+
 function New-ProtectedSnapshotRoot([string]$Prefix) {
     $RuishengRoot = "C:\ProgramData\Ruisheng"
     Assert-ProtectedAcl $RuishengRoot "snapshot base"
@@ -213,8 +249,12 @@ if ($CurrentIdentity.User.Value -ne "S-1-5-18" -and -not $CurrentPrincipal.IsInR
 $Fixed = @(
     ".env.prod.example", "MANIFEST.json", "MANIFEST.md", "SHA256SUMS", "SHA256SUMS.sig",
     "docker-compose.prod.yml", "nginx.conf", "site-acceptance-profile.md.example",
-    "site-health-acl.conf.example", "site-network.override.yml", "setup-customer.md",
-    "validate-network-boundary.py", "verify-candidate.ps1", "verify-candidate.sh"
+    "site-health-acl.conf.example", "site-network.override.yml",
+    "site-serial-hardware.json.example", "site-serial.env.example",
+    "site-serial.override.yml", "setup-customer.md",
+    "install_serial_hardware_task.ps1", "serial_hardware_attach.ps1",
+    "validate-network-boundary.py", "validate_serial_hardware.py",
+    "verify-candidate.ps1", "verify-candidate.sh"
 )
 $Expected = [Collections.Generic.HashSet[string]]::new(
     [string[]]$Fixed, [StringComparer]::Ordinal
@@ -420,6 +460,9 @@ if ($Manifest.schema_version -ne 2 -or @($Manifest.authenticity.PSObject.Propert
     Fail "signed manifest authenticity contract is invalid"
 }
 Write-Host "[publisher] VERIFIED: publisher signature and complete candidate hashes passed"
+if ($InstallSerialTools) {
+    Install-AuthenticatedSerialTools $PackageRoot
+}
 $CandidateVerifier = Join-Path $PackageRoot "verify-candidate.ps1"
 if ([string]::IsNullOrWhiteSpace($SiteEnvPath)) {
     & $CandidateVerifier $PackageRoot

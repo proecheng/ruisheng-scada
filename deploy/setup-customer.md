@@ -158,7 +158,65 @@ docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-fil
 
 ### 5. RS485 串口设备（可选）
 
-候选基础 Compose 禁止现场编辑。串口设备映射和 `GW_SERIAL_PORTS` 必须由另行批准、单独校验的站点 Compose override 注入；该 Profile/override 尚未在 B-03 中实现，因此当前保持 B-05 阻断。
+候选基础 Compose 禁止现场编辑。Windows Docker Desktop 使用 `usbipd-win` 把 USB-RS485
+适配器交给 WSL；不能把 Windows `COM3` 猜测为 `/dev/ttyS2`。主机附加只证明设备可见，
+不代表已获得向真实设备发送 Modbus 帧的授权。
+
+发布者校验器会把已认证快照中的硬件工具原子安装到受保护的 `C:\Ruisheng\tools`；
+不要从下载目录、项目目录或未经认证的候选目录手工复制高权限脚本。
+硬件配置仍放在 `C:\Ruisheng\site`，候选本身保持只读不变。
+适配器必须使用 VID、PID 和唯一 USB 序列号识别；BUSID 仅用于当前附加，不能保存为站点身份。
+
+```powershell
+C:\ProgramData\Ruisheng\bin\verify-publisher.ps1 . -InstallSerialTools
+New-Item -ItemType Directory -Force C:\Ruisheng\site | Out-Null
+Copy-Item .\site-serial-hardware.json.example C:\Ruisheng\site\serial-hardware.json
+# 只填写已核对的适配器 vendor_id、product_id 和 serial_number；采集参数未知时保持 polling_approved=false。
+
+C:\Ruisheng\tools\install_serial_hardware_task.ps1 `
+  -ConfigPath C:\Ruisheng\site\serial-hardware.json
+```
+
+任务 `Ruisheng-Serial-Hardware-Attach` 在开机后按硬件身份重新发现设备，执行 usbipd
+bind/attach，加载 WSL 的 `usbserial`/`ftdi_sio`，并创建稳定别名
+`/dev/ruisheng-rs485`。设备缺席时任务重试，不得阻断现有应用容器。状态记录在
+`C:\Ruisheng\audit\serial-hardware.jsonl`，不得包含密钥或设备协议数据。
+
+在设备型号、Modbus RTU 点表、波特率、8N1、从站地址和审批人未填写前，运行校验器应返回
+`[serial-hardware] BLOCKED`；此时不得添加设备映射或重建 GW：
+
+```powershell
+py -3 C:\Ruisheng\tools\validate_serial_hardware.py `
+  --config C:\Ruisheng\site\serial-hardware.json
+```
+
+只有上述参数全部批准后，才复制 `site-serial.env.example` 和
+`site-serial.override.yml` 到候选目录外的站点目录，填入与批准配置一致的稳定路径和波特率，
+并同时渲染基础、网络和串口 override。validator 只有输出 `PASS` 才允许重建 GW：
+
+```powershell
+py -3 C:\Ruisheng\tools\validate_serial_hardware.py `
+  --config C:\Ruisheng\site\serial-hardware.json `
+  --candidate-root (Get-Location).Path `
+  --compose .\docker-compose.prod.yml `
+  --compose .\site-network.override.yml `
+  --serial-override C:\Ruisheng\site\site-serial.override.yml `
+  --env-file ..\site\.env.prod `
+  --serial-env-file C:\Ruisheng\site\site-serial.env `
+  --hardware-attestation C:\Ruisheng\audit\serial-hardware-state.json
+
+docker compose --env-file ..\site\.env.prod `
+  -f .\docker-compose.prod.yml `
+  -f .\site-network.override.yml `
+  -f C:\Ruisheng\site\site-serial.override.yml `
+  --env-file C:\Ruisheng\site\site-serial.env `
+  up -d --force-recreate gw
+```
+
+validator 会在重建 GW 前通过只读数据库查询核对 `dev_number`、
+`transport_type='serial'`、`serial_port`、`baud_rate`、`modbus_addr` 和 `is_enabled=true`。
+缺少五分钟内的 ready 硬件状态或数据库记录不一致时只返回 `FAIL`，不得重建 GW。
+真实控制、越限告警和通知测试另行授权。
 
 ## 日常管理
 
