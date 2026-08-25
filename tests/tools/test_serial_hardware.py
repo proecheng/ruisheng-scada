@@ -414,7 +414,7 @@ def test_windows_publisher_installs_serial_tools_from_authenticated_snapshot() -
     assert "Install-AuthenticatedSerialTools $PackageRoot" in script
     assert "Join-Path $AuthenticatedRoot $Relative" in script
     assert "Set-ProtectedSnapshotAcl $Directory" in script
-    assert "Assert-ProtectedAcl $Destination" in script
+    assert "Assert-ProtectedAcl $Entry.destination" in script
 
 
 def test_serial_override_is_not_part_of_signed_base_compose() -> None:

@@ -56,11 +56,14 @@ FIXED_PACKAGE_FILES = {
     "site-acceptance-profile.md.example",
     "site-health-acl.conf.example",
     "site-network.override.yml",
+    "site-modbus-probe.json.example",
     "site-serial-hardware.json.example",
     "site-serial.env.example",
     "site-serial.override.yml",
     "setup-customer.md",
     "install_serial_hardware_task.ps1",
+    "probe_modbus_rtu.py",
+    "run_modbus_probe.ps1",
     "serial_hardware_attach.ps1",
     "validate-network-boundary.py",
     "validate_serial_hardware.py",
@@ -1883,6 +1886,10 @@ def _copy_candidate_files(root: Path, package: Path, replacements: Mapping[str, 
         source_deploy / "site-network.override.yml", package / "site-network.override.yml"
     )
     shutil.copyfile(
+        source_deploy / "site-modbus-probe.json.example",
+        package / "site-modbus-probe.json.example",
+    )
+    shutil.copyfile(
         source_deploy / "site-serial-hardware.json.example",
         package / "site-serial-hardware.json.example",
     )
@@ -1916,6 +1923,8 @@ def _copy_candidate_files(root: Path, package: Path, replacements: Mapping[str, 
         root / "tools" / "install_serial_hardware_task.ps1",
         package / "install_serial_hardware_task.ps1",
     )
+    shutil.copyfile(root / "tools" / "probe_modbus_rtu.py", package / "probe_modbus_rtu.py")
+    shutil.copyfile(root / "tools" / "run_modbus_probe.ps1", package / "run_modbus_probe.ps1")
     template = (source_deploy / ".env.prod.example").read_text(encoding="utf-8")
     candidate_replacements = dict(replacements)
     # The site env is copied outside the immutable candidate; Compose resolves

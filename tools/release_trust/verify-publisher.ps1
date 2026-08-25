@@ -138,7 +138,23 @@ function Set-ProtectedSnapshotAcl([string]$Path) {
     Set-Acl -LiteralPath $Path -AclObject $Security
 }
 
-function Install-AuthenticatedSerialTools([string]$AuthenticatedRoot) {
+function Install-AuthenticatedSerialTools(
+    [string]$AuthenticatedRoot,
+    [hashtable]$AuthenticatedSums,
+    [object]$AuthenticatedManifest
+) {
+    $InstallMutex = [Threading.Mutex]::new(
+        $false, "Global\RuishengAuthenticatedSerialToolInstall"
+    )
+    $LockAcquired = $false
+    $TransactionRoot = $null
+    $PreserveTransaction = $false
+    try {
+        try { $LockAcquired = $InstallMutex.WaitOne(0) } catch [Threading.AbandonedMutexException] {
+            $LockAcquired = $true
+        }
+        if (-not $LockAcquired) { Fail "another authenticated tool installation is active" }
+
     $DestinationRoot = "C:\Ruisheng"
     foreach ($Directory in @(
         $DestinationRoot,
@@ -156,21 +172,145 @@ function Install-AuthenticatedSerialTools([string]$AuthenticatedRoot) {
         }
         Set-ProtectedSnapshotAcl $Directory
         Assert-ProtectedAcl $Directory "serial tool destination"
+        Assert-ProtectedAncestors $Directory "serial tool destination" -AllowTrustedInstaller
     }
     $ToolRoot = Join-Path $DestinationRoot "tools"
-    foreach ($Relative in @(
+    $ProgramDataRoot = "C:\ProgramData\Ruisheng"
+    foreach ($Directory in @(
+        (Join-Path $ProgramDataRoot "receipts"),
+        (Join-Path $ProgramDataRoot "probe-runs")
+    )) {
+        if (-not (Test-Path -LiteralPath $Directory)) {
+            [void](New-Item -ItemType Directory -Path $Directory)
+        }
+        Set-ProtectedSnapshotAcl $Directory
+        Assert-ProtectedAcl $Directory "Modbus probe protected directory"
+        Assert-ProtectedAncestors $Directory `
+            "Modbus probe protected directory" -AllowTrustedInstaller
+    }
+
+    $GwImages = @($AuthenticatedManifest.images | Where-Object { $_.component -ceq "gw" })
+    if ($GwImages.Count -ne 1 -or $GwImages[0].image_id -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        Fail "authenticated manifest does not contain one immutable GW image"
+    }
+    $TemplateRelative = "site-modbus-probe.json.example"
+    $Receipt = [ordered]@{
+        schema_version = 1
+        candidate_id = [string]$AuthenticatedManifest.candidate_id
+        source_commit = [string]$AuthenticatedManifest.source_commit
+        probe_sha256 = [string]$AuthenticatedSums["probe_modbus_rtu.py"]
+        runner_sha256 = [string]$AuthenticatedSums["run_modbus_probe.ps1"]
+        template_sha256 = [string]$AuthenticatedSums[$TemplateRelative]
+        gw_image_id = [string]$GwImages[0].image_id
+        installed_at = [DateTimeOffset]::UtcNow.ToString("o")
+    }
+
+    $TransactionRoot = New-ProtectedSnapshotRoot "serial-install-"
+    $StageRoot = Join-Path $TransactionRoot "stage"
+    $BackupRoot = Join-Path $TransactionRoot "backup"
+    foreach ($Directory in @($StageRoot, $BackupRoot)) {
+        [void](New-Item -ItemType Directory -Path $Directory)
+        Set-ProtectedSnapshotAcl $Directory
+    }
+    $Entries = @()
+    $ToolRelatives = @(
         "serial_hardware_attach.ps1",
         "install_serial_hardware_task.ps1",
-        "validate_serial_hardware.py"
-    )) {
+        "validate_serial_hardware.py",
+        "probe_modbus_rtu.py",
+        "run_modbus_probe.ps1"
+    )
+    foreach ($Relative in $ToolRelatives) {
         $Source = Join-Path $AuthenticatedRoot $Relative
         $Destination = Join-Path $ToolRoot $Relative
-        $Temporary = "$Destination.new"
-        Copy-Item -LiteralPath $Source -Destination $Temporary -Force
-        Move-Item -LiteralPath $Temporary -Destination $Destination -Force
-        Assert-ProtectedAcl $Destination "installed serial tool"
+        $Staged = Join-Path $StageRoot $Relative
+        Copy-Item -LiteralPath $Source -Destination $Staged
+        $StagedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Staged).Hash.ToLowerInvariant()
+        if ($StagedHash -cne $AuthenticatedSums[$Relative]) {
+            Fail "staged serial tool hash mismatch: $Relative"
+        }
+        $Entries += [ordered]@{
+            relative = $Relative; staged = $Staged; destination = $Destination
+            expected_hash = [string]$AuthenticatedSums[$Relative]; label = "installed serial tool"
+        }
+    }
+    $TemplateDestination = Join-Path $DestinationRoot "site\$TemplateRelative"
+    $TemplateStaged = Join-Path $StageRoot $TemplateRelative
+    Copy-Item -LiteralPath (Join-Path $AuthenticatedRoot $TemplateRelative) `
+        -Destination $TemplateStaged
+    $TemplateHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $TemplateStaged).Hash.ToLowerInvariant()
+    if ($TemplateHash -cne $AuthenticatedSums[$TemplateRelative]) {
+        Fail "staged Modbus probe template hash mismatch"
+    }
+    $Entries += [ordered]@{
+        relative = $TemplateRelative; staged = $TemplateStaged
+        destination = $TemplateDestination; expected_hash = $TemplateHash
+        label = "installed Modbus probe template"
+    }
+
+    $ReceiptPath = Join-Path $ProgramDataRoot "receipts\modbus-probe-release.json"
+    $ReceiptStaged = Join-Path $StageRoot "modbus-probe-release.json"
+    [IO.File]::WriteAllText(
+        $ReceiptStaged,
+        (($Receipt | ConvertTo-Json -Depth 10 -Compress) + "`n"),
+        [Text.UTF8Encoding]::new($false)
+    )
+    $ReceiptHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ReceiptStaged).Hash.ToLowerInvariant()
+    $Entries += [ordered]@{
+        relative = "modbus-probe-release.json"; staged = $ReceiptStaged
+        destination = $ReceiptPath; expected_hash = $ReceiptHash
+        label = "Modbus probe release receipt"
+    }
+
+    $Committed = @()
+    try {
+        for ($Index = 0; $Index -lt $Entries.Count; $Index++) {
+            $Entry = $Entries[$Index]
+            $Existed = Test-Path -LiteralPath $Entry.destination -PathType Leaf
+            $Backup = Join-Path $BackupRoot ("$Index.bak")
+            if ($Existed) { Copy-Item -LiteralPath $Entry.destination -Destination $Backup }
+            $Committed += [ordered]@{
+                destination = $Entry.destination; existed = $Existed; backup = $Backup
+            }
+            Move-Item -LiteralPath $Entry.staged -Destination $Entry.destination -Force
+            Assert-ProtectedAcl $Entry.destination $Entry.label
+            Assert-ProtectedAncestors $Entry.destination $Entry.label -AllowTrustedInstaller
+            $InstalledHash = (
+                Get-FileHash -Algorithm SHA256 -LiteralPath $Entry.destination
+            ).Hash.ToLowerInvariant()
+            if ($InstalledHash -cne $Entry.expected_hash) {
+                Fail "installed authenticated file hash mismatch: $($Entry.relative)"
+            }
+        }
+    } catch {
+        $InstallError = $_.Exception.Message
+        $RollbackErrors = @()
+        for ($Index = $Committed.Count - 1; $Index -ge 0; $Index--) {
+            $Entry = $Committed[$Index]
+            try {
+                if ($Entry.existed) {
+                    Copy-Item -LiteralPath $Entry.backup -Destination $Entry.destination -Force
+                } elseif (Test-Path -LiteralPath $Entry.destination) {
+                    Remove-Item -LiteralPath $Entry.destination -Force
+                }
+            } catch { $RollbackErrors += $_.Exception.Message }
+        }
+        if ($RollbackErrors.Count -ne 0) {
+            $PreserveTransaction = $true
+            Remove-Item -LiteralPath $ReceiptPath -Force -ErrorAction SilentlyContinue
+            Fail "authenticated install failed and rollback was incomplete; recovery preserved at ${TransactionRoot}: $InstallError; $($RollbackErrors -join '; ')"
+        }
+        Fail "authenticated install failed and was rolled back: $InstallError"
     }
     Write-Host "[publisher] INSTALLED: authenticated serial tools in C:\Ruisheng\tools"
+    } finally {
+        if ($null -ne $TransactionRoot -and -not $PreserveTransaction -and
+            (Test-Path -LiteralPath $TransactionRoot)) {
+            Remove-Item -LiteralPath $TransactionRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($LockAcquired) { try { $InstallMutex.ReleaseMutex() } catch { } }
+        $InstallMutex.Dispose()
+    }
 }
 
 function New-ProtectedSnapshotRoot([string]$Prefix) {
@@ -249,10 +389,11 @@ if ($CurrentIdentity.User.Value -ne "S-1-5-18" -and -not $CurrentPrincipal.IsInR
 $Fixed = @(
     ".env.prod.example", "MANIFEST.json", "MANIFEST.md", "SHA256SUMS", "SHA256SUMS.sig",
     "docker-compose.prod.yml", "nginx.conf", "site-acceptance-profile.md.example",
-    "site-health-acl.conf.example", "site-network.override.yml",
+    "site-health-acl.conf.example", "site-network.override.yml", "site-modbus-probe.json.example",
     "site-serial-hardware.json.example", "site-serial.env.example",
     "site-serial.override.yml", "setup-customer.md",
     "install_serial_hardware_task.ps1", "serial_hardware_attach.ps1",
+    "probe_modbus_rtu.py", "run_modbus_probe.ps1",
     "validate-network-boundary.py", "validate_serial_hardware.py",
     "verify-candidate.ps1", "verify-candidate.sh"
 )
@@ -460,9 +601,6 @@ if ($Manifest.schema_version -ne 2 -or @($Manifest.authenticity.PSObject.Propert
     Fail "signed manifest authenticity contract is invalid"
 }
 Write-Host "[publisher] VERIFIED: publisher signature and complete candidate hashes passed"
-if ($InstallSerialTools) {
-    Install-AuthenticatedSerialTools $PackageRoot
-}
 $CandidateVerifier = Join-Path $PackageRoot "verify-candidate.ps1"
 if ([string]::IsNullOrWhiteSpace($SiteEnvPath)) {
     & $CandidateVerifier $PackageRoot
@@ -470,6 +608,10 @@ if ([string]::IsNullOrWhiteSpace($SiteEnvPath)) {
     & $CandidateVerifier $PackageRoot $SiteEnvPath
 }
 $CandidateExitCode = $LASTEXITCODE
+if ($CandidateExitCode -ne 0) { exit $CandidateExitCode }
+if ($InstallSerialTools) {
+    Install-AuthenticatedSerialTools $PackageRoot $Sums $Manifest
+}
 exit $CandidateExitCode
 } finally {
     if (Test-Path -LiteralPath $SnapshotRoot) {

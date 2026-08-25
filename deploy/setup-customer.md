@@ -218,6 +218,46 @@ validator 会在重建 GW 前通过只读数据库查询核对 `dev_number`、
 缺少五分钟内的 ready 硬件状态或数据库记录不一致时只返回 `FAIL`，不得重建 GW。
 真实控制、越限告警和通知测试另行授权。
 
+### 6. 自研设备只读协议验证（参数入库前）
+
+协议验证不启用生产 GW 串口 override，也不写 `devices` 或 `device_points`。发布者校验器
+只有在签名、完整哈希和候选深检全部通过后，才会安装 probe/runner/template，并最后生成受保护的
+`C:\ProgramData\Ruisheng\receipts\modbus-probe-release.json`。runner 只信任该回执，不接受维护命令
+自行提供脚本哈希或镜像标签；旧临时 probe 和配置不得再执行。
+
+维护端通过现有 SSH 自动执行以下流程，目标机现场用户不需要输入长命令。认证模板已固定
+`0403:6001/AI06JYFW`、`9600/8N1`、地址 1、FC3、`0..5 -> 27..35`、400ms 超时、每段一次
+重试、响应结束后 500ms 间隔、64 字节接收上限及最多 4 TX；只填写审批人和带时区的审批时间。
+
+```powershell
+C:\ProgramData\Ruisheng\bin\verify-publisher.ps1 . -InstallSerialTools
+Copy-Item C:\Ruisheng\site\site-modbus-probe.json.example `
+  C:\Ruisheng\site\modbus-probe.json
+```
+
+先执行不映射设备的 dry-run。本次真机只读授权有效时，维护端使用同一命令加 `-Execute`。每次
+必须提供新的 probe JSONL 路径；runner 另建 `modbus-runner-<run-id>.jsonl`，记录前后生产状态、
+子进程终止摘要及 probe 审计路径和即时 SHA-256；dry-run 会在终端和 runner 审计中输出固定帧、
+预算与认证哈希，但不会创建 probe JSONL 或映射串口。
+
+```powershell
+C:\Ruisheng\tools\run_modbus_probe.ps1 `
+  -ConfigPath C:\Ruisheng\site\modbus-probe.json `
+  -AuditPath C:\Ruisheng\audit\modbus-probe-<UTC>.jsonl
+```
+
+runner 在设备映射前会拒绝：回执或安装哈希不符、运行中 GW `.Image` 不一致、GW 存在
+`GW_SERIAL_*`、任意 `/dev` 映射、privileged/device-cgroup 权限、容器未就绪、生产设备/点位表
+非空或审计路径已存在。发布安装先在受保护目录全量 staging/预哈希，以全局互斥串行提交，
+异常时逆序回滚，只有全部文件落位后才最后提交回执。探测容器使用固定本机 Docker、显式
+Python entrypoint 和 45 秒超时；runner 先 `create` 并核对唯一容器 ID，再 `start --attach`，
+避免超时的创建请求晚到后自行启动。
+probe 审计持续失败或子进程超时时，runner 审计会把 TX 数记为已知值或 `unknown` 并失败退出，
+并强制清理、复核探测容器已经消失；无法确认清理时不得通过。受保护的逐次目录只保留认证
+probe/config 快照、空 Docker 配置和仅供本次 probe 使用的审计 staging，不落盘可能含凭据的
+原始 `docker inspect` 输出，也不把历史审计目录映射给容器。不得把不完整 probe JSONL 当作
+证据。有效响应的唯一结论是“仅证明区间可读，型号/点名/倍率未决”。
+
 ## 日常管理
 
 以下全栈重启和升级命令仅在管理员引导及凭据交接通过独立流程获批并完成后使用；当前交付状态不得执行。
