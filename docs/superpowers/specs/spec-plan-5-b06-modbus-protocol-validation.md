@@ -2,7 +2,7 @@
 title: 'B-06 自研设备 Modbus 协议只读验证'
 type: 'feature'
 created: '2026-08-25'
-status: 'in-review'
+status: 'done'
 baseline_commit: '8ab062079863837fb15e88dd8e87f53b473d3a7c'
 context:
   - 'D:/江苏润盛/docs/superpowers/specs/spec-plan-5-b05-serial-hardware-onboarding.md'
@@ -57,7 +57,7 @@ context:
 - [x] 发布与候选校验文件 -- 将 probe/runner/template 纳入签名精确 allowlist/hash；候选深检通过后才原子安装，并从认证 `SHA256SUMS`/`MANIFEST.json` 生成包含脚本哈希、GW image ID、candidate/source identity 的受保护回执。
 - [x] `tests/tools/test_modbus_probe.py` 及发布/runner 测试 -- 覆盖矩阵、真实 CLI execute、FD alias、标准异常码、持续审计故障、PowerShell 行为门禁/审计闭合、固定 Docker/timeout、全部可生成请求属于 `{1,2,3,4}`。
 - [x] `deploy/setup-customer.md` -- 记录认证安装、最终配置、受保护回执、唯一双通道审计及维护端远程执行流程。
-- [ ] 目标机 -- 用认证修正版复核空库/GW未占口，执行 dry-run 和最小真机验证；保存脱敏前后状态、退出码、哈希和逐帧证据。
+- [x] 目标机 -- 用认证修正版复核空库/GW未占口，执行 dry-run 和最小真机验证；保存脱敏前后状态、退出码、哈希和逐帧证据。
 
 **Acceptance Criteria:**
 - Given 配置含写码、越界值、多波特率、过多请求或过快间隔，when 校验计划，then 打开串口前拒绝且无 TX。
@@ -78,6 +78,7 @@ context:
 - 2026-08-25 review loop 2: 三路审查证明第二版在真实容器中会因缺少 `/dev/ttyUSB*` 而无法完成 FD 身份复核，PowerShell 使用不存在的 `File.Open` 重载，且 runner 可接受 `/dev:/dev`、`starting`、缺失 probe 审计；更根本地，原 AC 要求持续故障的同一 JSONL 仍写入 `aborted`，物理上不可兑现。任务/AC 已改为 `/sys/dev/char` FD 身份、固定 USB/预算、发布回执、候选深检后安装、固定 Docker/entrypoint/timeout、完整设备权限和生产快照、probe+runner 双通道终止证据；持续 sink 故障必须由 runner 标记 probe 审计无效和 TX 已知/未知，禁止伪造完整性。KNOWN-BAD：只做字符串测试、调用者自报哈希、先哈希后挂载可变文件、仅拒绝 `unhealthy`、不验收审计文件。KEEP：两条固定 FC3 帧、依赖顺序、最多 4 TX、默认 dry-run、O_EXCL+fsync、完整写后 `request_tx`、有效帧保守结论、签名精确 allowlist、provisional 真机帧及旧审计哈希。
 - 2026-08-26 review loop 3 patches: 三路审查发现串口写异常可能把未知 TX 误报为零、执行容器可写全部历史 probe 审计、失败运行缺少后置状态、Docker kill 后仍可无限等待、审计新目录项未 fsync、`Tmpfs`/根挂载及不完整事件序列未被 runner 拒绝，逐文件发布也没有异常回滚。实现已改为 unknown TX 语义、逐次审计 staging/发布、失败前后状态、有限 kill wait、父目录 fsync、根路径/`Tmpfs` 门禁、固定事件状态机、`create -> ID check -> start --attach` 和稳定清理观察；发布使用全局互斥、全量 staging/预哈希、逆序回滚及回执最后提交。KEEP：冻结的两段 FC3 scope、默认 dry-run、有效响应保守结论、认证镜像/脚本/配置绑定、生产 GW/空库不变和不记录敏感 inspect 原文。
 - 2026-08-27 review loop 4 patches: 目标机认证验收发现包内候选校验器按设计以退出码 2 保留 B-04 启动阻断，而外置 Windows bootstrap 只在退出码 0 时执行 `-InstallSerialTools`，使 B-06 工具安装分支永远不可达；安装后又把候选 Manifest 的 GW ID 写入回执，而非规格要求的当前运行容器 `.Image`，在不重建生产服务时必然阻断 runner；首次修正还以逗号分隔的 PowerShell 原生命令实参调用 Docker，真实 Windows CLI 将其安全拒绝；runner 把 Docker JSON 的 `Devices: null`/`DeviceCgroupRules: null` 包成单元素数组并误判为设备权限，且预检拒绝后未补采后置生产状态；容器 ID 查询的单元素 PowerShell 输出又退化为标量字符串，`ids[0]` 只取首字符而拒绝了已正确创建的容器。bootstrap 现仅将 0 和 2 视为完成候选深检的可识别终态；显式请求时可在 2 下安装认证工具并仍原样返回 2，其他非零码继续立即拒绝；回执通过固定 Docker CLI、参数数组、named-pipe endpoint 和受保护空配置绑定运行中 `ruisheng-gw` 的不可变 `.Image`；runner 过滤空 Docker 项、强制 ID 列表为 `string[]`，并在已有前置状态的失败路径尽力补采后置状态和采集错误。B-04 不被解除。KEEP：签名/allowlist/全包哈希/五镜像加载身份校验必须先完成，安装仍只从受保护快照提交，生产服务不重建，runner 继续拒绝真实设备权限、身份失配和回执与运行 GW 不一致。
+- 2026-08-27 final acceptance: `deploy-20260827.2` 已在目标机完成签名安装、dry-run 和最小真机验证。run `9ec05b61-3081-49bd-8020-55fb78a9dcd7` 的两条固定 FC3 请求均首问获得 CRC 有效响应，TX 为 2、写入 16 字节、退出码 0；probe/runner 审计 SHA-256 分别为 `e39cfc742f724e864686595635373832bde48c10831ab08f6118e7cb376e489e` 和 `e0a1459363e34d33a5d4b783c0f40d1fa8300f9f1556f2e9c41f9a0238b656dc`。前后五容器身份和运行状态不变，数据库仍为 `0/0`，GW 无串口能力或 `/dev` 权限且无探测容器残留；恢复供电后的只读复核再次确认这些边界。结论保持“仅证明区间可读，型号/点名/倍率未决”。
 
 ## Design Notes
 
@@ -140,5 +141,5 @@ runner 使用显式本机 named-pipe endpoint 和空的受保护 Docker 配置�
 - 从认证安装到远程 dry-run/execute 的维护端操作顺序。
   [`setup-customer.md:221`](../../../deploy/setup-customer.md#L221)
 
-- 区分 provisional 真机帧与尚待完成的认证验收。
+- 区分 provisional 真机帧与最终认证验收，并核对双通道审计哈希。
   [`spec-plan-5-b06-modbus-protocol-evidence.md:1`](spec-plan-5-b06-modbus-protocol-evidence.md#L1)

@@ -39,6 +39,46 @@ RX 0103120003000000000000000000000000000000000272
 
 修正版 runner 的最终证据必须包含：认证发布回执及其 SHA-256；运行中 GW 的 `.Image` `sha256:` ID；runner/probe/config SHA-256；审批 scope；五个容器的 ID、image ID、启动时间、重启计数和受限健康状态；`devices/device_points` 只读计数原文；GW 串口环境、device、bind、mount、privileged 和 device-cgroup 的脱敏结果；probe 唯一 JSONL 路径、run ID、退出码、即时 SHA-256 及前后状态一致性。probe 审计失效时以独立 runner JSONL 记录已知 TX 数或 `unknown` 和无效原因，不得宣称故障文件完整。不得记录容器完整环境、数据库 URL、密码或令牌。
 
-## 最终验收占位
+## 认证候选与安装
 
-尚未执行认证修正版的目标机验收。完成前保持：生产 GW 无串口映射、生产库无设备/点位、旧临时 `probe_modbus_rtu.py` 和配置不再执行。最终结果只能由签名候选安装的 `run_modbus_probe.ps1` 产生，并追加审计 SHA-256 和逐帧结论。
+- 最终签名候选：`deploy-20260827.2`
+- 来源提交：`12a76fa37a10d7679b03604409ed912cb6009a99`
+- 目标机安装目录：`C:\Ruisheng\candidates\deploy-20260827.2`
+- 认证回执 SHA-256：`2a5a2f682446bf501c1be7330c2fd53a5c4584bcfcf7040d8c8ac10b3f8702c6`
+- 安装的 runner SHA-256：`9537d7249ca50d853ccd8dfd998fff843e4d25b8d8a8551f8e546e27eaa35489`
+- 运行中 GW 不可变 image ID：`sha256:74e16fda69b946aa67de99bd20167e63dc29e835bb7447cd924a7c91508584e8`
+
+候选已完成签名、精确 allowlist、全包哈希、五镜像实际加载及 image ID 校验。Windows bootstrap 在 `-InstallSerialTools` 下完成认证工具安装，但候选校验仍按 B-04 设计返回退出码 `2`；没有借 B-06 解除生产启动边界，也没有重建或切换生产服务。
+
+## 最终 dry-run
+
+- runner 审计：`C:\Ruisheng\audit\modbus-runner-64d6e4bb-c6c0-411c-a193-0e80a5ce6f44.jsonl`
+- runner 审计 SHA-256：`f703b8887a51622679443dcded0a1eb0ffa41bd6bf4c9e8e0ea39f11b1f4930d`
+- 输出帧：`010300000006c5c8`、`0103001b0009f5cb`
+
+dry-run 未映射或打开串口、未发送数据，也未生成 probe 审计；只生成了可复核计划和独立 runner 审计。
+
+## 最终认证真机验收
+
+- run ID：`9ec05b61-3081-49bd-8020-55fb78a9dcd7`
+- 审批 scope：`b06-9600-8n1-unit1-fc3-r0-5-r27-35`
+- 退出码：`0`
+- 已完成 TX：`2`；尝试写入字节：`16`
+- probe 审计：`C:\Ruisheng\audit\modbus-probe-execute-20260827T1314+0800.jsonl`
+- probe 审计 SHA-256：`e39cfc742f724e864686595635373832bde48c10831ab08f6118e7cb376e489e`
+- runner 审计：`C:\Ruisheng\audit\modbus-runner-9ec05b61-3081-49bd-8020-55fb78a9dcd7.jsonl`
+- runner 审计 SHA-256：`e0a1459363e34d33a5d4b783c0f40d1fa8300f9f1556f2e9c41f9a0238b656dc`
+- 本地证据副本：`docs/superpowers/specs/evidence/b06-20260827/`
+
+| 请求 | TX | RX | 校验 | 原始寄存器 | 时延 |
+|------|----|----|------|------------|------|
+| FC3，地址 `0`，数量 `6` | `010300000006c5c8` | `01030c0003000000000000000000009c34` | 地址、FC、长度及 CRC 有效 | `[3,0,0,0,0,0]` | `275.509ms` |
+| FC3，地址 `27`，数量 `9` | `0103001b0009f5cb` | `0103120003000000000000000000000000000000000272` | 地址、FC、长度及 CRC 有效 | `[3,0,0,0,0,0,0,0,0]` | `138.773ms` |
+
+固定结论：**仅证明区间可读，型号/点名/倍率未决**。
+
+## 生产隔离与停电恢复复核
+
+runner 记录的探测前后生产状态完全一致：五个容器的 container ID、image ID、`StartedAt` 和 `RestartCount` 均未变化；postgres/redis 为 `running + healthy`，API/GW/Web 为 `running`；`devices/device_points` 为 `0/0`。GW 的 `GW_SERIAL_*`、devices、`/dev` bind/mount、device-cgroup rule 均为空，`Privileged=false`；运行结束后无 `ruisheng-modbus-probe-*` 残留容器。
+
+目标机恢复供电后，于 `2026-08-27T13:24:04+08:00` 又执行了一次不触碰串口的只读复核，原始脱敏结果保存为 `docs/superpowers/specs/evidence/b06-20260827/post-recovery-state-20260827T1324+0800.json`，SHA-256 为 `111aff7410faa0ecbe567a02023173a29f936792eb7b9a847023669b9d8a1671`。五个生产容器仍是验收时相同的 container/image ID，状态和重启计数不变；数据库仍为 `0|0`，GW 权限仍为空且无残留探测容器。上述两份最终审计的目标机 SHA-256 也与本地证据副本一致。系统报告的最近启动时间为 `2026-08-25T00:35:03+08:00`，因此本次只表述为恢复供电/在线，不推断发生过操作系统重启。
