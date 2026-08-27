@@ -505,6 +505,8 @@ def test_runner_hard_gates_gateway_before_device_mapping() -> None:
     assert "production state changed" in script
     assert '"--entrypoint", "python"' in script
     assert "DeviceCgroupRules" in script
+    assert "$Value.HostConfig.Devices | Where-Object { $null -ne $_ }" in script
+    assert "$Value.HostConfig.DeviceCgroupRules | Where-Object { $null -ne $_ }" in script
     assert "Privileged" in script
     assert "RUISHENG_PROBE_TERMINAL=" in script
     assert "Test-ProbeAudit" in script
@@ -528,6 +530,8 @@ def test_runner_hard_gates_gateway_before_device_mapping() -> None:
     assert "source=$ProbeAuditStagingRoot,target=/audit" in script
     assert "source=$AuditRoot,target=/audit" not in script
     assert "production_state_after = $After" in script
+    assert "if ($null -ne $Before -and $null -eq $After)" in script
+    assert "production_state_after_error = $AfterCaptureError" in script
     assert 'Write-Host "[modbus-runner] audit:' in script
 
 

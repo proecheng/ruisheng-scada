@@ -193,6 +193,42 @@ function Install-AuthenticatedSerialTools(
     if ($GwImages.Count -ne 1 -or $GwImages[0].image_id -cnotmatch '^sha256:[0-9a-f]{64}$') {
         Fail "authenticated manifest does not contain one immutable GW image"
     }
+
+    $TransactionRoot = New-ProtectedSnapshotRoot "serial-install-"
+    $StageRoot = Join-Path $TransactionRoot "stage"
+    $BackupRoot = Join-Path $TransactionRoot "backup"
+    $DockerConfigRoot = Join-Path $TransactionRoot "docker-config"
+    foreach ($Directory in @($StageRoot, $BackupRoot, $DockerConfigRoot)) {
+        [void](New-Item -ItemType Directory -Path $Directory)
+        Set-ProtectedSnapshotAcl $Directory
+    }
+    $DockerConfigPath = Join-Path $DockerConfigRoot "config.json"
+    [IO.File]::WriteAllText(
+        $DockerConfigPath, "{}`n", [Text.UTF8Encoding]::new($false)
+    )
+    Set-ProtectedSnapshotAcl $DockerConfigPath
+    $DockerPath = "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
+    if (-not (Test-Path -LiteralPath $DockerPath -PathType Leaf)) {
+        Fail "fixed Docker CLI is required to bind the running GW image"
+    }
+    Assert-ProtectedAcl $DockerPath "fixed Docker CLI" -AllowTrustedInstaller
+    Assert-ProtectedAncestors $DockerPath "fixed Docker CLI" -AllowTrustedInstaller
+    $GwInspectArguments = @(
+        "--host", "npipe:////./pipe/docker_engine", "--config", $DockerConfigRoot,
+        "inspect", "ruisheng-gw", "--format", "{{json .}}"
+    )
+    $GwInspectRaw = @(& $DockerPath @GwInspectArguments)
+    if ($LASTEXITCODE -ne 0 -or $GwInspectRaw.Count -ne 1) {
+        Fail "cannot inspect the running GW container through the fixed Docker endpoint"
+    }
+    try { $GwContainer = $GwInspectRaw[0] | ConvertFrom-Json } catch {
+        Fail "running GW inspection returned invalid JSON"
+    }
+    $RunningGwImageId = [string]$GwContainer.Image
+    if ($GwContainer.Name -cne "/ruisheng-gw" -or -not $GwContainer.State.Running -or
+        $RunningGwImageId -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        Fail "running GW container identity is invalid"
+    }
     $TemplateRelative = "site-modbus-probe.json.example"
     $Receipt = [ordered]@{
         schema_version = 1
@@ -201,17 +237,10 @@ function Install-AuthenticatedSerialTools(
         probe_sha256 = [string]$AuthenticatedSums["probe_modbus_rtu.py"]
         runner_sha256 = [string]$AuthenticatedSums["run_modbus_probe.ps1"]
         template_sha256 = [string]$AuthenticatedSums[$TemplateRelative]
-        gw_image_id = [string]$GwImages[0].image_id
+        gw_image_id = $RunningGwImageId
         installed_at = [DateTimeOffset]::UtcNow.ToString("o")
     }
 
-    $TransactionRoot = New-ProtectedSnapshotRoot "serial-install-"
-    $StageRoot = Join-Path $TransactionRoot "stage"
-    $BackupRoot = Join-Path $TransactionRoot "backup"
-    foreach ($Directory in @($StageRoot, $BackupRoot)) {
-        [void](New-Item -ItemType Directory -Path $Directory)
-        Set-ProtectedSnapshotAcl $Directory
-    }
     $Entries = @()
     $ToolRelatives = @(
         "serial_hardware_attach.ps1",
@@ -608,7 +637,7 @@ if ([string]::IsNullOrWhiteSpace($SiteEnvPath)) {
     & $CandidateVerifier $PackageRoot $SiteEnvPath
 }
 $CandidateExitCode = $LASTEXITCODE
-if ($CandidateExitCode -ne 0) { exit $CandidateExitCode }
+if ($CandidateExitCode -notin @(0, 2)) { exit $CandidateExitCode }
 if ($InstallSerialTools) {
     Install-AuthenticatedSerialTools $PackageRoot $Sums $Manifest
 }

@@ -350,7 +350,7 @@ function Read-ReleaseReceipt {
 
 function ConvertTo-GatewayBoundary([object]$Value) {
     $SerialEnvironment = @($Value.Config.Env | Where-Object { $_ -match '^GW_SERIAL_' })
-    $Devices = @($Value.HostConfig.Devices)
+    $Devices = @($Value.HostConfig.Devices | Where-Object { $null -ne $_ })
     $Binds = @($Value.HostConfig.Binds)
     $Mounts = @($Value.Mounts)
     $DevBinds = @($Binds | Where-Object {
@@ -370,7 +370,9 @@ function ConvertTo-GatewayBoundary([object]$Value) {
             Test-DevicePath $_
         })
         privileged = [bool]$Value.HostConfig.Privileged
-        device_cgroup_rules = @($Value.HostConfig.DeviceCgroupRules)
+        device_cgroup_rules = @(
+            $Value.HostConfig.DeviceCgroupRules | Where-Object { $null -ne $_ }
+        )
     }
 }
 
@@ -864,6 +866,7 @@ try {
     Write-Host "[modbus-runner] audit: $RunnerAuditPath"
     exit 0
 } catch {
+    $FailureDetail = $_.Exception.Message
     if (-not $script:ProbeContainerAbsent -and
         -not [string]::IsNullOrWhiteSpace($script:ProbeContainerName)) {
         try {
@@ -877,14 +880,21 @@ try {
             }
         }
     }
+    $AfterCaptureError = $null
+    if ($null -ne $Before -and $null -eq $After) {
+        try { $After = Get-ProductionState } catch {
+            $AfterCaptureError = $_.Exception.Message
+        }
+    }
     try {
         Write-RunnerEvent @{
             event = if ($script:ProbeStarted) { "runner_failed" } else { "rejected_zero_tx" }
-            detail = $_.Exception.Message; probe_started = $script:ProbeStarted
+            detail = $FailureDetail; probe_started = $script:ProbeStarted
             process_exit_code = $RawProbeExitCode; accepted_exit_code = $ProbeExitCode
             terminal = $Terminal; probe_audit = $ProbeEvidence; container_cleanup = $ContainerCleanup
             audit_publish = $AuditPublish; production_state_before = $Before
             production_state_after = $After
+            production_state_after_error = $AfterCaptureError
             production_state_unchanged = if ($null -eq $Before -or $null -eq $After) {
                 $null
             } else {
@@ -898,7 +908,7 @@ try {
         }
     } catch { }
     Write-Host "[modbus-runner] audit: $RunnerAuditPath"
-    Write-Error $_.Exception.Message -ErrorAction Continue
+    Write-Error $FailureDetail -ErrorAction Continue
     exit 1
 } finally {
     if (-not $script:ProbeContainerAbsent -and

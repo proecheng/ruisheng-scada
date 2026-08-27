@@ -28,12 +28,26 @@ def test_windows_publisher_installs_only_from_authenticated_snapshot() -> None:
     assert script.index("& $CandidateVerifier $PackageRoot") < script.index(
         "Install-AuthenticatedSerialTools $PackageRoot"
     )
+    assert "$CandidateExitCode -notin @(0, 2)" in script
+    assert script.index("$CandidateExitCode = $LASTEXITCODE") < script.index(
+        "Install-AuthenticatedSerialTools $PackageRoot"
+    )
+    assert script.index("Install-AuthenticatedSerialTools $PackageRoot") < script.rindex(
+        "exit $CandidateExitCode"
+    )
     assert "Join-Path $AuthenticatedRoot $TemplateRelative" in script
     assert "Join-Path $AuthenticatedRoot $Relative" in script
     assert "modbus-probe-release.json" in script
     assert "probe_sha256" in script
     assert "runner_sha256" in script
     assert "gw_image_id" in script
+    assert "$GwInspectArguments = @(" in script
+    assert '"--host", "npipe:////./pipe/docker_engine"' in script
+    assert '"inspect", "ruisheng-gw", "--format", "{{json .}}"' in script
+    assert "& $DockerPath @GwInspectArguments" in script
+    assert "$RunningGwImageId = [string]$GwContainer.Image" in script
+    assert "gw_image_id = $RunningGwImageId" in script
+    assert "gw_image_id = [string]$GwImages[0].image_id" not in script
     assert "Assert-ProtectedAncestors $Entry.destination" in script
     assert "Global\\RuishengAuthenticatedSerialToolInstall" in script
     assert "authenticated install failed and was rolled back" in script
