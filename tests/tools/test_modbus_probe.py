@@ -519,6 +519,7 @@ def test_runner_hard_gates_gateway_before_device_mapping() -> None:
     assert '"container", "create", "--name", $ContainerName' in script
     assert '"container", "start", "--attach", $CreatedContainerId' in script
     assert "created probe container identity mismatch" in script
+    assert "[string[]]$Ids = if ($Result.exit_code -eq 0)" in script
     assert "$Observation.ElapsedMilliseconds -ge $MinimumObservationMilliseconds" in script
     assert "Remove-ProbeContainerAndConfirm $ContainerName $CleanupWindow" in script
     assert "probe container cleanup could not be confirmed" in script
@@ -578,6 +579,7 @@ def test_runner_powershell_self_test_executes_path_guards() -> None:
         "incomplete_audit_rejected": True,
         "tmpfs_rejected": True,
         "process_timeout_bounded": True,
+        "single_container_id_array": True,
     }
 
 

@@ -250,7 +250,7 @@ function Get-ProbeContainerIds([string]$ContainerName, [string]$Label) {
         "container", "ls", "--all", "--filter", "name=^/$ContainerName$",
         "--quiet", "--no-trunc"
     ) $Label 10000
-    $Ids = if ($Result.exit_code -eq 0) {
+    [string[]]$Ids = if ($Result.exit_code -eq 0) {
         @($Result.stdout -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     } else { @() }
     return [ordered]@{ result = $Result; ids = $Ids }
@@ -653,6 +653,7 @@ if ($SelfTest) {
     $TimeoutSelfTest = Invoke-DockerProcess @(
         "-NoProfile", "-Command", "Start-Sleep -Seconds 30"
     ) "timeout self-test" 100 -ExecutablePath $PowerShellPath -SkipDockerHost
+    [string[]]$SingleContainerId = if ($true) { @("a" * 64) } else { @() }
     [ordered]@{
         exact_dev = Test-DevicePath "/dev"
         child_dev = Test-DevicePath "/dev/ttyUSB0"
@@ -669,6 +670,8 @@ if ($SelfTest) {
         tmpfs_rejected = $TmpfsRejected
         process_timeout_bounded = $TimeoutSelfTest.timed_out -and
             $TimeoutSelfTest.client_process_exited
+        single_container_id_array = $SingleContainerId.Count -eq 1 -and
+            $SingleContainerId[0] -ceq ("a" * 64)
     } | ConvertTo-Json -Compress
     exit 0
 }
