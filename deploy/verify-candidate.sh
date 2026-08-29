@@ -80,6 +80,7 @@ trap cleanup EXIT
 PACKAGE_DIR="$WORK_DIR/candidate"
 DOCKER_CONFIG="$WORK_DIR/docker-config"
 export DOCKER_CONFIG
+DOCKER_ENDPOINT="unix:///var/run/docker.sock"
 mkdir -m 700 "$DOCKER_CONFIG"
 printf '{}\n' > "$DOCKER_CONFIG/config.json"
 chmod 600 "$DOCKER_CONFIG/config.json"
@@ -89,6 +90,7 @@ EXPECTED_FILE="$WORK_DIR/expected-images.txt"
 ACTUAL_FILE="$WORK_DIR/actual-images.txt"
 
 "$PYTHON" -I -S - "$SOURCE_PACKAGE_DIR" "$PACKAGE_DIR" <<'PY'
+import hashlib
 import os
 import pathlib
 import shutil
@@ -97,7 +99,7 @@ import sys
 
 source = pathlib.Path(sys.argv[1])
 snapshot = pathlib.Path(sys.argv[2])
-fixed = {
+fixed_v2 = {
     ".env.prod.example",
     "MANIFEST.json",
     "MANIFEST.md",
@@ -123,13 +125,20 @@ fixed = {
     "verify-candidate.sh",
 }
 components = ("postgres", "redis", "api", "gw", "web")
-expected = fixed | {"images/{}.tar.gz".format(value) for value in components}
+fixed_v3 = fixed_v2 | {"qualification-toolchain.tar.gz"}
+expected_v2 = fixed_v2 | {"images/{}.tar.gz".format(value) for value in components}
+expected_v3 = fixed_v3 | {"images/{}.tar.gz".format(value) for value in components}
 
 def fail(message):
     raise SystemExit("[verify] publisher authenticity FAILED: " + message)
 
+def file_identity(metadata):
+    return (
+        metadata.st_dev, metadata.st_ino, metadata.st_nlink, metadata.st_size,
+        metadata.st_mtime_ns, metadata.st_ctime_ns,
+    )
+
 actual = set()
-initial_sizes = {}
 for current, directories, files in os.walk(source, followlinks=False):
     current_path = pathlib.Path(current)
     for name in directories:
@@ -143,18 +152,45 @@ for current, directories, files in os.walk(source, followlinks=False):
         if path.is_symlink() or not path.is_file():
             fail("candidate contains a linked or non-regular file: " + relative)
         actual.add(relative)
-if actual != expected:
-    fail("candidate file allowlist mismatch: missing={}, extra={}".format(
-        sorted(expected - actual), sorted(actual - expected)
-    ))
+matches = [value for value in (expected_v2, expected_v3) if actual == value]
+if len(matches) != 1:
+    fail("candidate file allowlist mismatch: does not match complete v2 or v3")
+expected = matches[0]
 
+initial_identities = {}
+initial_digests = {}
 for relative in sorted(expected):
     source_path = source / relative
-    metadata = source_path.stat()
-    if source_path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
-        fail("candidate file is linked or non-regular: " + relative)
-    initial_sizes[relative] = metadata.st_size
-total_size = sum(initial_sizes.values())
+    path_before = source_path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(path_before.st_mode) or path_before.st_nlink != 1:
+        fail("candidate file is linked or not a unique regular file: " + relative)
+    expected_identity = file_identity(path_before)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(source_path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if file_identity(before) != expected_identity or not os.path.samestat(before, path_before):
+            fail("candidate file changed before snapshot: " + relative)
+        digest = hashlib.sha256()
+        read_size = 0
+        with os.fdopen(descriptor, "rb", closefd=False) as source_stream:
+            for chunk in iter(lambda: source_stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+                read_size += len(chunk)
+        after = os.fstat(descriptor)
+        path_after = source_path.stat(follow_symlinks=False)
+        if (
+            read_size != before.st_size
+            or file_identity(after) != expected_identity
+            or file_identity(path_after) != expected_identity
+            or not os.path.samestat(after, path_after)
+        ):
+            fail("candidate file changed during snapshot initial scan: " + relative)
+        initial_identities[relative] = expected_identity
+        initial_digests[relative] = digest.hexdigest()
+    finally:
+        os.close(descriptor)
+total_size = sum(identity[3] for identity in initial_identities.values())
 reserve = max(64 * 1024 * 1024, total_size // 10)
 if shutil.disk_usage(snapshot.parent).free < total_size + reserve:
     fail("insufficient free space for protected candidate snapshot")
@@ -169,22 +205,39 @@ try:
         descriptor = os.open(source_path, flags)
         try:
             opened = os.fstat(descriptor)
-            expected_size = initial_sizes[relative]
-            if not stat.S_ISREG(opened.st_mode):
-                fail("candidate file is not regular: " + relative)
-            if opened.st_size != expected_size:
+            expected_identity = initial_identities[relative]
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or file_identity(opened) != expected_identity
+            ):
                 fail("candidate file changed before snapshot: " + relative)
+            expected_size = expected_identity[3]
             with os.fdopen(descriptor, "rb", closefd=False) as input_stream:
                 with destination.open("xb") as output_stream:
                     copied = 0
+                    copied_digest = hashlib.sha256()
                     while copied < expected_size:
                         chunk = input_stream.read(min(1024 * 1024, expected_size - copied))
                         if not chunk:
                             break
                         output_stream.write(chunk)
+                        copied_digest.update(chunk)
                         copied += len(chunk)
                     if copied != expected_size or input_stream.read(1):
                         fail("candidate file size changed during snapshot: " + relative)
+            if copied_digest.hexdigest() != initial_digests[relative]:
+                fail("candidate file content changed during snapshot: " + relative)
+            after = os.fstat(descriptor)
+            path_after = source_path.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISREG(after.st_mode)
+                or after.st_nlink != 1
+                or file_identity(after) != expected_identity
+                or file_identity(path_after) != expected_identity
+                or not os.path.samestat(after, path_after)
+            ):
+                fail("candidate file changed during snapshot: " + relative)
         finally:
             os.close(descriptor)
         destination.chmod(0o600)
@@ -211,12 +264,51 @@ import struct
 import subprocess
 import sys
 
+MAX_RELEASE_JSON_BYTES = 4 * 1024 * 1024
+
 root = pathlib.Path(sys.argv[1]).resolve()
 trust_input = pathlib.Path(sys.argv[2])
 ssh_keygen = pathlib.Path(sys.argv[3])
 
 def fail(message):
     raise SystemExit("[verify] publisher authenticity FAILED: " + message)
+
+def strict_json_loads(contents):
+    def reject_duplicate_keys(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON object key: " + key)
+            value[key] = item
+        return value
+    return json.loads(contents, object_pairs_hook=reject_duplicate_keys)
+
+fixed_v2 = {
+    ".env.prod.example", "MANIFEST.json", "MANIFEST.md", "SHA256SUMS", "SHA256SUMS.sig",
+    "docker-compose.prod.yml", "nginx.conf", "site-acceptance-profile.md.example",
+    "site-health-acl.conf.example", "site-network.override.yml",
+    "site-modbus-probe.json.example", "site-serial-hardware.json.example",
+    "site-serial.env.example", "site-serial.override.yml", "setup-customer.md",
+    "install_serial_hardware_task.ps1", "probe_modbus_rtu.py", "run_modbus_probe.ps1",
+    "serial_hardware_attach.ps1", "validate-network-boundary.py",
+    "validate_serial_hardware.py", "verify-candidate.ps1", "verify-candidate.sh",
+}
+components = ("postgres", "redis", "api", "gw", "web")
+expected_v2 = fixed_v2 | {"images/{}.tar.gz".format(value) for value in components}
+expected_v3 = expected_v2 | {"qualification-toolchain.tar.gz"}
+actual_files = {
+    path.relative_to(root).as_posix()
+    for path in root.rglob("*")
+    if path.is_file() and not path.is_symlink()
+}
+matches = [
+    (version, expected)
+    for version, expected in ((2, expected_v2), (3, expected_v3))
+    if actual_files == expected
+]
+if len(matches) != 1:
+    fail("candidate file allowlist mismatch: does not match complete v2 or v3")
+expected_schema_version, expected_files = matches[0]
 
 if trust_input.is_symlink() or not trust_input.is_dir():
     fail("external trust directory is missing or linked")
@@ -329,15 +421,22 @@ for number, line in enumerate(sums_text.removesuffix("\n").split("\n"), 1):
     if relative in authenticated_sums:
         fail("duplicate SHA256SUMS path: " + relative)
     authenticated_sums[relative] = digest
+expected_sums = expected_files - {"SHA256SUMS", "SHA256SUMS.sig"}
+if set(authenticated_sums) != expected_sums:
+    fail("SHA256SUMS allowlist mismatch")
 try:
-    manifest_bytes = (root / "MANIFEST.json").read_bytes()
-except OSError as error:
+    manifest_path = root / "MANIFEST.json"
+    if manifest_path.stat().st_size > MAX_RELEASE_JSON_BYTES:
+        fail("MANIFEST.json exceeds the 4 MiB JSON byte limit")
+    with manifest_path.open("rb") as stream:
+        manifest_bytes = stream.read(MAX_RELEASE_JSON_BYTES + 1)
+except (OSError, MemoryError) as error:
     fail("cannot read MANIFEST.json: {}".format(error))
 if authenticated_sums.get("MANIFEST.json") != hashlib.sha256(manifest_bytes).hexdigest():
     fail("SHA-256 mismatch for MANIFEST.json")
 try:
-    manifest = json.loads(manifest_bytes.decode("utf-8"))
-except (OSError, UnicodeDecodeError, ValueError) as error:
+    manifest = strict_json_loads(manifest_bytes.decode("utf-8"))
+except (OSError, UnicodeDecodeError, ValueError, RecursionError, MemoryError) as error:
     fail("cannot parse signed manifest metadata: {}".format(error))
 expected = {
     "status": "SIGNED", "scheme": "openssh-sshsig", "publisher": "ruisheng-release",
@@ -345,7 +444,11 @@ expected = {
     "key_fingerprint": derived, "signed_object": "SHA256SUMS",
     "signature_file": "SHA256SUMS.sig",
 }
-if manifest.get("schema_version") != 2 or manifest.get("authenticity") != expected:
+if (
+    type(manifest.get("schema_version")) is not int
+    or manifest.get("schema_version") != expected_schema_version
+    or manifest.get("authenticity") != expected
+):
     fail("signed manifest authenticity contract is invalid")
 PY
 
@@ -362,11 +465,24 @@ import struct
 import subprocess
 import sys
 import tarfile
+import zlib
+
+MAX_RELEASE_JSON_BYTES = 4 * 1024 * 1024
+MAX_DOCKER_ARCHIVE_MEMBERS = 32_768
+MAX_DOCKER_ARCHIVE_MEMBER_BYTES = 8 * 1024 * 1024 * 1024
+MAX_DOCKER_ARCHIVE_TOTAL_BYTES = 32 * 1024 * 1024 * 1024
+MAX_DOCKER_DESCRIPTOR_REFERENCES = 32_768
+MAX_DOCKER_METADATA_BYTES = 64 * 1024 * 1024
+MAX_QUALIFICATION_MEMBER_BYTES = 64 * 1024 * 1024
+USTAR_BLOCK_BYTES = 512
+USTAR_RECORD_BYTES = 20 * USTAR_BLOCK_BYTES
+MIN_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS = 2
+MAX_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS = USTAR_RECORD_BYTES // USTAR_BLOCK_BYTES + 1
 
 root = pathlib.Path(sys.argv[1]).resolve()
 trust_input = pathlib.Path(sys.argv[2])
 ssh_keygen = pathlib.Path(sys.argv[3])
-fixed = {
+fixed_v2 = {
     ".env.prod.example",
     "MANIFEST.json",
     "MANIFEST.md",
@@ -391,10 +507,21 @@ fixed = {
     "verify-candidate.ps1",
     "verify-candidate.sh",
 }
+fixed_v3 = fixed_v2 | {"qualification-toolchain.tar.gz"}
 components = ("postgres", "redis", "api", "gw", "web")
 
 def fail(message):
     raise SystemExit("[verify] " + message)
+
+def strict_json_loads(contents):
+    def reject_duplicate_keys(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON object key: " + key)
+            value[key] = item
+        return value
+    return json.loads(contents, object_pairs_hook=reject_duplicate_keys)
 
 def safe_path(value):
     if not isinstance(value, str) or not value or "\\" in value or "\0" in value:
@@ -411,13 +538,321 @@ def sha256(path):
             digest.update(chunk)
     return digest.hexdigest()
 
-def read_archive_sha256_blob(archive, archive_label, digest, label, allow_missing=False):
+toolchain_members = (
+    "tools/validate_device_point_profile.py",
+    "schemas/point-profile/point-profile-v1.schema.json",
+    "tools/release_artifacts.py",
+    "tools/release_verification_receipt.py",
+    "pyproject.toml",
+    "uv.lock",
+)
+toolchain_manifest_name = "qualification-toolchain-manifest.json"
+semantic_validator = "ruisheng.device-point-profile-validator/v5"
+MAX_QUALIFICATION_TAR_BYTES = (
+    (len(toolchain_members) + 1) * USTAR_BLOCK_BYTES
+    + len(toolchain_members) * MAX_QUALIFICATION_MEMBER_BYTES
+    + MAX_RELEASE_JSON_BYTES
+    + MAX_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS * USTAR_BLOCK_BYTES
+)
+MAX_QUALIFICATION_GZIP_BYTES = (
+    MAX_QUALIFICATION_TAR_BYTES + MAX_QUALIFICATION_TAR_BYTES // 100 + 64 * 1024
+)
+
+def read_exact_gzip(stream, size, label):
+    value = bytearray()
+    while len(value) < size:
+        chunk = stream.read(size - len(value))
+        if not chunk:
+            fail("qualification toolchain archive is truncated while reading " + label)
+        value.extend(chunk)
+    return bytes(value)
+
+def consume_exact_gzip(stream, size, label, require_zero=False):
+    remaining = size
+    while remaining:
+        chunk = stream.read(min(1024 * 1024, remaining))
+        if not chunk:
+            fail("qualification toolchain archive is truncated while reading " + label)
+        if require_zero and any(chunk):
+            fail("qualification toolchain archive contains non-zero USTAR padding")
+        remaining -= len(chunk)
+
+def parse_ustar_octal(value, label):
+    encoded = value.rstrip(b"\0 ").lstrip(b" ")
+    if not encoded or any(byte < ord("0") or byte > ord("7") for byte in encoded):
+        fail("qualification toolchain archive has an invalid USTAR " + label)
+    return int(encoded, 8)
+
+def validate_single_qualification_gzip_member(raw_archive):
+    initial_position = raw_archive.tell()
+    decompressor = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+    expanded_bytes = 0
+    try:
+        while not decompressor.eof:
+            compressed = raw_archive.read(64 * 1024)
+            if not compressed:
+                fail("qualification toolchain gzip member is truncated")
+            pending = compressed
+            while pending and not decompressor.eof:
+                maximum_output = min(
+                    64 * 1024, MAX_QUALIFICATION_TAR_BYTES - expanded_bytes + 1
+                )
+                expanded = decompressor.decompress(pending, maximum_output)
+                expanded_bytes += len(expanded)
+                if expanded_bytes > MAX_QUALIFICATION_TAR_BYTES:
+                    fail("qualification toolchain expanded archive exceeds its byte budget")
+                next_pending = decompressor.unconsumed_tail
+                if next_pending == pending and not expanded:
+                    fail("qualification toolchain gzip member made no progress")
+                pending = next_pending
+        if decompressor.unused_data or raw_archive.read(1):
+            fail("qualification toolchain archive must contain exactly one gzip member")
+    finally:
+        raw_archive.seek(initial_position)
+
+def preflight_qualification_ustar(archive_path, expected_members):
+    sizes = {}
+    expanded_bytes = 0
+    try:
+        with archive_path.open("rb") as raw_archive:
+            initial_position = raw_archive.tell()
+            raw_archive.seek(0, os.SEEK_END)
+            archive_size = raw_archive.tell()
+            raw_archive.seek(initial_position)
+            if initial_position != 0 or archive_size > MAX_QUALIFICATION_GZIP_BYTES:
+                fail("qualification toolchain gzip archive exceeds its byte budget")
+            gzip_header = raw_archive.read(10)
+            raw_archive.seek(initial_position)
+            if gzip_header != b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\xff":
+                fail("qualification toolchain gzip header is not canonical")
+            validate_single_qualification_gzip_member(raw_archive)
+        with gzip.open(archive_path, "rb") as stream:
+            for expected_name in expected_members:
+                header = read_exact_gzip(stream, USTAR_BLOCK_BYTES, "USTAR header")
+                encoded_name = expected_name.encode("ascii")
+                expected_name_field = encoded_name + b"\0" * (100 - len(encoded_name))
+                size = parse_ustar_octal(header[124:136], "member size")
+                expected_size_field = ("{:011o}\0".format(size)).encode("ascii")
+                expected_checksum = parse_ustar_octal(header[148:156], "checksum")
+                actual_checksum = sum(header[:148]) + sum(b" " * 8) + sum(header[156:])
+                if (
+                    header[:100] != expected_name_field
+                    or header[100:124] != b"0000644\0" + b"0000000\0" * 2
+                    or header[124:136] != expected_size_field
+                    or header[136:148] != b"00000000000\0"
+                    or header[148:156]
+                    != ("{:06o}\0 ".format(expected_checksum)).encode("ascii")
+                    or header[156:157] != b"0"
+                    or any(header[157:257])
+                    or header[257:263] != b"ustar\0"
+                    or header[263:265] != b"00"
+                    or any(header[265:512])
+                ):
+                    fail(
+                        "qualification toolchain archive must match the fixed deterministic "
+                        "regular USTAR member contract"
+                    )
+                if expected_checksum != actual_checksum:
+                    fail("qualification toolchain archive USTAR checksum mismatch")
+                member_limit = (
+                    MAX_RELEASE_JSON_BYTES
+                    if expected_name == toolchain_manifest_name
+                    else MAX_QUALIFICATION_MEMBER_BYTES
+                )
+                if size > member_limit:
+                    fail("qualification toolchain member is not an allowed regular file")
+                sizes[expected_name] = size
+                consume_exact_gzip(stream, size, "member data")
+                padding = (-size) % USTAR_BLOCK_BYTES
+                consume_exact_gzip(stream, padding, "member padding", require_zero=True)
+                expanded_bytes += USTAR_BLOCK_BYTES + size + padding
+
+            terminator_bytes = 2 * USTAR_BLOCK_BYTES
+            trailing_bytes = terminator_bytes + (
+                -(expanded_bytes + terminator_bytes)
+            ) % USTAR_RECORD_BYTES
+            trailing_blocks = trailing_bytes // USTAR_BLOCK_BYTES
+            if not (
+                MIN_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS
+                <= trailing_blocks
+                <= MAX_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS
+            ):
+                fail("qualification toolchain USTAR trailer exceeds its zero-block budget")
+            consume_exact_gzip(
+                stream, trailing_bytes, "USTAR terminator and record padding", require_zero=True
+            )
+            if stream.read(1):
+                fail("qualification toolchain archive contains trailing data")
+    except (
+        OSError,
+        EOFError,
+        gzip.BadGzipFile,
+        zlib.error,
+        ValueError,
+        MemoryError,
+    ) as error:
+        fail("invalid qualification toolchain archive: {}".format(error))
+    return sizes
+
+def validate_qualification_toolchain(manifest, sums, expected_schema_version):
+    base_keys = {
+        "schema_version", "candidate_id", "source_commit", "generated_at", "target_os",
+        "target_architecture", "alembic_head", "logical_identity", "tools",
+        "authenticity", "images",
+    }
+    expected_keys = base_keys if expected_schema_version == 2 else base_keys | {
+        "qualification_toolchain"
+    }
+    if set(manifest) != expected_keys:
+        fail("MANIFEST.json keys mismatch for v{}".format(expected_schema_version))
+    if expected_schema_version == 2:
+        return
+    descriptor = manifest["qualification_toolchain"]
+    descriptor_keys = {
+        "path", "sha256", "format", "semantic_validator", "schema", "validator",
+        "producer", "receipt_producer", "toolchain_manifest",
+    }
+    if not isinstance(descriptor, dict) or set(descriptor) != descriptor_keys:
+        fail("qualification toolchain descriptor keys mismatch")
+    archive_name = "qualification-toolchain.tar.gz"
+    if (
+        descriptor.get("path") != archive_name
+        or descriptor.get("format") != "tar+gzip"
+        or descriptor.get("semantic_validator") != semantic_validator
+        or not isinstance(descriptor.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", descriptor["sha256"]) is None
+        or sums.get(archive_name) != descriptor["sha256"]
+    ):
+        fail("qualification toolchain descriptor contract is invalid")
+    identity_paths = {
+        "schema": "schemas/point-profile/point-profile-v1.schema.json",
+        "validator": "tools/validate_device_point_profile.py",
+        "producer": "tools/release_artifacts.py",
+        "receipt_producer": "tools/release_verification_receipt.py",
+        "toolchain_manifest": toolchain_manifest_name,
+    }
+    for name, expected_path in identity_paths.items():
+        identity = descriptor.get(name)
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != {"path", "sha256"}
+            or identity.get("path") != expected_path
+            or not isinstance(identity.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]) is None
+        ):
+            fail("qualification toolchain identity is invalid for " + expected_path)
+    expected_members = (*toolchain_members, toolchain_manifest_name)
+    preflight_sizes = preflight_qualification_ustar(root / archive_name, expected_members)
+    try:
+        with tarfile.open(str(root / archive_name), "r:gz") as archive:
+            members = []
+            for index, member in enumerate(archive):
+                if index >= len(expected_members) or member.name != expected_members[index]:
+                    fail("qualification toolchain archive member allowlist mismatch")
+                members.append(member)
+            if len(members) != len(expected_members):
+                fail("qualification toolchain archive member allowlist mismatch")
+            contents = {}
+            for member in members:
+                safe_path(member.name)
+                member_limit = (
+                    MAX_RELEASE_JSON_BYTES
+                    if member.name == toolchain_manifest_name
+                    else 64 * 1024 * 1024
+                )
+                if (
+                    not member.isfile()
+                    or member.size != preflight_sizes[member.name]
+                    or member.size > member_limit
+                ):
+                    fail("qualification toolchain member is not an allowed regular file")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    fail("qualification toolchain member cannot be read")
+                contents[member.name] = stream.read(member_limit + 1)
+                if len(contents[member.name]) != member.size:
+                    fail("qualification toolchain member size mismatch")
+    except (OSError, tarfile.TarError) as error:
+        fail("invalid qualification toolchain archive: {}".format(error))
+    manifest_bytes = contents[toolchain_manifest_name]
+    if hashlib.sha256(manifest_bytes).hexdigest() != descriptor["toolchain_manifest"]["sha256"]:
+        fail("qualification toolchain manifest SHA-256 mismatch")
+    try:
+        internal = strict_json_loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError, MemoryError):
+        fail("qualification toolchain manifest is invalid JSON")
+    if not isinstance(internal, dict) or set(internal) != {
+        "artifact_type", "members", "schema_version", "semantic_validator"
+    }:
+        fail("qualification toolchain manifest keys mismatch")
+    if (
+        internal.get("artifact_type") != "ruisheng.qualification-toolchain"
+        or type(internal.get("schema_version")) is not int
+        or internal.get("schema_version") != 1
+        or internal.get("semantic_validator") != semantic_validator
+    ):
+        fail("qualification toolchain manifest contract is invalid")
+    identities = internal.get("members")
+    if not isinstance(identities, list) or len(identities) != len(toolchain_members):
+        fail("qualification toolchain manifest members are invalid")
+    resolved = {}
+    for expected_path, identity in zip(toolchain_members, identities):
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != {"path", "sha256"}
+            or identity.get("path") != expected_path
+            or not isinstance(identity.get("sha256"), str)
+        ):
+            fail("qualification toolchain member identity is invalid")
+        digest = hashlib.sha256(contents[expected_path]).hexdigest()
+        if identity["sha256"] != digest:
+            fail("qualification toolchain member SHA-256 mismatch: " + expected_path)
+        resolved[expected_path] = digest
+    for name, expected_path in identity_paths.items():
+        if name != "toolchain_manifest" and descriptor[name]["sha256"] != resolved[expected_path]:
+            fail("qualification toolchain descriptor identity mismatch: " + expected_path)
+
+def expected_logical_identity(manifest):
+    value = {
+        "alembic_head": manifest["alembic_head"],
+        "candidate_id": manifest["candidate_id"],
+        "images": [
+            {
+                "candidate_reference": image["candidate_reference"],
+                "component": image["component"],
+                "image_id": image["image_id"],
+                "repo_digest": image.get("repo_digest"),
+                "source_reference": image["source_reference"],
+            }
+            for image in manifest["images"]
+        ],
+        "source_commit": manifest["source_commit"],
+        "target_architecture": manifest["target_architecture"],
+        "target_os": manifest["target_os"],
+    }
+    if manifest.get("schema_version") == 3:
+        value["qualification_toolchain"] = manifest["qualification_toolchain"]
+    encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+
+def read_archive_sha256_blob(
+    archive, members_by_name, blob_cache, reference_budget,
+    archive_label, digest, label, allow_missing=False,
+):
+    reference_budget[0] += 1
+    if reference_budget[0] > MAX_DOCKER_DESCRIPTOR_REFERENCES:
+        fail("archive descriptor reference budget exceeded for " + archive_label)
     if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
         fail("archive {} digest is invalid for {}".format(label, archive_label))
     blob_name = "blobs/sha256/" + digest.split(":", 1)[1]
-    try:
-        member = archive.getmember(blob_name)
-    except KeyError:
+    if blob_name in blob_cache:
+        cached = blob_cache[blob_name]
+        if cached is None and not allow_missing:
+            fail("archive {} blob is missing: {}:{}".format(label, archive_label, blob_name))
+        return cached
+    member = members_by_name.get(blob_name)
+    if member is None:
+        blob_cache[blob_name] = None
         if allow_missing:
             return None
         fail("archive {} blob is missing: {}:{}".format(label, archive_label, blob_name))
@@ -426,10 +861,21 @@ def read_archive_sha256_blob(archive, archive_label, digest, label, allow_missin
         fail("archive {} blob is not a regular file: {}:{}".format(
             label, archive_label, blob_name
         ))
-    contents = stream.read()
+    if member.size > MAX_RELEASE_JSON_BYTES:
+        fail("archive {} exceeds the JSON byte limit: {}".format(label, archive_label))
+    if member.size > MAX_DOCKER_METADATA_BYTES - blob_cache.metadata_bytes:
+        fail("archive metadata byte budget exceeded for " + archive_label)
+    blob_cache.metadata_bytes += member.size
+    contents = stream.read(MAX_RELEASE_JSON_BYTES + 1)
     if "sha256:" + hashlib.sha256(contents).hexdigest() != digest:
         fail("archive {} digest mismatch for {}".format(label, archive_label))
+    blob_cache[blob_name] = contents
     return contents
+
+class DockerBlobCache(dict):
+    def __init__(self):
+        super().__init__()
+        self.metadata_bytes = 0
 
 def parse_archive_json_object(contents, archive_label, label):
     try:
@@ -468,7 +914,8 @@ def validate_slsa_provenance_statement(statement, archive_label, main_manifest_d
         fail("archive provenance statement subject mismatch for " + archive_label)
 
 def resolve_main_manifest_digest(
-    archive, archive_label, descriptor_digest, descriptor_value, config_digest, config
+    archive, members_by_name, blob_cache, reference_budget, archive_label,
+    descriptor_digest, descriptor_value, config_digest, config,
 ):
     descriptor_config = descriptor_value.get("config")
     if isinstance(descriptor_config, dict) and descriptor_config.get("digest") == config_digest:
@@ -480,7 +927,8 @@ def resolve_main_manifest_digest(
     for nested in nested_descriptors:
         nested_digest = nested.get("digest") if isinstance(nested, dict) else None
         nested_bytes = read_archive_sha256_blob(
-            archive, archive_label, nested_digest, "nested descriptor", allow_missing=True
+            archive, members_by_name, blob_cache, reference_budget,
+            archive_label, nested_digest, "nested descriptor", allow_missing=True
         )
         if nested_bytes is None:
             # Docker 29 can retain source index entries while exporting only
@@ -497,7 +945,8 @@ def resolve_main_manifest_digest(
             fail("archive nested descriptor platform is invalid for " + archive_label)
         if nested_config.get("digest") != config_digest:
             nested_config_bytes = read_archive_sha256_blob(
-                archive, archive_label, nested_config.get("digest"), "nested config"
+                archive, members_by_name, blob_cache, reference_budget,
+                archive_label, nested_config.get("digest"), "nested config"
             )
             nested_config_value = parse_archive_json_object(
                 nested_config_bytes, archive_label, "nested config"
@@ -526,7 +975,8 @@ def resolve_main_manifest_digest(
     return matching_nested[0] if matching_nested else None
 
 def validate_provenance_attachment(
-    archive, archive_label, descriptor, descriptor_value, main_manifest_digest
+    archive, members_by_name, blob_cache, reference_budget, archive_label,
+    descriptor, descriptor_value, main_manifest_digest,
 ):
     manifest_media_type = "application/vnd.oci.image.manifest.v1+json"
     if (
@@ -564,7 +1014,8 @@ def validate_provenance_attachment(
     ):
         fail("archive provenance config is invalid for " + archive_label)
     config_bytes = read_archive_sha256_blob(
-        archive, archive_label, config_descriptor.get("digest"), "provenance config"
+        archive, members_by_name, blob_cache, reference_budget,
+        archive_label, config_descriptor.get("digest"), "provenance config"
     )
     provenance_config = parse_archive_json_object(
         config_bytes, archive_label, "provenance config"
@@ -588,7 +1039,8 @@ def validate_provenance_attachment(
         ):
             fail("archive provenance layer is invalid for " + archive_label)
         layer_bytes = read_archive_sha256_blob(
-            archive, archive_label, layer.get("digest"), "provenance layer"
+            archive, members_by_name, blob_cache, reference_budget,
+            archive_label, layer.get("digest"), "provenance layer"
         )
         statement = parse_archive_json_object(
             layer_bytes, archive_label, "provenance layer"
@@ -705,7 +1157,8 @@ for number, line in enumerate(sums_text.removesuffix("\n").split("\n"), 1):
         fail("publisher authenticity FAILED: duplicate SHA256SUMS path: " + relative)
     sums[relative] = digest
 
-expected_files = fixed | {"images/{}.tar.gz".format(value) for value in components}
+expected_v2 = fixed_v2 | {"images/{}.tar.gz".format(value) for value in components}
+expected_v3 = fixed_v3 | {"images/{}.tar.gz".format(value) for value in components}
 actual_files = set()
 for current, directories, files in os.walk(str(root), followlinks=False):
     current_path = pathlib.Path(current)
@@ -722,10 +1175,14 @@ for current, directories, files in os.walk(str(root), followlinks=False):
         if path.is_symlink() or not path.is_file():
             fail("publisher authenticity FAILED: non-regular package file: " + relative)
         actual_files.add(relative)
-if actual_files != expected_files:
-    fail("publisher authenticity FAILED: file allowlist mismatch: missing={}, extra={}".format(
-        sorted(expected_files - actual_files), sorted(actual_files - expected_files)
-    ))
+matches = [
+    (version, expected)
+    for version, expected in ((2, expected_v2), (3, expected_v3))
+    if actual_files == expected
+]
+if len(matches) != 1:
+    fail("publisher authenticity FAILED: candidate file allowlist mismatch: does not match complete v2 or v3")
+expected_schema_version, expected_files = matches[0]
 expected_sums = expected_files - {"SHA256SUMS", "SHA256SUMS.sig"}
 if set(sums) != expected_sums:
     fail("publisher authenticity FAILED: SHA256SUMS allowlist mismatch: missing={}, extra={}".format(
@@ -740,27 +1197,34 @@ for relative, expected_digest in sums.items():
             relative, expected_digest, actual_digest
         ))
     if relative == "MANIFEST.json":
-        manifest_bytes = path.read_bytes()
+        if path.stat().st_size > MAX_RELEASE_JSON_BYTES:
+            fail("publisher authenticity FAILED: MANIFEST.json exceeds the 4 MiB JSON byte limit")
+        with path.open("rb") as stream:
+            manifest_bytes = stream.read(MAX_RELEASE_JSON_BYTES + 1)
         if hashlib.sha256(manifest_bytes).hexdigest() != expected_digest:
             fail("publisher authenticity FAILED: MANIFEST.json changed while being authenticated")
 
 try:
-    manifest = json.loads(manifest_bytes.decode("utf-8"))
+    manifest = strict_json_loads(manifest_bytes.decode("utf-8"))
 except Exception as error:
     fail("publisher authenticity FAILED: cannot parse authenticated MANIFEST.json: {}".format(error))
 
 candidate_id = manifest.get("candidate_id")
 if not isinstance(candidate_id, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", candidate_id) is None:
     fail("invalid candidate ID")
-if manifest.get("schema_version") != 2 or manifest.get("authenticity", {}).get("status") != "SIGNED":
+if (
+    type(manifest.get("schema_version")) is not int
+    or manifest.get("schema_version") != expected_schema_version
+    or manifest.get("authenticity", {}).get("status") != "SIGNED"
+):
     fail("manifest authenticity contract is invalid")
+validate_qualification_toolchain(manifest, sums, expected_schema_version)
 target_os = manifest.get("target_os")
 target_arch = manifest.get("target_architecture")
 images = manifest.get("images")
 if not isinstance(images, list) or [item.get("component") for item in images if isinstance(item, dict)] != list(components):
     fail("manifest must contain the five ordered image components")
 
-expected_files = set(fixed)
 seen_refs = set()
 seen_ids = set()
 for image in images:
@@ -781,6 +1245,8 @@ for image in images:
     seen_refs.add(expected_ref)
     seen_ids.add(image_id)
     expected_files.add(expected_archive)
+if manifest.get("logical_identity") != expected_logical_identity(manifest):
+    fail("manifest logical_identity does not match its immutable inputs")
 
 actual_files = set()
 for current, directories, files in os.walk(str(root), followlinks=False):
@@ -821,24 +1287,44 @@ for image in images:
         fail("manifest/SHA256SUMS mismatch for " + image["archive"])
     try:
         with tarfile.open(str(archive_path), "r:gz") as archive:
-            names = [member.name for member in archive.getmembers()]
+            members = []
+            expanded_bytes = 0
+            for member in archive:
+                if len(members) >= MAX_DOCKER_ARCHIVE_MEMBERS:
+                    fail("archive has too many members in " + image["archive"])
+                if member.size < 0 or member.size > MAX_DOCKER_ARCHIVE_MEMBER_BYTES:
+                    fail("archive member exceeds the byte budget in " + image["archive"])
+                expanded_bytes += member.size
+                if expanded_bytes > MAX_DOCKER_ARCHIVE_TOTAL_BYTES:
+                    fail("archive exceeds the total byte budget in " + image["archive"])
+                members.append(member)
+            names = [member.name for member in members]
             if len(names) != len(set(names)):
                 fail("duplicate archive member in " + image["archive"])
-            for member in archive.getmembers():
+            members_by_name = {member.name: member for member in members}
+            blob_cache = DockerBlobCache()
+            reference_budget = [0]
+            for member in members:
                 safe_path(member.name.rstrip("/") or member.name)
                 if member.issym() or member.islnk():
                     fail("link member in " + image["archive"])
             stream = archive.extractfile("manifest.json")
             if stream is None:
                 fail("missing archive manifest in " + image["archive"])
-            archive_manifest = json.load(stream)
+            manifest_member = archive.getmember("manifest.json")
+            if manifest_member.size > MAX_RELEASE_JSON_BYTES:
+                fail("archive manifest exceeds the JSON byte limit for " + image["component"])
+            archive_manifest = json.loads(stream.read(MAX_RELEASE_JSON_BYTES + 1))
             if len(archive_manifest) != 1 or archive_manifest[0].get("RepoTags") != [image["candidate_reference"]]:
                 fail("archive tag mismatch for " + image["component"])
             config_name = safe_path(archive_manifest[0].get("Config"))
             config_stream = archive.extractfile(config_name)
             if config_stream is None:
                 fail("missing archive config for " + image["component"])
-            config_bytes = config_stream.read()
+            config_member = archive.getmember(config_name)
+            if config_member.size > MAX_RELEASE_JSON_BYTES:
+                fail("archive config exceeds the JSON byte limit for " + image["component"])
+            config_bytes = config_stream.read(MAX_RELEASE_JSON_BYTES + 1)
             config = json.loads(config_bytes)
             config_digest = "sha256:" + hashlib.sha256(config_bytes).hexdigest()
             archive_id = config_digest
@@ -846,23 +1332,29 @@ for image in images:
                 index_stream = archive.extractfile("index.json")
                 if index_stream is None:
                     fail("missing archive index for " + image["component"])
-                index = json.load(index_stream)
+                index_member = archive.getmember("index.json")
+                if index_member.size > MAX_RELEASE_JSON_BYTES:
+                    fail("archive index exceeds the JSON byte limit for " + image["component"])
+                index = json.loads(index_stream.read(MAX_RELEASE_JSON_BYTES + 1))
                 descriptors = index.get("manifests") if isinstance(index, dict) else None
                 if not isinstance(descriptors, list) or not descriptors:
                     fail("archive index must contain image descriptors for " + image["component"])
+                if len(descriptors) > MAX_DOCKER_DESCRIPTOR_REFERENCES:
+                    fail("archive descriptor reference budget exceeded for " + image["archive"])
                 loaded_descriptors = []
                 for descriptor in descriptors:
                     if not isinstance(descriptor, dict):
                         fail("archive descriptor is invalid for " + image["component"])
                     descriptor_digest = descriptor.get("digest")
                     descriptor_bytes = read_archive_sha256_blob(
-                        archive, image["archive"], descriptor_digest, "descriptor"
+                        archive, members_by_name, blob_cache, reference_budget,
+                        image["archive"], descriptor_digest, "descriptor"
                     )
                     descriptor_value = parse_archive_json_object(
                         descriptor_bytes, image["archive"], "descriptor"
                     )
                     resolved = resolve_main_manifest_digest(
-                        archive,
+                        archive, members_by_name, blob_cache, reference_budget,
                         image["archive"],
                         descriptor_digest,
                         descriptor_value,
@@ -882,7 +1374,7 @@ for image in images:
                 for descriptor, _digest, descriptor_value, resolved in loaded_descriptors:
                     if resolved is None:
                         validate_provenance_attachment(
-                            archive,
+                            archive, members_by_name, blob_cache, reference_budget,
                             image["archive"],
                             descriptor,
                             descriptor_value,
@@ -925,7 +1417,8 @@ echo "[verify] Publisher authenticity VERIFIED; file allowlist, SHA-256, and arc
 archive_index=0
 while IFS=$'\t' read -r component reference image_id image_os architecture archive digest; do
   echo "[verify] Loading $component from $archive"
-  "$DOCKER" image load --input "${ARCHIVE_FD_PATHS[$archive_index]}" >/dev/null
+  "$DOCKER" --host "$DOCKER_ENDPOINT" --config "$DOCKER_CONFIG" \
+    image load --input "${ARCHIVE_FD_PATHS[$archive_index]}" >/dev/null
   archive_index=$((archive_index + 1))
 done < "$LOCK_FILE"
 for archive_fd in "${ARCHIVE_FDS[@]}"; do
@@ -934,20 +1427,26 @@ done
 
 while IFS=$'\t' read -r component reference image_id image_os architecture archive digest; do
   mapfile -t metadata < <(
-    "$DOCKER" image inspect "$reference" \
-      --format '{{.Id}}{{println}}{{.Os}}{{println}}{{.Architecture}}{{println}}{{range .RepoTags}}{{println .}}{{end}}'
+    "$DOCKER" --host "$DOCKER_ENDPOINT" --config "$DOCKER_CONFIG" \
+      image inspect "$image_id" \
+      --format '{{.Id}}{{println}}{{.Os}}{{println}}{{.Architecture}}'
   )
   if [[ "${metadata[0]:-}" != "$image_id" || "${metadata[1]:-}" != "$image_os" || "${metadata[2]:-}" != "$architecture" ]]; then
     echo "[verify] Loaded identity mismatch for $component" >&2
     exit 1
   fi
-  if ! printf '%s\n' "${metadata[@]:3}" | "$GREP" -Fqx -- "$reference"; then
-    echo "[verify] Loaded candidate tag missing for $component: $reference" >&2
+  mapfile -t reference_metadata < <(
+    "$DOCKER" --host "$DOCKER_ENDPOINT" --config "$DOCKER_CONFIG" \
+      image inspect "$reference" \
+      --format '{{.Id}}{{println}}{{.Os}}{{println}}{{.Architecture}}'
+  )
+  if [[ "${reference_metadata[0]:-}" != "$image_id" || "${reference_metadata[1]:-}" != "$image_os" || "${reference_metadata[2]:-}" != "$architecture" ]]; then
+    echo "[verify] Loaded candidate reference mismatch for $component" >&2
     exit 1
   fi
 done < "$LOCK_FILE"
 
-"$DOCKER" compose \
+"$DOCKER" --host "$DOCKER_ENDPOINT" --config "$DOCKER_CONFIG" compose \
   --env-file "$SITE_ENV_FILE" \
   -f "$PACKAGE_DIR/docker-compose.prod.yml" \
   config --images > "$ACTUAL_FILE"
@@ -964,14 +1463,15 @@ while IFS=$'\t' read -r component reference image_id image_os architecture archi
   fi
 done < "$LOCK_FILE"
 if [[ -z "$api_reference" ]] || [[ "$("$GREP" -Fxc "$api_reference" < <(
-  "$DOCKER" compose --env-file "$SITE_ENV_FILE" \
+  "$DOCKER" --host "$DOCKER_ENDPOINT" --config "$DOCKER_CONFIG" \
+    compose --env-file "$SITE_ENV_FILE" \
     -f "$PACKAGE_DIR/docker-compose.prod.yml" config --images
 ))" -ne 2 ]]; then
   echo "[verify] Compose migrate/api do not share exactly one API image" >&2
   exit 1
 fi
 
-"$DOCKER" compose \
+"$DOCKER" --host "$DOCKER_ENDPOINT" --config "$DOCKER_CONFIG" compose \
   --env-file "$SITE_ENV_FILE" \
   -f "$PACKAGE_DIR/docker-compose.prod.yml" \
   config --format json > "$CONFIG_FILE"

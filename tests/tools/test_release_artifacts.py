@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import io
 import json
@@ -11,16 +12,25 @@ import shutil
 import subprocess
 import sys
 import tarfile
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
+from typing import BinaryIO, cast
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from tools import release_artifacts
+from tools import qualification_bootstrap, release_artifacts
 from tools.release_artifacts import (
     COMPONENTS,
     FIXED_PACKAGE_FILES,
+    FIXED_PACKAGE_FILES_V2,
+    QUALIFICATION_TOOLCHAIN_ARCHIVE,
+    QUALIFICATION_TOOLCHAIN_FORMAT,
+    QUALIFICATION_TOOLCHAIN_MANIFEST,
+    QUALIFICATION_TOOLCHAIN_MEMBERS,
+    SEMANTIC_VALIDATOR_ID,
     CandidateManifest,
     ReleaseArtifactError,
     build_candidate,
@@ -111,8 +121,10 @@ class FakeRunner:
         self.compose_image_override: list[str] | None = None
         self.compose_service_override: dict[str, dict[str, str]] | None = None
         self.image_inspect_errors: dict[str, str] = {}
+        self.image_id_inspect_overrides: dict[str, str] = {}
         self.final_commit = COMMIT
         self.git_head_calls = 0
+        self.git_blob_override: str | None = None
         self.loaded: list[str] = []
         self.signed_payload: bytes | None = None
         self._add_source("timescale/timescaledb:2.16.1-pg15", "postgres")
@@ -135,14 +147,17 @@ class FakeRunner:
         }
         self.configs[reference] = config
 
-    def run(  # noqa: PLR0911, PLR0912
+    def run(  # noqa: PLR0911, PLR0912, PLR0915
         self,
         args: Sequence[str],
         *,
         cwd: Path,
         env: Mapping[str, str] | None = None,
         input_bytes: bytes | None = None,
+        timeout_seconds: float | None = None,
+        inherit_environment: bool = True,
     ) -> str:
+        del timeout_seconds, inherit_environment
         command = tuple(str(arg) for arg in args)
         command_env = dict(env or {})
         self.commands.append((command, command_env))
@@ -169,9 +184,29 @@ class FakeRunner:
             ):
                 raise ReleaseArtifactError("invalid fake signature")
             return "Good signature"
-        if command == ("git", "rev-parse", "HEAD"):
+        if command == (
+            "git",
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            "HEAD^{commit}",
+        ):
             self.git_head_calls += 1
             return COMMIT if self.git_head_calls == 1 else self.final_commit
+        if (
+            command[:4] == ("git", "rev-parse", "--verify", "--end-of-options")
+            and ":" in command[4]
+        ):
+            commit, relative = command[4].split(":", maxsplit=1)
+            assert commit == COMMIT
+            if self.git_blob_override is not None:
+                return self.git_blob_override
+            source = ROOT / relative
+            contents = source.read_bytes()
+            return hashlib.sha1(  # noqa: S324 - Git's object format uses SHA-1.
+                b"blob " + str(len(contents)).encode() + b"\0" + contents,
+                usedforsecurity=False,
+            ).hexdigest()
         if command in {
             ("git", "status", "--porcelain", "--untracked-files=no"),
             ("git", "status", "--porcelain", "--untracked-files=all"),
@@ -199,7 +234,31 @@ class FakeRunner:
                 self._add_source(reference, component)
             return ""
         if command[:3] == ("docker", "image", "inspect"):
-            return json.dumps(self.images[command[3]], sort_keys=True)
+            requested_reference = command[3]
+            reference = requested_reference
+            if requested_reference.startswith("sha256:"):
+                matches = [
+                    name
+                    for name, config in self.configs.items()
+                    if "sha256:" + hashlib.sha256(config).hexdigest() == requested_reference
+                ]
+                if not matches:
+                    raise ReleaseArtifactError(
+                        f"fake Docker daemon has no image object: {requested_reference}"
+                    )
+                reference = next(
+                    (name for name in matches if name.startswith("ruisheng-candidate/")),
+                    matches[0],
+                )
+                value = {
+                    **self.images[reference],
+                    "Id": self.image_id_inspect_overrides.get(
+                        requested_reference, requested_reference
+                    ),
+                }
+            else:
+                value = self.images[reference]
+            return json.dumps(value, sort_keys=True)
         if len(command) >= 3 and command[1:3] == ("-m", "alembic"):
             assert command[0] == sys.executable
             return "0012_alarm_notification_runtime (head)"
@@ -282,11 +341,90 @@ class FakeRunner:
         return image in self.images
 
 
+class QualificationRunner(FakeRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.qualification_commands: list[tuple[tuple[str, ...], Path]] = []
+        self.forced_qualification_outcome: release_artifacts.CommandOutcome | None = None
+
+    def run_outcome(
+        self,
+        args: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_bytes: bytes | None = None,
+        timeout_seconds: float | None = None,
+        inherit_environment: bool = True,
+        isolate_process_tree: bool = False,
+    ) -> release_artifacts.CommandOutcome:
+        command = tuple(str(arg) for arg in args)
+        assert len(command) >= 14
+        assert Path(command[0]).resolve() == Path(sys.executable).resolve()
+        assert command[1:7] == ("-I", "-B", "-S", "-X", "utf8", "-c")
+        assert input_bytes is None
+        assert not inherit_environment
+        assert isolate_process_tree
+        self.commands.append((command, dict(env or {})))
+        self.qualification_commands.append((command, cwd))
+        if self.forced_qualification_outcome is not None:
+            return self.forced_qualification_outcome
+        return release_artifacts.SubprocessRunner._run_isolated_outcome(
+            command,
+            cwd=cwd,
+            env={} if env is None else dict(env),
+            input_bytes=input_bytes,
+            timeout_seconds=timeout_seconds or 30,
+        )
+
+
 def _add_tar_bytes(archive: tarfile.TarFile, name: str, contents: bytes) -> None:
     member = tarfile.TarInfo(name)
     member.size = len(contents)
     member.mtime = 0
     archive.addfile(member, io.BytesIO(contents))
+
+
+def _write_canonical_qualification_archive(path: Path, contents: Mapping[str, bytes]) -> None:
+    with (
+        path.open("wb") as raw_archive,
+        gzip.GzipFile(
+            filename="",
+            mode="wb",
+            compresslevel=9,
+            fileobj=raw_archive,
+            mtime=0,
+        ) as compressed,
+        tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive,
+    ):
+        for name in (*QUALIFICATION_TOOLCHAIN_MEMBERS, QUALIFICATION_TOOLCHAIN_MANIFEST):
+            _add_tar_bytes(archive, name, contents[name])
+
+
+def _canonical_gzip_bytes(contents: bytes) -> bytes:
+    output = io.BytesIO()
+    with gzip.GzipFile(
+        filename="",
+        mode="wb",
+        compresslevel=9,
+        fileobj=output,
+        mtime=0,
+    ) as compressed:
+        compressed.write(contents)
+    return output.getvalue()
+
+
+def _oversized_tar_extension_header(extension_type: bytes) -> bytes:
+    member = tarfile.TarInfo("extension-metadata")
+    member.type = extension_type
+    member.size = release_artifacts.MAX_DOCKER_ARCHIVE_MEMBER_BYTES + 1
+    member.mtime = 0
+    member.uid = 0
+    member.gid = 0
+    member.uname = ""
+    member.gname = ""
+    member.mode = 0o644
+    return member.tobuf(format=tarfile.GNU_FORMAT)
 
 
 def _json_bytes(value: object) -> bytes:
@@ -571,7 +709,7 @@ def _run_powershell_archive_identity(
     command = r"""
 $source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
 $start = $source.IndexOf('function Test-SafeRelativePath')
-$end = $source.IndexOf('if ($Manifest.candidate_id')
+$end = $source.IndexOf('Assert-ManifestValueTypes $Manifest')
 if ($start -lt 0 -or $end -lt 0) { throw 'Archive function block not found' }
 . ([scriptblock]::Create('function Fail([string]$Message) { throw "[verify] $Message" }' +
     [Environment]::NewLine + $source.Substring($start, $end - $start)))
@@ -593,6 +731,404 @@ Get-DockerArchiveIdentity $env:RS_ARCHIVE_PATH $env:RS_ARCHIVE_REFERENCE |
             "-Command",
             command,
         ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+
+def _run_powershell_logical_identity(
+    manifest_path: Path,
+    *,
+    script_relative: str = "deploy/verify-candidate.ps1",
+    start_marker: str = "function Get-Sha256Bytes",
+    end_marker: str = "Assert-ManifestValueTypes $Manifest",
+) -> subprocess.CompletedProcess[str]:
+    command = r"""
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$start = $source.IndexOf($env:RS_START_MARKER)
+$end = $source.IndexOf($env:RS_END_MARKER, $start)
+if ($start -lt 0 -or $end -lt 0) { throw 'Manifest identity function block not found' }
+. ([scriptblock]::Create('function Fail([string]$Message) { throw "[verify] $Message" }' +
+    [Environment]::NewLine + $source.Substring($start, $end - $start)))
+$manifest = Get-Content -Raw -LiteralPath $env:RS_MANIFEST_PATH | ConvertFrom-Json
+Get-ManifestLogicalIdentity $manifest ([int]$manifest.schema_version)
+"""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RS_VERIFY_SCRIPT": str(ROOT / script_relative),
+            "RS_MANIFEST_PATH": str(manifest_path),
+            "RS_START_MARKER": start_marker,
+            "RS_END_MARKER": end_marker,
+        }
+    )
+    return subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+
+def _run_powershell_publisher_snapshot_mutation(
+    tmp_path: Path, mutation: str
+) -> subprocess.CompletedProcess[str]:
+    command = r"""
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$startMarker = '# BEGIN candidate snapshot identity helpers'
+$endMarker = '# END candidate snapshot identity helpers'
+$start = $source.IndexOf($startMarker)
+$end = $source.IndexOf($endMarker, $start)
+if ($start -lt 0 -or $end -lt 0) { throw 'Snapshot identity helper block not found' }
+$end += $endMarker.Length
+$fail = 'function Fail([string]$Message) { throw ("[publisher] " + $Message) }' +
+    [Environment]::NewLine
+. ([scriptblock]::Create($fail + $source.Substring($start, $end - $start)))
+[byte[]]$original = [Text.Encoding]::ASCII.GetBytes('original')
+[IO.File]::WriteAllBytes($env:RS_SOURCE_PATH, $original)
+$identity = Get-CandidateSourceIdentity $env:RS_SOURCE_PATH 'sample.bin'
+switch ($env:RS_MUTATION) {
+    'rewrite' {
+        [IO.File]::WriteAllBytes(
+            $env:RS_SOURCE_PATH, [Text.Encoding]::ASCII.GetBytes('rewritte')
+        )
+        [IO.File]::SetLastWriteTimeUtc(
+            $env:RS_SOURCE_PATH, [DateTime]::FromFileTimeUtc($identity.LastWriteTime)
+        )
+    }
+    'replace' {
+        Move-Item -LiteralPath $env:RS_SOURCE_PATH -Destination $env:RS_MOVED_PATH
+        [IO.File]::WriteAllBytes(
+            $env:RS_SOURCE_PATH, [Text.Encoding]::ASCII.GetBytes('attacker')
+        )
+        [IO.File]::SetCreationTimeUtc(
+            $env:RS_SOURCE_PATH, [DateTime]::FromFileTimeUtc($identity.CreationTime)
+        )
+        [IO.File]::SetLastWriteTimeUtc(
+            $env:RS_SOURCE_PATH, [DateTime]::FromFileTimeUtc($identity.LastWriteTime)
+        )
+    }
+    default { throw 'unsupported test mutation' }
+}
+Copy-CandidateFileToSnapshot `
+    $env:RS_SOURCE_PATH $env:RS_DESTINATION_PATH 'sample.bin' $identity
+"""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RS_VERIFY_SCRIPT": str(ROOT / "tools" / "release_trust" / "verify-publisher.ps1"),
+            "RS_SOURCE_PATH": str(tmp_path / "source.bin"),
+            "RS_MOVED_PATH": str(tmp_path / "moved.bin"),
+            "RS_DESTINATION_PATH": str(tmp_path / "snapshot.bin"),
+            "RS_MUTATION": mutation,
+        }
+    )
+    return subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+
+def _run_powershell_qualification_invocation(
+    tmp_path: Path, mode: str
+) -> subprocess.CompletedProcess[str]:
+    command = r"""
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$start = $source.IndexOf('function Get-QualificationInvocation')
+$end = $source.IndexOf('function Invoke-AuthenticatedQualification', $start)
+if ($start -lt 0 -or $end -lt 0) { throw 'Qualification invocation block not found' }
+$fail = 'function Fail([string]$Message) { throw ("[publisher] " + $Message) }' +
+    [Environment]::NewLine
+. ([scriptblock]::Create($fail + $source.Substring($start, $end - $start)))
+$QualificationProfilePath = $env:RS_PROFILE_PATH
+$QualificationEvidencePath = $env:RS_EVIDENCE_PATH
+$QualificationRootPath = $env:RS_ROOT_PATH
+$QualificationTrustPolicyPath = $env:RS_POLICY_PATH
+$QualificationOutputDirectory = $env:RS_OUTPUT_PATH
+$QualificationSigningIdentity = $env:RS_SIGNING_IDENTITY
+$QualificationVerifierId = 'protected-release-verifier'
+$QualificationVerifierKeyId = 'release-receipt-key'
+$manifest = [pscustomobject]@{
+    qualification_toolchain = [pscustomobject]@{
+        receipt_producer = [pscustomobject]@{ sha256 = ('a' * 64) }
+    }
+}
+Get-QualificationInvocation $env:RS_MODE $manifest $env:RS_PACKAGE_PATH |
+    ConvertTo-Json -Compress
+"""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RS_VERIFY_SCRIPT": str(ROOT / "tools" / "release_trust" / "verify-publisher.ps1"),
+            "RS_MODE": mode,
+            "RS_PROFILE_PATH": str(tmp_path / "profile.json"),
+            "RS_EVIDENCE_PATH": str(tmp_path / "legacy.json"),
+            "RS_ROOT_PATH": str(tmp_path / "evidence"),
+            "RS_POLICY_PATH": str(tmp_path / "policy.json"),
+            "RS_OUTPUT_PATH": str(tmp_path / "receipts"),
+            "RS_SIGNING_IDENTITY": str(tmp_path / "release-receipt.pub"),
+            "RS_PACKAGE_PATH": str(tmp_path / "candidate"),
+        }
+    )
+    return subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+
+def _write_minimal_qualification_runtime(
+    tmp_path: Path,
+) -> tuple[Path, dict[str, object], str]:
+    runtime = tmp_path / "qualification-runtime"
+    files = {
+        "Lib/encodings/__init__.py": b"# isolated encodings package\n",
+        "Lib/site-packages/dependency.py": b"VALUE = 'authenticated'\n",
+        "python.exe": b"MZ-fake-python-3.11\n",
+        "python311.dll": b"MZ-fake-python311-dll\n",
+    }
+    for relative, content in files.items():
+        path = runtime / Path(relative)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    uv_lock_sha256 = "a" * 64
+    manifest: dict[str, object] = {
+        "artifact_type": "ruisheng.qualification-runtime",
+        "schema_version": 1,
+        "python_version": "3.11",
+        "uv_lock_sha256": uv_lock_sha256,
+        "dependency_root": "Lib/site-packages",
+        "files": [
+            {
+                "path": relative,
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+            for relative, content in sorted(files.items())
+        ],
+    }
+    _write_qualification_runtime_manifest(runtime, manifest)
+    return runtime, manifest, uv_lock_sha256
+
+
+def _write_qualification_runtime_manifest(runtime: Path, manifest: Mapping[str, object]) -> None:
+    (runtime / "qualification-runtime-manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=True, separators=(",", ":")),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def _add_qualification_runtime_file(
+    runtime: Path,
+    manifest: dict[str, object],
+    relative: str,
+    content: bytes,
+) -> None:
+    path = runtime / Path(relative)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    identities = cast(list[dict[str, str]], manifest["files"])
+    identities.append({"path": relative, "sha256": hashlib.sha256(content).hexdigest()})
+    identities.sort(key=lambda item: item["path"])
+    _write_qualification_runtime_manifest(runtime, manifest)
+
+
+def _run_powershell_qualification_runtime(
+    runtime: Path,
+    uv_lock_sha256: str,
+    *,
+    action: str = "verify",
+    lock_target: str = "python.exe",
+    fail_guard: str = "",
+) -> subprocess.CompletedProcess[str]:
+    command = r"""
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$identityStart = $source.IndexOf('# BEGIN candidate snapshot identity helpers')
+$identityEndMarker = '# END candidate snapshot identity helpers'
+$identityEnd = $source.IndexOf($identityEndMarker, $identityStart)
+$exactStart = $source.IndexOf('function Assert-ExactProperties')
+$exactEnd = $source.IndexOf('function ConvertTo-PythonCanonicalJson', $exactStart)
+    $runtimeStart = $source.IndexOf('$MaxQualificationRuntimeFiles = [Int64]32768')
+$runtimeEnd = $source.IndexOf('function Get-QualificationInvocation', $runtimeStart)
+if ($identityStart -lt 0 -or $identityEnd -lt 0 -or $exactStart -lt 0 -or
+    $exactEnd -lt 0 -or $runtimeStart -lt 0 -or $runtimeEnd -lt 0) {
+    throw 'Qualification runtime helper block not found'
+}
+$identityEnd += $identityEndMarker.Length
+function Fail([string]$Message) { throw ("[publisher] " + $Message) }
+function Assert-ProtectedAcl(
+    [string]$Path, [string]$Label, [switch]$AllowTrustedInstaller
+) {
+    if ($env:RS_FAIL_GUARD -eq 'acl') { Fail "unsafe ACL: $Label" }
+}
+function Assert-ProtectedAncestors(
+    [string]$Path, [string]$Label, [switch]$AllowTrustedInstaller
+) {
+    if ($env:RS_FAIL_GUARD -eq 'ancestor') { Fail "unsafe ancestor: $Label" }
+}
+. ([scriptblock]::Create($source.Substring(
+    $identityStart, $identityEnd - $identityStart
+)))
+. ([scriptblock]::Create($source.Substring($exactStart, $exactEnd - $exactStart)))
+$runtimeBlock = $source.Substring($runtimeStart, $runtimeEnd - $runtimeStart)
+$runtimeBlock = $runtimeBlock.Replace(
+    '"C:\ProgramData\Ruisheng\runtime"', '$env:RS_RUNTIME_ROOT'
+)
+. ([scriptblock]::Create($runtimeBlock))
+
+$runtime = $null
+$lockPath = $null
+$writerWasBlocked = $false
+try {
+    $runtime = Open-ProtectedSystemPython $env:RS_UV_LOCK_SHA256
+    Assert-ProtectedQualificationRuntimeUnchanged $runtime
+    if ($env:RS_ACTION -eq 'lock') {
+        $target = @($runtime.Locks | Where-Object {
+            $_.Relative -ceq $env:RS_LOCK_TARGET
+        })[0]
+        if ($null -eq $target) { throw 'qualification runtime lock target is missing' }
+        $lockPath = $target.Path
+        try {
+            $writer = [IO.File]::Open(
+                $target.Path, [IO.FileMode]::Open, [IO.FileAccess]::Write,
+                [IO.FileShare]::None
+            )
+            $writer.Dispose()
+            throw 'qualification runtime lock did not block a writer'
+        } catch {
+            if ($_.Exception.Message -like '*lock did not block*') { throw }
+            $writerWasBlocked = $true
+        }
+    }
+} finally {
+    if ($null -ne $runtime) {
+        foreach ($lock in $runtime.Locks) {
+            if ($null -ne $lock.Stream) { $lock.Stream.Dispose() }
+        }
+    }
+}
+if ($env:RS_ACTION -eq 'lock') {
+    if (-not $writerWasBlocked) { throw 'qualification runtime writer was not blocked' }
+    $writer = [IO.File]::Open(
+        $lockPath, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None
+    )
+    $writer.Dispose()
+    [Console]::Out.Write('LOCKED')
+} else {
+    [Console]::Out.Write('VERIFIED')
+}
+"""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RS_VERIFY_SCRIPT": str(ROOT / "tools" / "release_trust" / "verify-publisher.ps1"),
+            "RS_RUNTIME_ROOT": str(runtime),
+            "RS_UV_LOCK_SHA256": uv_lock_sha256,
+            "RS_ACTION": action,
+            "RS_LOCK_TARGET": lock_target,
+            "RS_FAIL_GUARD": fail_guard,
+        }
+    )
+    return subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+
+def _run_powershell_qualification_runtime_budget(action: str) -> subprocess.CompletedProcess[str]:
+    command = r"""
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$runtimeStart = $source.IndexOf('$MaxQualificationRuntimeFiles = [Int64]32768')
+$runtimeEnd = $source.IndexOf('function Get-QualificationInvocation', $runtimeStart)
+if ($runtimeStart -lt 0 -or $runtimeEnd -lt 0) {
+    throw 'Qualification runtime budget block not found'
+}
+function Fail([string]$Message) { throw ("[publisher] " + $Message) }
+. ([scriptblock]::Create($source.Substring(
+    $runtimeStart, $runtimeEnd - $runtimeStart
+)))
+
+switch ($env:RS_ACTION) {
+    'file-count-boundary' {
+        # 32,767 listed members plus the runtime manifest is 32,768 actual files.
+        $files = [object[]]::new(32767)
+        Assert-QualificationRuntimeManifestFileCount $files
+    }
+    'file-count' {
+        # The runtime manifest itself counts toward the 32,768-file ceiling.
+        $files = [object[]]::new(32768)
+        Assert-QualificationRuntimeManifestFileCount $files
+    }
+    'single-file' {
+        [void](Add-QualificationRuntimeFileBytes `
+            0 536870913 'qualification runtime synthetic file')
+    }
+    'aggregate' {
+        [void](Add-QualificationRuntimeFileBytes `
+            34359738367 2 'qualification runtime synthetic file')
+    }
+    'int64-overflow' {
+        [void](Add-QualificationRuntimeFileBytes `
+            ([Int64]::MaxValue) 1 'qualification runtime synthetic file')
+    }
+    'directory' {
+        $MaxQualificationRuntimeDirectories = [Int64]2
+        $directories = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::Ordinal
+        )
+        $members = [Collections.Generic.Dictionary[string, object]]::new(
+            [StringComparer]::OrdinalIgnoreCase
+        )
+        foreach ($relative in @('one', 'two', 'three')) {
+            Add-ExpectedQualificationRuntimeDirectory $directories $members $relative
+        }
+    }
+    'path' {
+        [void](Resolve-QualificationRuntimePath `
+            'C:\runtime' ('a' * 4097) 'qualification runtime file path')
+    }
+    default { throw 'unsupported qualification runtime budget action' }
+}
+[Console]::Out.Write('ACCEPTED')
+"""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RS_VERIFY_SCRIPT": str(ROOT / "tools" / "release_trust" / "verify-publisher.ps1"),
+            "RS_ACTION": action,
+        }
+    )
+    return subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-Command", command],
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -651,6 +1187,50 @@ def _build(
     )
 
 
+def _rewrite_authenticated_manifest(
+    package: Path,
+    runner: FakeRunner,
+    value: dict[str, object],
+    *,
+    render_markdown: bool = True,
+) -> None:
+    manifest_path = package / "MANIFEST.json"
+    manifest_path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    if render_markdown:
+        parsed = release_artifacts._manifest_from_dict(value)
+        (package / "MANIFEST.md").write_text(
+            render_manifest_markdown(parsed), encoding="utf-8", newline="\n"
+        )
+    hashed = {
+        path.relative_to(package).as_posix()
+        for path in package.rglob("*")
+        if path.is_file() and path.name not in {"SHA256SUMS", "SHA256SUMS.sig"}
+    }
+    release_artifacts._write_sha256sums(package, tuple(hashed))
+    runner.signed_payload = (package / "SHA256SUMS").read_bytes()
+
+
+def _downgrade_package_to_v2(package: Path, runner: FakeRunner) -> None:
+    value = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
+    images = release_artifacts._manifest_from_dict(value).images
+    value["schema_version"] = 2
+    value.pop("qualification_toolchain")
+    value["logical_identity"] = compute_logical_identity(
+        candidate_id=str(value["candidate_id"]),
+        source_commit=str(value["source_commit"]),
+        target_os=str(value["target_os"]),
+        target_architecture=str(value["target_architecture"]),
+        alembic_head=str(value["alembic_head"]),
+        images=images,
+    )
+    (package / QUALIFICATION_TOOLCHAIN_ARCHIVE).unlink()
+    _rewrite_authenticated_manifest(package, runner, value)
+
+
 def test_build_candidate_closes_five_image_manifest_and_sha_contract(
     tmp_path: Path, production_env: Path
 ) -> None:
@@ -669,7 +1249,8 @@ def test_build_candidate_closes_five_image_manifest_and_sha_contract(
     assert len({image.image_id for image in manifest.images}) == 5
     assert manifest.source_commit == COMMIT
     assert manifest.alembic_head == "0012_alarm_notification_runtime"
-    assert manifest.schema_version == 2
+    assert manifest.schema_version == 3
+    assert manifest.qualification_toolchain is not None
     assert manifest.authenticity["status"] == "SIGNED"
     assert manifest.authenticity["publisher"] == "ruisheng-release"
     assert manifest.authenticity["namespace"] == "ruisheng-candidate-v1"
@@ -706,6 +1287,7 @@ def test_logical_identity_is_stable_for_the_same_immutable_inputs(
         target_architecture=manifest.target_architecture,
         alembic_head=manifest.alembic_head,
         images=manifest.images,
+        qualification_toolchain=manifest.qualification_toolchain,
     )
     second = compute_logical_identity(
         candidate_id=manifest.candidate_id,
@@ -714,6 +1296,7 @@ def test_logical_identity_is_stable_for_the_same_immutable_inputs(
         target_architecture=manifest.target_architecture,
         alembic_head=manifest.alembic_head,
         images=manifest.images,
+        qualification_toolchain=manifest.qualification_toolchain,
     )
 
     assert first == second == manifest.logical_identity
@@ -773,36 +1356,52 @@ def test_concurrent_candidate_lock_is_rejected_without_tag_changes(
     tmp_path: Path, production_env: Path
 ) -> None:
     runner = FakeRunner()
-    output_root = tmp_path / "dist" / "deploy"
-    output_root.mkdir(parents=True)
-    lock_path = tmp_path / "candidate-locks" / f"{CANDIDATE_ID}.lock"
-    lock_path.parent.mkdir(parents=True)
-    lock_path.write_text("pid=123\n", encoding="ascii")
+    lock_root = tmp_path / "candidate-locks"
+    lock_root.mkdir(parents=True)
 
-    with pytest.raises(ReleaseArtifactError, match="candidate build already in progress"):
+    with (
+        release_artifacts.candidate_tag_operation_lock(lock_root, CANDIDATE_ID),
+        pytest.raises(ReleaseArtifactError, match="candidate tag operation is already active"),
+    ):
         _build(tmp_path, production_env, runner)
 
-    assert lock_path.is_file()
+    assert (lock_root / release_artifacts.candidate_tag_lock_name(CANDIDATE_ID)).is_file()
     assert not any(
         reference in runner.images
         for reference in candidate_image_references(CANDIDATE_ID).values()
     )
 
 
-def test_candidate_lock_write_failure_removes_new_lock(
+def test_build_uses_host_global_candidate_tag_lock_by_default(
     tmp_path: Path, production_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = FakeRunner()
+    trust, identity = _write_fake_release_trust(tmp_path)
+    lock_root = tmp_path / "host-global-locks"
+    lock_root.mkdir()
+    observed: list[Path] = []
 
-    def fail_lock_write(_descriptor: int, _value: bytes) -> int:
-        raise OSError("injected lock write failure")
+    def system_lock_root() -> Path:
+        observed.append(lock_root)
+        return lock_root
 
-    monkeypatch.setattr(os, "write", fail_lock_write)
-    with pytest.raises(ReleaseArtifactError, match="injected lock write failure"):
-        _build(tmp_path, production_env, runner)
+    monkeypatch.setattr(release_artifacts, "system_candidate_tag_lock_root", system_lock_root)
+    package = build_candidate(
+        root=ROOT,
+        output_root=tmp_path / "dist" / "deploy",
+        candidate_id=CANDIDATE_ID,
+        target_platform=PLATFORM,
+        env_file=production_env,
+        postgres_source="timescale/timescaledb:2.16.1-pg15",
+        redis_source="redis:7-alpine",
+        runner=runner,
+        signing_identity=identity,
+        trust_directory=trust,
+    )
 
-    lock_path = tmp_path / "candidate-locks" / f"{CANDIDATE_ID}.lock"
-    assert not lock_path.exists()
+    assert package.is_dir()
+    assert observed == [lock_root]
+    assert (lock_root / release_artifacts.candidate_tag_lock_name(CANDIDATE_ID)).is_file()
 
 
 def test_dirty_tracked_input_is_rejected_before_staging(
@@ -835,7 +1434,7 @@ def test_partial_archive_failure_removes_all_temporary_output(
     )
 
 
-def test_signature_failure_removes_staging_tags_and_lock(
+def test_signature_failure_removes_staging_tags_and_releases_lock(
     tmp_path: Path, production_env: Path
 ) -> None:
     runner = FakeRunner()
@@ -846,7 +1445,11 @@ def test_signature_failure_removes_staging_tags_and_lock(
 
     output_root = tmp_path / "dist" / "deploy"
     assert list(output_root.iterdir()) == []
-    assert not (tmp_path / "candidate-locks" / f"{CANDIDATE_ID}.lock").exists()
+    lock_root = tmp_path / "candidate-locks"
+    lock_path = lock_root / release_artifacts.candidate_tag_lock_name(CANDIDATE_ID)
+    assert lock_path.is_file()
+    with release_artifacts.candidate_tag_operation_lock(lock_root, CANDIDATE_ID):
+        pass
     assert not any(
         reference in runner.images
         for reference in candidate_image_references(CANDIDATE_ID).values()
@@ -901,31 +1504,14 @@ def test_build_rejects_linked_agent_identity_before_docker(
     assert not runner.commands
 
 
-def test_lock_cleanup_failure_rolls_back_published_candidate(
+def test_candidate_tag_locks_do_not_conflict_for_distinct_candidates(
     tmp_path: Path,
-    production_env: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner = FakeRunner()
-    final_directory = tmp_path / "dist" / "deploy" / CANDIDATE_ID
-    lock_path = tmp_path / "candidate-locks" / f"{CANDIDATE_ID}.lock"
-    original_unlink = os.unlink
-
-    def fail_final_lock_cleanup(path: str | bytes, *args: object, **kwargs: object) -> None:
-        if Path(path).name == lock_path.name:
-            raise OSError("injected final lock cleanup failure")
-        original_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(os, "unlink", fail_final_lock_cleanup)
-    with pytest.raises(ReleaseArtifactError, match="candidate build lock cleanup failed"):
-        _build(tmp_path, production_env, runner)
-
-    assert not final_directory.exists()
-    assert lock_path.exists()
-    assert not any(
-        reference in runner.images
-        for reference in candidate_image_references(CANDIDATE_ID).values()
-    )
+    with (
+        release_artifacts.candidate_tag_operation_lock(tmp_path, CANDIDATE_ID),
+        release_artifacts.candidate_tag_operation_lock(tmp_path, "deploy-20260827.2"),
+    ):
+        pass
 
 
 @pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="OpenSSH is unavailable")
@@ -995,6 +1581,169 @@ def test_openssh_signature_binds_exact_sums_bytes_and_external_anchor(tmp_path: 
     replacement_anchor = release_artifacts._load_release_trust(trust)
     with pytest.raises(ReleaseArtifactError, match="publisher authenticity FAILED"):
         release_artifacts._verify_publisher_signature(package, replacement_anchor, runner)
+
+
+def test_subprocess_runner_pins_local_docker_and_rejects_caller_environment_injection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = tmp_path / "docker.exe"
+    docker.write_bytes(b"fixed docker")
+    captured: dict[str, object] = {}
+
+    def fake_run(command: Sequence[str], **kwargs: object) -> SimpleNamespace:
+        captured["command"] = list(command)
+        captured["env"] = dict(cast(Mapping[str, str], kwargs["env"]))
+        return SimpleNamespace(stdout=b"ok\n", stderr=b"", returncode=0)
+
+    monkeypatch.setattr(release_artifacts, "_system_docker", lambda: docker)
+    monkeypatch.setattr(release_artifacts.subprocess, "run", fake_run)
+    for key in release_artifacts.DOCKER_ENVIRONMENT_KEYS:
+        monkeypatch.setenv(key, "inherited-attacker-value")
+
+    runner = release_artifacts.SubprocessRunner()
+    result = runner.run(
+        ["docker", "version"],
+        cwd=tmp_path,
+        env={
+            "SAFE_VALUE": "preserved",
+            "DOCKER_HOST": "tcp://attacker:2375",
+            "docker_context": "attacker-context",
+            "XDG_CONFIG_HOME": str(tmp_path / "attacker-config"),
+        },
+    )
+
+    command = cast(list[str], captured["command"])
+    environment = cast(dict[str, str], captured["env"])
+    assert result == "ok"
+    assert command[:5] == [
+        str(docker),
+        "--host",
+        release_artifacts._local_docker_endpoint(),
+        "--config",
+        str(runner._docker_config()),
+    ]
+    assert command[5:] == ["version"]
+    assert environment["SAFE_VALUE"] == "preserved"
+    assert not (release_artifacts.DOCKER_ENVIRONMENT_KEYS & set(environment))
+    assert not (
+        {key.casefold() for key in release_artifacts.DOCKER_ENVIRONMENT_KEYS}
+        & {key.casefold() for key in environment}
+    )
+    assert (runner._docker_config() / "config.json").read_bytes() == b"{}\n"
+
+
+def test_subprocess_runner_closes_git_environment_and_disables_replace_objects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_git = tmp_path / "trusted" / "git.exe"
+    attacker_git = tmp_path / "attacker" / "git.cmd"
+    fixed_git.parent.mkdir()
+    attacker_git.parent.mkdir()
+    fixed_git.write_bytes(b"fixed system git")
+    attacker_git.write_text("exit /b 99\n", encoding="ascii")
+    captured: dict[str, object] = {}
+
+    def fake_run(command: Sequence[str], **kwargs: object) -> SimpleNamespace:
+        captured["command"] = list(command)
+        captured["env"] = dict(cast(Mapping[str, str], kwargs["env"]))
+        return SimpleNamespace(stdout=b"a" * 40 + b"\n", stderr=b"", returncode=0)
+
+    monkeypatch.setattr(release_artifacts, "_system_git", lambda: fixed_git)
+    monkeypatch.setattr(release_artifacts.subprocess, "run", fake_run)
+    monkeypatch.setenv("PATH", str(attacker_git.parent))
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "attacker-repository"))
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(tmp_path / "attacker-objects"))
+
+    runner = release_artifacts.SubprocessRunner()
+    result = runner.run(
+        ["git", "rev-parse", f"{COMMIT}:tools/release_artifacts.py"],
+        cwd=tmp_path,
+        env={
+            "SAFE_VALUE": "preserved",
+            "git_work_tree": str(tmp_path / "attacker-worktree"),
+            "GIT_NO_REPLACE_OBJECTS": "0",
+        },
+    )
+
+    environment = cast(dict[str, str], captured["env"])
+    assert result == "a" * 40
+    assert captured["command"] == [
+        str(fixed_git),
+        "--no-replace-objects",
+        "-c",
+        "core.fsmonitor=false",
+        "rev-parse",
+        f"{COMMIT}:tools/release_artifacts.py",
+    ]
+    assert str(attacker_git) not in cast(list[str], captured["command"])
+    assert environment["SAFE_VALUE"] == "preserved"
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert not any(
+        key.upper().startswith("GIT_") and key != "GIT_NO_REPLACE_OBJECTS" for key in environment
+    )
+
+
+def test_windows_git_contract_declares_only_install_root_hard_links_and_runtime_files() -> None:
+    assert release_artifacts.WINDOWS_GIT_EXECUTABLE_LINKS == (
+        "mingw64/bin/git.exe",
+        "mingw64/bin/git-receive-pack.exe",
+        "mingw64/bin/git-upload-archive.exe",
+        "mingw64/bin/git-upload-pack.exe",
+    )
+    assert set(release_artifacts.WINDOWS_GIT_RUNTIME_SHA256) == {
+        "mingw64/bin/git.exe",
+        "mingw64/bin/libiconv-2.dll",
+        "mingw64/bin/libintl-8.dll",
+        "mingw64/bin/libpcre2-8-0.dll",
+        "mingw64/bin/libwinpthread-1.dll",
+        "mingw64/bin/zlib1.dll",
+    }
+    assert all(
+        release_artifacts.SHA256_PATTERN.fullmatch(digest) is not None
+        for digest in release_artifacts.WINDOWS_GIT_RUNTIME_SHA256.values()
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Docker Desktop contract is Windows-only")
+def test_windows_docker_receives_direct_acl_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    docker = Path(r"C:\Program Files\Docker\Docker\resources\bin\docker.exe")
+    acl_validated: list[Path] = []
+    monkeypatch.setattr(Path, "is_symlink", lambda _path: False)
+    monkeypatch.setattr(Path, "is_file", lambda path: path == docker)
+    monkeypatch.setattr(release_artifacts, "_validate_fixed_system_tool", lambda _path: None)
+    monkeypatch.setattr(
+        release_artifacts,
+        "_validate_windows_fixed_system_tool_permissions",
+        acl_validated.append,
+    )
+
+    assert release_artifacts._system_docker() == docker
+    assert acl_validated == [docker]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Git for Windows contract is Windows-only")
+def test_fixed_windows_git_is_authenticated_acl_validated_and_operational(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acl_validated: list[Path] = []
+    monkeypatch.setattr(
+        release_artifacts,
+        "_validate_windows_fixed_system_tool_permissions",
+        acl_validated.append,
+    )
+    git = release_artifacts._system_git()
+
+    assert git == Path(r"C:\Git\mingw64\bin\git.exe")
+    assert acl_validated == [
+        Path(r"C:\Git") / relative for relative in release_artifacts.WINDOWS_GIT_RUNTIME_SHA256
+    ]
+    assert (
+        release_artifacts.SubprocessRunner()
+        .run(["git", "--version"], cwd=ROOT)
+        .startswith("git version 2.52.0.windows.")
+    )
 
 
 def test_tracked_inputs_changing_during_build_rejects_candidate_and_tags(
@@ -1111,6 +1860,121 @@ def test_verify_and_load_use_complete_snapshot_for_all_docker_calls(
     assert len({path.parents[1] for path in loaded_paths}) == 1
 
 
+def _write_minimal_snapshot_candidate(tmp_path: Path) -> Path:
+    package = tmp_path / "snapshot-candidate"
+    for relative in release_artifacts._expected_candidate_files(2):
+        path = package / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((relative + "\n").encode("ascii"))
+    return package
+
+
+def test_protected_snapshot_rejects_same_length_concurrent_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = _write_minimal_snapshot_candidate(tmp_path)
+    source = package / ".env.prod.example"
+    original = source.read_bytes()
+    replacement = b"x" * (len(original) - 1) + b"\n"
+    assert replacement != original
+    assert len(replacement) == len(original)
+    actual_fdopen = os.fdopen
+    rewritten = False
+
+    class RewriteAfterFirstRead:
+        def __init__(self, stream: BinaryIO) -> None:
+            self.stream = stream
+
+        def __enter__(self) -> RewriteAfterFirstRead:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.stream.close()
+
+        def read(self, size: int = -1) -> bytes:
+            nonlocal rewritten
+            value = self.stream.read(size)
+            if not rewritten:
+                metadata = source.stat()
+                source.write_bytes(replacement)
+                os.utime(
+                    source,
+                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
+                )
+                rewritten = True
+            return value
+
+    def mutating_fdopen(
+        descriptor: int,
+        mode: str,
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+        closefd: bool = True,
+        opener: object = None,
+    ) -> RewriteAfterFirstRead:
+        del buffering, encoding, errors, newline, opener
+        stream = cast(BinaryIO, actual_fdopen(descriptor, mode, buffering=0, closefd=closefd))
+        return RewriteAfterFirstRead(stream)
+
+    monkeypatch.setattr(os, "fdopen", mutating_fdopen)
+
+    with (
+        pytest.raises(
+            ReleaseArtifactError,
+            match="candidate file content changed during snapshot",
+        ),
+        release_artifacts._protected_candidate_snapshot(package),
+    ):
+        pytest.fail("a concurrently rewritten snapshot must not be exposed")
+
+    assert rewritten
+    assert source.read_bytes() == replacement
+
+
+def test_protected_snapshot_rejects_same_length_path_replacement_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = _write_minimal_snapshot_candidate(tmp_path)
+    source = package / ".env.prod.example"
+    retained = tmp_path / "retained-original"
+    original = source.read_bytes()
+    replacement = b"y" * (len(original) - 1) + b"\n"
+    assert replacement != original
+    assert len(replacement) == len(original)
+    actual_open = os.open
+    replaced = False
+
+    def replacing_open(
+        path: str | bytes | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal replaced
+        if not replaced and Path(os.fsdecode(path)) == source:
+            source.replace(retained)
+            source.write_bytes(replacement)
+            replaced = True
+        if dir_fd is None:
+            return actual_open(path, flags, mode)
+        return actual_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", replacing_open)
+
+    with (
+        pytest.raises(ReleaseArtifactError, match="candidate file changed before snapshot"),
+        release_artifacts._protected_candidate_snapshot(package),
+    ):
+        pytest.fail("a path-replaced snapshot must not be exposed")
+
+    assert replaced
+    assert retained.read_bytes() == original
+    assert source.read_bytes() == replacement
+
+
 def test_windows_cli_verify_fails_closed_before_trust_or_docker(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1194,6 +2058,75 @@ def test_archive_tag_collision_or_drift_is_rejected(tmp_path: Path) -> None:
         _add_tar_bytes(archive, f"{config_id}.json", config)
 
     with pytest.raises(ReleaseArtifactError, match="RepoTags mismatch"):
+        inspect_docker_archive(path, "ruisheng-candidate/api:expected")
+
+
+def test_archive_rejects_oversized_manifest_before_json_allocation(tmp_path: Path) -> None:
+    path = tmp_path / "oversized-manifest.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        _add_tar_bytes(
+            archive,
+            "manifest.json",
+            b"[" + b" " * release_artifacts.MAX_RELEASE_JSON_BYTES + b"]",
+        )
+
+    with pytest.raises(ReleaseArtifactError, match="JSON byte limit"):
+        inspect_docker_archive(path, "ruisheng-candidate/api:expected")
+
+
+@pytest.mark.parametrize(
+    "extension_type",
+    (tarfile.XHDTYPE, tarfile.GNUTYPE_LONGNAME),
+    ids=("pax", "gnu-longname"),
+)
+def test_archive_preflight_rejects_oversized_extension_metadata_before_payload_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extension_type: bytes,
+) -> None:
+    path = tmp_path / "oversized-extension.tar.gz"
+    path.write_bytes(_canonical_gzip_bytes(_oversized_tar_extension_header(extension_type)))
+    discarded: list[int] = []
+
+    def record_discard(_stream: BinaryIO, size: int, *, label: str) -> None:
+        del label
+        discarded.append(size)
+
+    monkeypatch.setattr(release_artifacts, "_discard_tar_bytes", record_discard)
+
+    with pytest.raises(ReleaseArtifactError, match="forbidden tar extension metadata"):
+        inspect_docker_archive(path, "ruisheng-candidate/api:expected")
+
+    assert discarded == []
+
+
+def test_archive_rejects_oversized_config_before_json_allocation(tmp_path: Path) -> None:
+    reference = "ruisheng-candidate/api:expected"
+    config_name = "oversized.json"
+    manifest = json.dumps([{"Config": config_name, "Layers": [], "RepoTags": [reference]}]).encode()
+    path = tmp_path / "oversized-config.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        _add_tar_bytes(archive, "manifest.json", manifest)
+        _add_tar_bytes(
+            archive,
+            config_name,
+            b"{" + b" " * release_artifacts.MAX_RELEASE_JSON_BYTES + b"}",
+        )
+
+    with pytest.raises(ReleaseArtifactError, match="JSON byte limit"):
+        inspect_docker_archive(path, reference)
+
+
+def test_archive_rejects_member_count_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(release_artifacts, "MAX_DOCKER_ARCHIVE_MEMBERS", 2)
+    path = tmp_path / "too-many-members.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        for index in range(3):
+            _add_tar_bytes(archive, f"member-{index}", b"")
+
+    with pytest.raises(ReleaseArtifactError, match="too many members"):
         inspect_docker_archive(path, "ruisheng-candidate/api:expected")
 
 
@@ -1352,6 +2285,7 @@ def test_compose_service_mapping_and_platform_drift_are_rejected(
 @pytest.mark.parametrize(
     ("field", "value", "error"),
     (
+        ("schema_version", 3.0, "unsupported manifest schema_version"),
         ("candidate_id", 123, "scalar fields have invalid types"),
         ("generated_at", "not-a-timestamp", "generated_at must be an ISO-8601 timestamp"),
         ("generated_at", "2026-08-19T10:00:00", "generated_at must include a timezone"),
@@ -1385,17 +2319,50 @@ def test_manifest_invalid_scalar_is_rejected_as_release_error(
         verify_package(package, runner, trust_directory=_trust_for_package(package))
 
 
-def test_load_verification_rejects_loaded_image_identity_drift(
+def test_load_verification_rejects_candidate_reference_drift(
     tmp_path: Path, production_env: Path
 ) -> None:
     runner = FakeRunner()
     package = _build(tmp_path, production_env, runner)
-    verify_package(package, runner, trust_directory=_trust_for_package(package))
+    manifest = verify_package(package, runner, trust_directory=_trust_for_package(package))
     api_reference = candidate_image_references(CANDIDATE_ID)["api"]
     runner.images[api_reference] = {
         **runner.images[api_reference],
         "Id": "sha256:" + "f" * 64,
     }
+
+    with pytest.raises(
+        ReleaseArtifactError,
+        match="loaded candidate reference mismatch for api",
+    ):
+        load_and_verify_images(
+            package,
+            runner,
+            trust_directory=_trust_for_package(package),
+        )
+
+    assert len(runner.loaded) == 5
+    requested_ids = {
+        command[3]
+        for command, _env in runner.commands
+        if command[:3] == ("docker", "image", "inspect") and command[3].startswith("sha256:")
+    }
+    api_image_id = next(image.image_id for image in manifest.images if image.component == "api")
+    assert api_image_id in requested_ids
+    assert any(
+        command[:4] == ("docker", "image", "inspect", api_reference)
+        for command, _env in runner.commands
+    )
+
+
+def test_load_verification_rejects_daemon_returning_wrong_id_for_requested_object(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    manifest = verify_package(package, runner, trust_directory=_trust_for_package(package))
+    api_image_id = next(image.image_id for image in manifest.images if image.component == "api")
+    runner.image_id_inspect_overrides[api_image_id] = "sha256:" + "f" * 64
 
     with pytest.raises(ReleaseArtifactError, match="loaded image identity mismatch for api"):
         load_and_verify_images(
@@ -1435,7 +2402,7 @@ def test_generated_manifest_declares_signed_external_trust_contract(
     manifest_value = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
     markdown = (package / "MANIFEST.md").read_text(encoding="utf-8")
 
-    assert manifest_value["schema_version"] == 2
+    assert manifest_value["schema_version"] == 3
     assert manifest_value["authenticity"]["status"] == "SIGNED"
     assert manifest_value["authenticity"]["signed_object"] == "SHA256SUMS"
     assert manifest_value["authenticity"]["signature_file"] == "SHA256SUMS.sig"
@@ -1455,6 +2422,7 @@ def test_manifest_dataclass_has_only_expected_public_contract_fields() -> None:
         "target_architecture",
         "target_os",
         "tools",
+        "qualification_toolchain",
     }
 
 
@@ -1463,3 +2431,1974 @@ def test_verify_cli_does_not_accept_a_caller_selected_trust_path() -> None:
 
     with pytest.raises(SystemExit):
         parser.parse_args(["verify", "candidate", "--trust-directory", "attacker-selected-trust"])
+
+
+def test_v3_build_embeds_deterministic_exact_qualification_toolchain(
+    tmp_path: Path, production_env: Path
+) -> None:
+    first_runner = FakeRunner()
+    first = _build(tmp_path, production_env, first_runner)
+    second = _build(
+        tmp_path,
+        production_env,
+        FakeRunner(),
+        candidate_id="deploy-20260819.2",
+    )
+
+    manifest = verify_package(first, first_runner, trust_directory=_trust_for_package(first))
+    assert manifest.schema_version == 3
+    descriptor = manifest.qualification_toolchain
+    assert descriptor is not None
+    assert descriptor.path == QUALIFICATION_TOOLCHAIN_ARCHIVE
+    assert descriptor.format == QUALIFICATION_TOOLCHAIN_FORMAT
+    assert descriptor.semantic_validator == SEMANTIC_VALIDATOR_ID
+    archive_path = first / QUALIFICATION_TOOLCHAIN_ARCHIVE
+    assert descriptor.sha256 == hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    assert archive_path.read_bytes() == (second / QUALIFICATION_TOOLCHAIN_ARCHIVE).read_bytes()
+    sums = {
+        relative: digest
+        for digest, relative in (
+            line.split("  ", maxsplit=1)
+            for line in (first / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+        )
+    }
+    assert descriptor.sha256 == sums[QUALIFICATION_TOOLCHAIN_ARCHIVE]
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        members = archive.getmembers()
+        assert tuple(member.name for member in members) == (
+            *QUALIFICATION_TOOLCHAIN_MEMBERS,
+            QUALIFICATION_TOOLCHAIN_MANIFEST,
+        )
+        assert all(member.isfile() for member in members)
+        assert all(
+            (member.mtime, member.uid, member.gid, member.uname, member.gname, member.mode)
+            == (0, 0, 0, "", "", 0o644)
+            for member in members
+        )
+        contents = {
+            member.name: archive.extractfile(member).read()  # type: ignore[union-attr]
+            for member in members
+        }
+    toolchain_manifest = json.loads(contents[QUALIFICATION_TOOLCHAIN_MANIFEST])
+    assert set(toolchain_manifest) == {
+        "artifact_type",
+        "members",
+        "schema_version",
+        "semantic_validator",
+    }
+    assert toolchain_manifest["schema_version"] == 1
+    assert toolchain_manifest["semantic_validator"] == SEMANTIC_VALIDATOR_ID
+    assert [member["path"] for member in toolchain_manifest["members"]] == list(
+        QUALIFICATION_TOOLCHAIN_MEMBERS
+    )
+    for member in toolchain_manifest["members"]:
+        assert set(member) == {"path", "sha256"}
+        assert member["sha256"] == hashlib.sha256(contents[member["path"]]).hexdigest()
+    assert descriptor.schema.path == "schemas/point-profile/point-profile-v1.schema.json"
+    assert descriptor.validator.path == "tools/validate_device_point_profile.py"
+    assert descriptor.producer.path == "tools/release_artifacts.py"
+    assert descriptor.receipt_producer.path == "tools/release_verification_receipt.py"
+    assert descriptor.toolchain_manifest.path == QUALIFICATION_TOOLCHAIN_MANIFEST
+    assert not any(command[:2] == ("git", "hash-object") for command, _env in first_runner.commands)
+
+
+def test_v3_build_rejects_toolchain_source_that_does_not_match_source_commit(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    runner.git_blob_override = "f" * 40
+    trust, identity = _write_fake_release_trust(tmp_path)
+
+    with pytest.raises(
+        ReleaseArtifactError,
+        match="qualification toolchain source does not match",
+    ):
+        build_candidate(
+            root=ROOT,
+            output_root=tmp_path / "dist" / "deploy",
+            candidate_id=CANDIDATE_ID,
+            target_platform=PLATFORM,
+            env_file=production_env,
+            postgres_source="timescale/timescaledb:2.16.1-pg15",
+            redis_source="redis:7-alpine",
+            runner=runner,
+            signing_identity=identity,
+            trust_directory=trust,
+            lock_root=tmp_path / "candidate-locks",
+        )
+
+
+def test_trusted_bootstrap_executes_authenticated_archived_validator(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = QualificationRunner()
+    package = _build(tmp_path, production_env, runner)
+
+    outcome = qualification_bootstrap.execute_authenticated_qualification_tool(
+        package,
+        runner,
+        trust_directory=_trust_for_package(package),
+        tool="validator",
+        tool_arguments=("schema",),
+    )
+
+    expected = json.loads(
+        (ROOT / "schemas/point-profile/point-profile-v1.schema.json").read_text(encoding="utf-8")
+    )
+    assert outcome.returncode == 0
+    assert outcome.stderr == ""
+    assert json.loads(outcome.stdout) == expected
+    assert len(runner.qualification_commands) == 1
+    command, extraction = runner.qualification_commands[0]
+    assert command[1:7] == ("-I", "-B", "-S", "-X", "utf8", "-c")
+    assert Path(command[13]).name == "validate_device_point_profile.py"
+    assert Path(command[13]).is_relative_to(extraction)
+    assert extraction != ROOT
+    assert not extraction.exists()
+
+
+def test_qualification_rejects_candidate_supplied_launcher_before_execution(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = QualificationRunner()
+    package = _build(tmp_path, production_env, runner)
+    marker = tmp_path / "candidate-code-executed"
+    (package / "qualification-launcher.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReleaseArtifactError, match="file allowlist mismatch"):
+        qualification_bootstrap.execute_authenticated_qualification_tool(
+            package,
+            runner,
+            trust_directory=_trust_for_package(package),
+            tool="validator",
+            tool_arguments=("schema",),
+        )
+
+    assert not marker.exists()
+    assert runner.qualification_commands == []
+
+
+def test_qualification_archive_header_scan_stops_at_first_extra_member() -> None:
+    expected = (*QUALIFICATION_TOOLCHAIN_MEMBERS, QUALIFICATION_TOOLCHAIN_MANIFEST)
+
+    class HeaderSource:
+        observed = 0
+
+        def __iter__(self) -> Iterator[tarfile.TarInfo]:
+            for name in (*expected, "unexpected"):
+                self.observed += 1
+                yield tarfile.TarInfo(name)
+            raise AssertionError("scanner consumed headers after the first disallowed member")
+
+    source = HeaderSource()
+    with pytest.raises(ReleaseArtifactError, match="member allowlist mismatch"):
+        release_artifacts._exact_qualification_tar_members(cast(tarfile.TarFile, source), expected)
+
+    assert source.observed == len(expected) + 1
+
+
+@pytest.mark.parametrize(
+    "extension_type",
+    (tarfile.XHDTYPE, tarfile.GNUTYPE_LONGNAME),
+    ids=("pax", "gnu-longname"),
+)
+def test_qualification_ustar_preflight_rejects_huge_extension_before_payload_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extension_type: bytes,
+) -> None:
+    member = tarfile.TarInfo(QUALIFICATION_TOOLCHAIN_MEMBERS[0])
+    member.type = extension_type
+    member.size = (1 << 33) - 1
+    member.mtime = 0
+    member.uid = 0
+    member.gid = 0
+    member.uname = ""
+    member.gname = ""
+    member.mode = 0o644
+    archive_path = tmp_path / QUALIFICATION_TOOLCHAIN_ARCHIVE
+    archive_path.write_bytes(_canonical_gzip_bytes(member.tobuf(format=tarfile.USTAR_FORMAT)))
+    archive_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    descriptor = release_artifacts.QualificationToolchainDescriptor(
+        path=QUALIFICATION_TOOLCHAIN_ARCHIVE,
+        sha256=archive_digest,
+        format=QUALIFICATION_TOOLCHAIN_FORMAT,
+        semantic_validator=SEMANTIC_VALIDATOR_ID,
+        schema=release_artifacts.ArtifactIdentity(
+            path="schemas/point-profile/point-profile-v1.schema.json", sha256="a" * 64
+        ),
+        validator=release_artifacts.ArtifactIdentity(
+            path="tools/validate_device_point_profile.py", sha256="b" * 64
+        ),
+        producer=release_artifacts.ArtifactIdentity(
+            path="tools/release_artifacts.py", sha256="c" * 64
+        ),
+        receipt_producer=release_artifacts.ArtifactIdentity(
+            path="tools/release_verification_receipt.py", sha256="d" * 64
+        ),
+        toolchain_manifest=release_artifacts.ArtifactIdentity(
+            path=QUALIFICATION_TOOLCHAIN_MANIFEST, sha256="e" * 64
+        ),
+    )
+
+    observed_reads: list[int] = []
+    original_read = gzip.GzipFile.read
+
+    def read_once(self: gzip.GzipFile, size: int = -1) -> bytes:
+        observed_reads.append(size)
+        if len(observed_reads) > 1:
+            raise AssertionError("extension payload was read before its type was rejected")
+        return original_read(self, size)
+
+    monkeypatch.setattr(gzip.GzipFile, "read", read_once)
+
+    with pytest.raises(
+        ReleaseArtifactError,
+        match="non-regular USTAR member",
+    ):
+        release_artifacts._verify_qualification_toolchain(
+            tmp_path,
+            descriptor,
+            {QUALIFICATION_TOOLCHAIN_ARCHIVE: archive_digest},
+        )
+
+    assert observed_reads == [tarfile.BLOCKSIZE]
+
+
+def test_qualification_ustar_preflight_rejects_nonzero_member_padding(tmp_path: Path) -> None:
+    expected = (*QUALIFICATION_TOOLCHAIN_MEMBERS, QUALIFICATION_TOOLCHAIN_MANIFEST)
+    archive_path = tmp_path / QUALIFICATION_TOOLCHAIN_ARCHIVE
+    _write_canonical_qualification_archive(
+        archive_path,
+        dict.fromkeys(expected, b"x"),
+    )
+    expanded = bytearray(gzip.decompress(archive_path.read_bytes()))
+    expanded[tarfile.BLOCKSIZE + 1] = 1
+    with (
+        archive_path.open("wb") as raw_archive,
+        gzip.GzipFile(
+            filename="",
+            mode="wb",
+            compresslevel=9,
+            fileobj=raw_archive,
+            mtime=0,
+        ) as compressed,
+    ):
+        compressed.write(expanded)
+
+    with (
+        archive_path.open("rb") as raw_archive,
+        pytest.raises(ReleaseArtifactError, match="non-zero USTAR padding"),
+    ):
+        release_artifacts._preflight_qualification_ustar_archive(raw_archive, expected)
+
+
+def _write_powershell_qualification_ustar_fixture(
+    path: Path, *, extension_type: bytes | None
+) -> None:
+    expected = (*QUALIFICATION_TOOLCHAIN_MEMBERS, QUALIFICATION_TOOLCHAIN_MANIFEST)
+    if extension_type is None:
+        with (
+            path.open("xb") as raw_archive,
+            gzip.GzipFile(filename="", mode="wb", fileobj=raw_archive, mtime=0) as compressed,
+            tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive,
+        ):
+            for name in expected:
+                member = tarfile.TarInfo(name)
+                member.size = 1
+                member.mtime = 0
+                member.uid = 0
+                member.gid = 0
+                member.uname = ""
+                member.gname = ""
+                member.mode = 0o644
+                archive.addfile(member, io.BytesIO(b"x"))
+        return
+
+    member = tarfile.TarInfo(expected[0])
+    member.type = extension_type
+    member.size = 1024 * 1024
+    member.mtime = 0
+    member.uid = 0
+    member.gid = 0
+    member.uname = ""
+    member.gname = ""
+    member.mode = 0o644
+    path.write_bytes(_canonical_gzip_bytes(member.tobuf(format=tarfile.USTAR_FORMAT)))
+
+
+def _run_powershell_qualification_ustar_preflight(
+    archive_path: Path, *, script_relative: str
+) -> subprocess.CompletedProcess[str]:
+    command = r"""
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$start = $source.IndexOf('function Test-ZeroUstarRange')
+$end = $source.IndexOf($env:RS_END_MARKER, $start)
+if ($start -lt 0 -or $end -lt 0) { throw 'Qualification USTAR block not found' }
+function Fail([string]$Message) { throw $Message }
+. ([scriptblock]::Create($source.Substring($start, $end - $start)))
+[string[]]$expected = @(
+    'tools/validate_device_point_profile.py',
+    'schemas/point-profile/point-profile-v1.schema.json',
+    'tools/release_artifacts.py',
+    'tools/release_verification_receipt.py',
+    'pyproject.toml',
+    'uv.lock',
+    'qualification-toolchain-manifest.json'
+)
+$limits = @{}
+foreach ($name in $expected) { $limits[$name] = 64MB }
+$limits['qualification-toolchain-manifest.json'] = 4MB
+Assert-CanonicalQualificationUstarArchive $env:RS_ARCHIVE_PATH $expected $limits
+[Console]::Out.Write('VERIFIED')
+"""
+    end_marker = (
+        "function Read-TarEntries"
+        if script_relative == "deploy/verify-candidate.ps1"
+        else "function Test-QualificationToolchain"
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RS_VERIFY_SCRIPT": str(ROOT / script_relative),
+            "RS_ARCHIVE_PATH": str(archive_path),
+            "RS_END_MARKER": end_marker,
+        }
+    )
+    return subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    "script_relative",
+    ("deploy/verify-candidate.ps1", "tools/release_trust/verify-publisher.ps1"),
+)
+@pytest.mark.parametrize(
+    ("extension_type", "accepted"),
+    ((None, True), (tarfile.XHDTYPE, False), (tarfile.GNUTYPE_LONGNAME, False)),
+    ids=("canonical", "pax", "gnu-longname"),
+)
+def test_powershell_qualification_ustar_preflight_rejects_extension_headers(
+    tmp_path: Path,
+    script_relative: str,
+    extension_type: bytes | None,
+    accepted: bool,
+) -> None:
+    archive_path = tmp_path / (
+        Path(script_relative).stem
+        + "-"
+        + (extension_type.decode("ascii") if extension_type else "ok")
+    )
+    _write_powershell_qualification_ustar_fixture(archive_path, extension_type=extension_type)
+
+    result = _run_powershell_qualification_ustar_preflight(
+        archive_path, script_relative=script_relative
+    )
+
+    if accepted:
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert result.stdout == "VERIFIED"
+    else:
+        assert result.returncode != 0
+        assert "noncanonical USTAR header" in (result.stderr + result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    "script_relative",
+    ("deploy/verify-candidate.ps1", "tools/release_trust/verify-publisher.ps1"),
+)
+def test_powershell_qualification_ustar_preflight_rejects_extra_zero_block(
+    tmp_path: Path,
+    script_relative: str,
+) -> None:
+    archive_path = tmp_path / f"{Path(script_relative).stem}-extra-zero-block.tar.gz"
+    _write_powershell_qualification_ustar_fixture(archive_path, extension_type=None)
+    expanded = gzip.decompress(archive_path.read_bytes())
+    archive_path.write_bytes(_canonical_gzip_bytes(expanded + bytes(tarfile.BLOCKSIZE)))
+
+    result = _run_powershell_qualification_ustar_preflight(
+        archive_path, script_relative=script_relative
+    )
+
+    assert result.returncode != 0
+    assert "excessive trailing blocks" in (result.stderr + result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    "script_relative",
+    ("deploy/verify-candidate.ps1", "tools/release_trust/verify-publisher.ps1"),
+)
+def test_powershell_qualification_ustar_preflight_rejects_gzip_extended_flag(
+    tmp_path: Path,
+    script_relative: str,
+) -> None:
+    archive_path = tmp_path / f"{Path(script_relative).stem}-gzip-extra-flag.tar.gz"
+    _write_powershell_qualification_ustar_fixture(archive_path, extension_type=None)
+    encoded = bytearray(archive_path.read_bytes())
+    encoded[3] = 0x04
+    archive_path.write_bytes(encoded)
+
+    result = _run_powershell_qualification_ustar_preflight(
+        archive_path, script_relative=script_relative
+    )
+
+    assert result.returncode != 0
+    assert "gzip header is not canonical" in (result.stderr + result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    "script_relative",
+    ("deploy/verify-candidate.ps1", "tools/release_trust/verify-publisher.ps1"),
+)
+@pytest.mark.parametrize("offset", (4, 8, 9), ids=("mtime", "xfl", "os"))
+def test_powershell_qualification_ustar_preflight_rejects_noncanonical_gzip_header(
+    tmp_path: Path,
+    script_relative: str,
+    offset: int,
+) -> None:
+    archive_path = tmp_path / f"{Path(script_relative).stem}-gzip-header-{offset}.tar.gz"
+    _write_powershell_qualification_ustar_fixture(archive_path, extension_type=None)
+    encoded = bytearray(archive_path.read_bytes())
+    encoded[offset] ^= 1
+    archive_path.write_bytes(encoded)
+
+    result = _run_powershell_qualification_ustar_preflight(
+        archive_path, script_relative=script_relative
+    )
+
+    assert result.returncode != 0
+    assert "gzip header is not canonical" in (result.stderr + result.stdout)
+
+
+def test_python_qualification_ustar_preflight_rejects_second_empty_gzip_member(
+    tmp_path: Path,
+) -> None:
+    expected = (*QUALIFICATION_TOOLCHAIN_MEMBERS, QUALIFICATION_TOOLCHAIN_MANIFEST)
+    archive_path = tmp_path / QUALIFICATION_TOOLCHAIN_ARCHIVE
+    _write_canonical_qualification_archive(
+        archive_path,
+        dict.fromkeys(expected, b"x"),
+    )
+    archive_path.write_bytes(archive_path.read_bytes() + _canonical_gzip_bytes(b""))
+
+    with (
+        archive_path.open("rb") as raw_archive,
+        pytest.raises(ReleaseArtifactError, match="exactly one gzip member"),
+    ):
+        release_artifacts._preflight_qualification_ustar_archive(raw_archive, expected)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    "script_relative",
+    ("deploy/verify-candidate.ps1", "tools/release_trust/verify-publisher.ps1"),
+)
+def test_powershell_qualification_ustar_preflight_rejects_second_empty_gzip_member(
+    tmp_path: Path,
+    script_relative: str,
+) -> None:
+    archive_path = tmp_path / f"{Path(script_relative).stem}-second-member.tar.gz"
+    _write_powershell_qualification_ustar_fixture(archive_path, extension_type=None)
+    archive_path.write_bytes(archive_path.read_bytes() + _canonical_gzip_bytes(b""))
+
+    result = _run_powershell_qualification_ustar_preflight(
+        archive_path, script_relative=script_relative
+    )
+
+    assert result.returncode != 0
+    assert "exactly one gzip member" in (result.stderr + result.stdout)
+
+
+def test_docker_descriptor_reference_budget_is_global(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(release_artifacts, "MAX_DOCKER_DESCRIPTOR_REFERENCES", 2)
+    inspection = release_artifacts._ArchiveInspection(
+        cast(tarfile.TarFile, SimpleNamespace()),
+        tmp_path / "image.tar.gz",
+        {},
+    )
+
+    assert (
+        release_artifacts._read_archive_sha256_blob(
+            inspection, "sha256:" + "a" * 64, label="descriptor", allow_missing=True
+        )
+        is None
+    )
+    assert (
+        release_artifacts._read_archive_sha256_blob(
+            inspection, "sha256:" + "b" * 64, label="descriptor", allow_missing=True
+        )
+        is None
+    )
+    with pytest.raises(ReleaseArtifactError, match="reference budget exceeded"):
+        release_artifacts._read_archive_sha256_blob(
+            inspection, "sha256:" + "c" * 64, label="descriptor", allow_missing=True
+        )
+
+
+def test_docker_metadata_budget_is_checked_before_blob_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contents = b"{}"
+    digest = f"sha256:{hashlib.sha256(contents).hexdigest()}"
+    blob_name = _blob_name(digest)
+    member = SimpleNamespace(name=blob_name, size=len(contents), isfile=lambda: True)
+    extraction_attempted = False
+
+    def extractfile(_member: object) -> BinaryIO:
+        nonlocal extraction_attempted
+        extraction_attempted = True
+        return io.BytesIO(contents)
+
+    monkeypatch.setattr(release_artifacts, "MAX_DOCKER_METADATA_BYTES", 1)
+    inspection = release_artifacts._ArchiveInspection(
+        cast(tarfile.TarFile, SimpleNamespace(extractfile=extractfile)),
+        tmp_path / "image.tar.gz",
+        {blob_name: cast(tarfile.TarInfo, member)},
+    )
+
+    with pytest.raises(ReleaseArtifactError, match="metadata byte budget exceeded"):
+        release_artifacts._read_archive_sha256_blob(inspection, digest, label="descriptor")
+
+    assert not extraction_attempted
+
+
+def test_python_candidate_verifiers_bound_cached_docker_metadata() -> None:
+    release_source = (ROOT / "tools" / "release_artifacts.py").read_text(encoding="utf-8")
+    deploy_source = (ROOT / "deploy" / "verify-candidate.sh").read_text(encoding="utf-8")
+
+    assert "MAX_DOCKER_METADATA_BYTES = 64 * 1024 * 1024" in release_source
+    assert "inspection.consume_metadata_bytes(member.size)" in release_source
+    assert "MAX_DOCKER_METADATA_BYTES = 64 * 1024 * 1024" in deploy_source
+    assert "blob_cache = DockerBlobCache()" in deploy_source
+    assert "MAX_DOCKER_METADATA_BYTES - blob_cache.metadata_bytes" in deploy_source
+
+
+def test_windows_fixed_tool_acl_never_trusts_authenticated_users_for_replacement() -> None:
+    validator = release_artifacts.WINDOWS_FIXED_SYSTEM_TOOL_VALIDATOR
+
+    assert '"S-1-5-11"' not in validator
+    assert '"S-1-5-18"' in validator
+    assert '"S-1-5-32-544"' in validator
+
+
+@pytest.mark.parametrize("exit_code", (2, 3))
+def test_trusted_bootstrap_preserves_validator_decision_exit_codes(
+    tmp_path: Path,
+    production_env: Path,
+    exit_code: int,
+) -> None:
+    runner = QualificationRunner()
+    runner.forced_qualification_outcome = release_artifacts.CommandOutcome(
+        stdout='{"decision":"BLOCKED"}\n' if exit_code == 2 else '{"decision":"INVALID"}\n',
+        stderr="",
+        returncode=exit_code,
+    )
+    package = _build(tmp_path, production_env, runner)
+
+    outcome = qualification_bootstrap.execute_authenticated_qualification_tool(
+        package,
+        runner,
+        trust_directory=_trust_for_package(package),
+        tool="validator",
+        tool_arguments=("validate", str(tmp_path / "profile.json")),
+    )
+
+    assert outcome.returncode == exit_code
+    assert json.loads(outcome.stdout)["decision"] in {"BLOCKED", "INVALID"}
+
+
+def test_trusted_bootstrap_rejects_unexpected_validator_exit_code(
+    tmp_path: Path,
+    production_env: Path,
+) -> None:
+    runner = QualificationRunner()
+    runner.forced_qualification_outcome = release_artifacts.CommandOutcome(
+        stdout="",
+        stderr="validator crashed\n",
+        returncode=1,
+    )
+    package = _build(tmp_path, production_env, runner)
+
+    with pytest.raises(ReleaseArtifactError, match=r"qualification command failed \(1\)"):
+        qualification_bootstrap.execute_authenticated_qualification_tool(
+            package,
+            runner,
+            trust_directory=_trust_for_package(package),
+            tool="validator",
+            tool_arguments=("schema",),
+        )
+
+
+def test_windows_system_trust_bootstrap_directs_callers_to_protected_publisher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = QualificationRunner()
+    monkeypatch.setattr(qualification_bootstrap, "os", SimpleNamespace(name="nt"))
+    with pytest.raises(
+        ReleaseArtifactError,
+        match="Windows system qualification requires the protected PowerShell publisher",
+    ):
+        qualification_bootstrap.execute_authenticated_qualification_tool(
+            tmp_path / "candidate",
+            runner,
+            trust_directory=tmp_path / "trust",
+            tool="validator",
+            tool_arguments=("schema",),
+            require_system_trust=True,
+        )
+
+    assert runner.commands == []
+
+
+def test_system_trust_launcher_selects_manifest_bound_posix_runtime(
+    tmp_path: Path,
+    production_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = QualificationRunner()
+    runner.forced_qualification_outcome = release_artifacts.CommandOutcome(
+        stdout='{"decision":"BLOCKED"}\n',
+        stderr="",
+        returncode=2,
+    )
+    package = _build(tmp_path, production_env, runner)
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    runtime = release_artifacts._QualificationRuntime(
+        root=tmp_path / "fixed-runtime",
+        python=Path(sys.executable),
+        dependency_root=tmp_path / "fixed-runtime" / "lib/python3.11/site-packages",
+        strict=True,
+        authenticated_uv_lock_sha256=hashlib.sha256((ROOT / "uv.lock").read_bytes()).hexdigest(),
+        files=(("bin/python3.11", "a" * 64),),
+    )
+    observed: list[tuple[Path, str]] = []
+
+    def fake_validate_runtime(root: Path, *, authenticated_uv_lock_sha256: str) -> object:
+        observed.append((root, authenticated_uv_lock_sha256))
+        return runtime
+
+    monkeypatch.setattr(
+        qualification_bootstrap, "_validate_system_trust_permissions", lambda trust: None
+    )
+    monkeypatch.setattr(qualification_bootstrap, "_system_protected_workdir", lambda: protected)
+    monkeypatch.setattr(
+        qualification_bootstrap,
+        "_validate_posix_qualification_runtime",
+        fake_validate_runtime,
+    )
+    monkeypatch.setattr(qualification_bootstrap, "os", SimpleNamespace(name="posix"))
+
+    outcome = qualification_bootstrap.execute_authenticated_qualification_tool(
+        package,
+        runner,
+        trust_directory=_trust_for_package(package),
+        tool="validator",
+        tool_arguments=("validate", str(tmp_path / "profile.json")),
+        require_system_trust=True,
+    )
+
+    assert outcome.returncode == 2
+    assert len(observed) == 2
+    assert observed[0][0] == qualification_bootstrap.POSIX_QUALIFICATION_RUNTIME_ROOT
+    assert observed[1][0] == runtime.root
+    assert observed[0][1] == hashlib.sha256((ROOT / "uv.lock").read_bytes()).hexdigest()
+    command, _cwd = runner.qualification_commands[0]
+    assert command[1:7] == ("-I", "-B", "-S", "-X", "utf8", "-c")
+    assert command[8] == "1"
+    assert command[9:12] == (
+        str(runtime.root),
+        str(runtime.python),
+        str(runtime.dependency_root),
+    )
+
+
+def test_posix_runtime_manifest_is_exact_and_uv_lock_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    members = {
+        "bin/python3.11": b"fixed python",
+        "lib/python3.11/encodings/__init__.py": b"# encodings\n",
+        "lib/python3.11/site-packages/pydantic/__init__.py": b"# dependency\n",
+    }
+    identities = []
+    for relative, contents in members.items():
+        path = runtime / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(contents)
+        identities.append({"path": relative, "sha256": hashlib.sha256(contents).hexdigest()})
+    identities.sort(key=lambda item: item["path"])
+    uv_lock_sha256 = "b" * 64
+    manifest = {
+        "artifact_type": release_artifacts.QUALIFICATION_RUNTIME_ARTIFACT_TYPE,
+        "schema_version": release_artifacts.QUALIFICATION_RUNTIME_SCHEMA_VERSION,
+        "python_version": release_artifacts.QUALIFICATION_RUNTIME_PYTHON_VERSION,
+        "uv_lock_sha256": uv_lock_sha256,
+        "dependency_root": release_artifacts.POSIX_QUALIFICATION_RUNTIME_DEPENDENCIES,
+        "files": identities,
+    }
+    (runtime / release_artifacts.QUALIFICATION_RUNTIME_MANIFEST).write_text(
+        json.dumps(manifest, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    real_os = release_artifacts.os
+    real_hash_runtime_file = release_artifacts._hash_stable_runtime_file
+
+    class PosixOsProxy:
+        name = "posix"
+
+        def __getattr__(self, name: str) -> object:
+            if name == "access":
+                return lambda path, mode: True
+            return getattr(real_os, name)
+
+    def fake_root_protection(path: Path, *, label: str) -> SimpleNamespace:
+        del label
+        metadata = path.lstat()
+        return SimpleNamespace(st_mode=metadata.st_mode & ~0o022, st_uid=0)
+
+    def fake_hash_runtime_file(path: Path, *, label: str) -> tuple[str, SimpleNamespace]:
+        digest, metadata = real_hash_runtime_file(path, label=label)
+        return digest, SimpleNamespace(
+            st_mode=metadata.st_mode & ~0o022,
+            st_size=metadata.st_size,
+            st_uid=0,
+        )
+
+    monkeypatch.setattr(release_artifacts, "os", PosixOsProxy())
+    monkeypatch.setattr(
+        release_artifacts,
+        "_validate_root_protected_posix_path",
+        fake_root_protection,
+    )
+    monkeypatch.setattr(
+        release_artifacts,
+        "_hash_stable_runtime_file",
+        fake_hash_runtime_file,
+    )
+
+    resolved = release_artifacts._validate_posix_qualification_runtime(
+        runtime,
+        authenticated_uv_lock_sha256=uv_lock_sha256,
+    )
+    assert resolved.strict
+    assert resolved.python == runtime / release_artifacts.POSIX_QUALIFICATION_RUNTIME_PYTHON
+    assert resolved.dependency_root == (
+        runtime / release_artifacts.POSIX_QUALIFICATION_RUNTIME_DEPENDENCIES
+    )
+
+    with pytest.raises(ReleaseArtifactError, match="manifest contract is invalid"):
+        release_artifacts._validate_posix_qualification_runtime(
+            runtime,
+            authenticated_uv_lock_sha256="c" * 64,
+        )
+
+
+def test_candidate_archived_producer_has_no_qualification_entrypoint() -> None:
+    parser = release_artifacts._build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["qualify", "candidate", "validator", "schema"])
+    assert not hasattr(release_artifacts, "execute_authenticated_qualification_tool")
+    assert qualification_bootstrap.is_package_external()
+    assert "tools/qualification_bootstrap.py" not in QUALIFICATION_TOOLCHAIN_MEMBERS
+
+
+@pytest.mark.parametrize("timeout_seconds", (0.2, 5.0), ids=("timeout", "normal-exit"))
+def test_isolated_runner_terminates_descendants_on_every_exit(
+    tmp_path: Path,
+    timeout_seconds: float,
+) -> None:
+    marker = tmp_path / f"descendant-{timeout_seconds}.txt"
+    gate = r"""
+import os
+if os.name == "nt":
+    import ctypes
+    name = os.environ.pop("RUISHENG_PROCESS_JOB_GATE")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenEventW(0x00100000, False, name)
+    if not handle or kernel32.WaitForSingleObject(handle, 30000) != 0:
+        raise SystemExit(91)
+    kernel32.CloseHandle(handle)
+"""
+    child = (
+        "import time; from pathlib import Path; time.sleep(1); "
+        f"Path({str(marker)!r}).write_text('escaped', encoding='ascii')"
+    )
+    parent_delay = "time.sleep(10)" if timeout_seconds < 1 else "None"
+    parent = (
+        gate
+        + "\nimport subprocess, sys, time\n"
+        + f"subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+        + parent_delay
+        + "\n"
+    )
+    runner = release_artifacts.SubprocessRunner()
+
+    if timeout_seconds < 1:
+        with pytest.raises(ReleaseArtifactError, match="command timed out"):
+            runner.run_outcome(
+                [sys.executable, "-c", parent],
+                cwd=tmp_path,
+                timeout_seconds=timeout_seconds,
+                isolate_process_tree=True,
+            )
+    else:
+        outcome = runner.run_outcome(
+            [sys.executable, "-c", parent],
+            cwd=tmp_path,
+            timeout_seconds=timeout_seconds,
+            isolate_process_tree=True,
+        )
+        assert outcome.returncode == 0
+
+    time.sleep(1.2)
+    assert not marker.exists()
+
+
+def test_trusted_bootstrap_rejects_tampered_toolchain_before_execution(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = QualificationRunner()
+    package = _build(tmp_path, production_env, runner)
+    archive = package / QUALIFICATION_TOOLCHAIN_ARCHIVE
+    archive.write_bytes(archive.read_bytes() + b"tampered")
+
+    with pytest.raises(ReleaseArtifactError, match="SHA-256 mismatch"):
+        qualification_bootstrap.execute_authenticated_qualification_tool(
+            package,
+            runner,
+            trust_directory=_trust_for_package(package),
+            tool="validator",
+            tool_arguments=("schema",),
+        )
+
+    assert runner.qualification_commands == []
+
+
+def test_v2_candidate_remains_accepted_and_forbids_v3_descriptor(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    _downgrade_package_to_v2(package, runner)
+
+    manifest = verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+    assert manifest.schema_version == 2
+    assert manifest.qualification_toolchain is None
+    assert {
+        path.relative_to(package).as_posix() for path in package.rglob("*") if path.is_file()
+    } == (FIXED_PACKAGE_FILES_V2 | {f"images/{component}.tar.gz" for component in COMPONENTS})
+
+    value = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
+    value["qualification_toolchain"] = {"attacker": "selected"}
+    _rewrite_authenticated_manifest(package, runner, value, render_markdown=False)
+    with pytest.raises(ReleaseArtifactError, match="MANIFEST.json keys mismatch"):
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+
+def test_v2_candidate_cannot_execute_a_qualification_tool(
+    tmp_path: Path,
+    production_env: Path,
+) -> None:
+    runner = QualificationRunner()
+    package = _build(tmp_path, production_env, runner)
+    _downgrade_package_to_v2(package, runner)
+    runner.commands.clear()
+    runner.qualification_commands.clear()
+
+    with pytest.raises(
+        ReleaseArtifactError,
+        match="candidate has no authenticated qualification toolchain",
+    ):
+        qualification_bootstrap.execute_authenticated_qualification_tool(
+            package,
+            runner,
+            trust_directory=_trust_for_package(package),
+            tool="validator",
+            tool_arguments=("schema",),
+        )
+
+    assert runner.qualification_commands == []
+    assert not any(
+        Path(command[0]).name.casefold() in {"ssh-keygen", "ssh-keygen.exe"}
+        or command[:2] == ("docker", "compose")
+        or command[:3] == ("docker", "image", "inspect")
+        for command, _environment in runner.commands
+    )
+
+
+@pytest.mark.parametrize("direction", ("v3-files-v2-manifest", "v2-files-v3-manifest"))
+def test_verifier_rejects_mixed_v2_v3_file_sets_before_docker(
+    tmp_path: Path, production_env: Path, direction: str
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    toolchain_bytes = (package / QUALIFICATION_TOOLCHAIN_ARCHIVE).read_bytes()
+    if direction == "v3-files-v2-manifest":
+        _downgrade_package_to_v2(package, runner)
+        (package / QUALIFICATION_TOOLCHAIN_ARCHIVE).write_bytes(toolchain_bytes)
+    else:
+        (package / QUALIFICATION_TOOLCHAIN_ARCHIVE).unlink()
+
+    runner.commands.clear()
+    with pytest.raises(ReleaseArtifactError, match="allowlist mismatch|complete v2 or v3"):
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
+    assert not any(command[0] == "docker" for command, _env in runner.commands)
+
+
+def test_v3_manifest_without_descriptor_is_rejected(tmp_path: Path, production_env: Path) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    value = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
+    value.pop("qualification_toolchain")
+    _rewrite_authenticated_manifest(package, runner, value, render_markdown=False)
+
+    with pytest.raises(ReleaseArtifactError, match="MANIFEST.json keys mismatch"):
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+
+def test_v3_descriptor_tamper_is_rejected_after_authenticated_hashes(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    value = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
+    value["qualification_toolchain"]["semantic_validator"] = "attacker-validator/v1"
+    _rewrite_authenticated_manifest(package, runner, value)
+
+    with pytest.raises(ReleaseArtifactError, match="semantic validator"):
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+
+def test_v3_toolchain_digest_is_bound_into_logical_identity(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    value = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
+    value["qualification_toolchain"]["sha256"] = "f" * 64
+    _rewrite_authenticated_manifest(package, runner, value)
+
+    with pytest.raises(
+        ReleaseArtifactError,
+        match="logical_identity does not match its immutable inputs",
+    ):
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+
+def test_powershell_recomputes_the_same_v2_and_v3_logical_identity(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+
+    for schema_version in (3, 2):
+        manifest = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
+        assert manifest["schema_version"] == schema_version
+        results = (
+            _run_powershell_logical_identity(package / "MANIFEST.json"),
+            _run_powershell_logical_identity(
+                package / "MANIFEST.json",
+                script_relative="tools/release_trust/verify-publisher.ps1",
+                start_marker="function Get-QualificationSha256",
+                end_marker="Test-QualificationToolchain $Manifest",
+            ),
+        )
+        for result in results:
+            assert result.returncode == 0, result.stderr or result.stdout
+            assert result.stdout.strip() == manifest["logical_identity"]
+        if schema_version == 3:
+            _downgrade_package_to_v2(package, runner)
+
+
+def test_v3_toolchain_member_tamper_is_rejected_even_when_outer_hash_is_resigned(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    archive_path = package / QUALIFICATION_TOOLCHAIN_ARCHIVE
+    with tarfile.open(archive_path, "r:gz") as archive:
+        contents = {
+            member.name: archive.extractfile(member).read()  # type: ignore[union-attr]
+            for member in archive.getmembers()
+        }
+    contents["tools/validate_device_point_profile.py"] += b"\n# tampered\n"
+    _write_canonical_qualification_archive(archive_path, contents)
+
+    value = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
+    value["qualification_toolchain"]["sha256"] = hashlib.sha256(
+        archive_path.read_bytes()
+    ).hexdigest()
+    parsed = release_artifacts._manifest_from_dict(value)
+    value["logical_identity"] = compute_logical_identity(
+        candidate_id=parsed.candidate_id,
+        source_commit=parsed.source_commit,
+        target_os=parsed.target_os,
+        target_architecture=parsed.target_architecture,
+        alembic_head=parsed.alembic_head,
+        images=parsed.images,
+        qualification_toolchain=parsed.qualification_toolchain,
+    )
+    _rewrite_authenticated_manifest(package, runner, value)
+
+    with pytest.raises(ReleaseArtifactError, match="toolchain member SHA-256 mismatch"):
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+
+def test_v3_toolchain_rejects_float_schema_version_when_outer_hash_is_resigned(
+    tmp_path: Path, production_env: Path
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    archive_path = package / QUALIFICATION_TOOLCHAIN_ARCHIVE
+    with tarfile.open(archive_path, "r:gz") as archive:
+        contents = {
+            member.name: archive.extractfile(member).read()  # type: ignore[union-attr]
+            for member in archive.getmembers()
+        }
+    internal = json.loads(contents[QUALIFICATION_TOOLCHAIN_MANIFEST])
+    internal["schema_version"] = 1.0
+    contents[QUALIFICATION_TOOLCHAIN_MANIFEST] = _json_bytes(internal)
+    _write_canonical_qualification_archive(archive_path, contents)
+
+    value = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
+    value["qualification_toolchain"]["sha256"] = hashlib.sha256(
+        archive_path.read_bytes()
+    ).hexdigest()
+    value["qualification_toolchain"]["toolchain_manifest"]["sha256"] = hashlib.sha256(
+        contents[QUALIFICATION_TOOLCHAIN_MANIFEST]
+    ).hexdigest()
+    parsed = release_artifacts._manifest_from_dict(value)
+    value["logical_identity"] = compute_logical_identity(
+        candidate_id=parsed.candidate_id,
+        source_commit=parsed.source_commit,
+        target_os=parsed.target_os,
+        target_architecture=parsed.target_architecture,
+        alembic_head=parsed.alembic_head,
+        images=parsed.images,
+        qualification_toolchain=parsed.qualification_toolchain,
+    )
+    _rewrite_authenticated_manifest(package, runner, value)
+
+    with pytest.raises(ReleaseArtifactError, match="toolchain manifest contract is invalid"):
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+
+def test_v3_toolchain_rejects_duplicate_manifest_keys_when_outer_hash_is_resigned(
+    tmp_path: Path,
+    production_env: Path,
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    archive_path = package / QUALIFICATION_TOOLCHAIN_ARCHIVE
+    with tarfile.open(archive_path, "r:gz") as archive:
+        contents = {
+            member.name: archive.extractfile(member).read()  # type: ignore[union-attr]
+            for member in archive.getmembers()
+        }
+    original = contents[QUALIFICATION_TOOLCHAIN_MANIFEST]
+    duplicate = original.replace(
+        b'  "artifact_type": "ruisheng.qualification-toolchain",\n',
+        b'  "artifact_type": "attacker",\n  "artifact_type": "ruisheng.qualification-toolchain",\n',
+        1,
+    )
+    assert duplicate != original
+    contents[QUALIFICATION_TOOLCHAIN_MANIFEST] = duplicate
+    _write_canonical_qualification_archive(archive_path, contents)
+
+    value = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
+    value["qualification_toolchain"]["sha256"] = hashlib.sha256(
+        archive_path.read_bytes()
+    ).hexdigest()
+    value["qualification_toolchain"]["toolchain_manifest"]["sha256"] = hashlib.sha256(
+        duplicate
+    ).hexdigest()
+    parsed = release_artifacts._manifest_from_dict(value)
+    value["logical_identity"] = compute_logical_identity(
+        candidate_id=parsed.candidate_id,
+        source_commit=parsed.source_commit,
+        target_os=parsed.target_os,
+        target_architecture=parsed.target_architecture,
+        alembic_head=parsed.alembic_head,
+        images=parsed.images,
+        qualification_toolchain=parsed.qualification_toolchain,
+    )
+    _rewrite_authenticated_manifest(package, runner, value)
+
+    with pytest.raises(ReleaseArtifactError, match="duplicate JSON object key"):
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+
+def test_v3_toolchain_rejects_oversized_internal_manifest_before_json_parse(
+    tmp_path: Path,
+    production_env: Path,
+) -> None:
+    runner = FakeRunner()
+    package = _build(tmp_path, production_env, runner)
+    archive_path = package / QUALIFICATION_TOOLCHAIN_ARCHIVE
+    with tarfile.open(archive_path, "r:gz") as archive:
+        contents = {
+            member.name: archive.extractfile(member).read()  # type: ignore[union-attr]
+            for member in archive.getmembers()
+        }
+    oversized = b'{"value":"' + b"x" * release_artifacts.MAX_RELEASE_JSON_BYTES + b'"}'
+    contents[QUALIFICATION_TOOLCHAIN_MANIFEST] = oversized
+    _write_canonical_qualification_archive(archive_path, contents)
+
+    value = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
+    value["qualification_toolchain"]["sha256"] = hashlib.sha256(
+        archive_path.read_bytes()
+    ).hexdigest()
+    value["qualification_toolchain"]["toolchain_manifest"]["sha256"] = hashlib.sha256(
+        oversized
+    ).hexdigest()
+    parsed = release_artifacts._manifest_from_dict(value)
+    value["logical_identity"] = compute_logical_identity(
+        candidate_id=parsed.candidate_id,
+        source_commit=parsed.source_commit,
+        target_os=parsed.target_os,
+        target_architecture=parsed.target_architecture,
+        alembic_head=parsed.alembic_head,
+        images=parsed.images,
+        qualification_toolchain=parsed.qualification_toolchain,
+    )
+    _rewrite_authenticated_manifest(package, runner, value)
+
+    with pytest.raises(ReleaseArtifactError, match="not an allowed regular file"):
+        verify_package(package, runner, trust_directory=_trust_for_package(package))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        b'{"artifact_type":"first","artifact_type":"second"}',
+        b'{"members":[{"path":"first","path":"second"}]}',
+    ),
+)
+def test_release_json_loader_rejects_duplicate_keys_at_every_depth(payload: bytes) -> None:
+    with pytest.raises(ReleaseArtifactError, match="duplicate JSON object key"):
+        release_artifacts._read_json_object_bytes(payload, label="authenticated.json")
+
+
+def test_release_json_loader_rejects_oversized_input() -> None:
+    payload = b'{"value":"' + b"x" * release_artifacts.MAX_RELEASE_JSON_BYTES + b'"}'
+
+    with pytest.raises(ReleaseArtifactError, match="byte limit"):
+        release_artifacts._read_json_object_bytes(payload, label="oversized.json")
+
+
+def test_release_json_loader_rejects_excessive_nesting() -> None:
+    payload = b'{"value":' + b"[" * 2_000 + b"0" + b"]" * 2_000 + b"}"
+
+    with pytest.raises(ReleaseArtifactError, match="invalid JSON file"):
+        release_artifacts._read_json_object_bytes(payload, label="nested.json")
+
+
+def test_release_json_loader_fails_closed_on_memory_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_memory_error(*_args: object, **_kwargs: object) -> object:
+        raise MemoryError("injected parser exhaustion")
+
+    monkeypatch.setattr(release_artifacts.json, "loads", raise_memory_error)
+
+    with pytest.raises(ReleaseArtifactError, match="injected parser exhaustion"):
+        release_artifacts._read_json_object_bytes(b"{}", label="exhausted.json")
+
+
+def test_all_candidate_verifiers_declare_closed_v2_v3_toolchain_contract() -> None:
+    for relative in (
+        "deploy/verify-candidate.ps1",
+        "deploy/verify-candidate.sh",
+        "tools/release_trust/verify-publisher.ps1",
+        "tools/release_trust/verify-publisher.sh",
+    ):
+        script = (ROOT / relative).read_text(encoding="utf-8")
+        assert QUALIFICATION_TOOLCHAIN_ARCHIVE in script
+        assert QUALIFICATION_TOOLCHAIN_MANIFEST in script
+        assert SEMANTIC_VALIDATOR_ID in script
+        assert "complete v2 or v3" in script
+        assert "receipt_producer" in script
+        assert "logical_identity does not match its immutable inputs" in script.lower()
+        if relative.endswith(".sh"):
+            assert 'type(manifest.get("schema_version")) is not int' in script
+
+
+def test_all_candidate_verifiers_limit_internal_manifest_before_allocation() -> None:
+    expected_snippets = {
+        "deploy/verify-candidate.sh": (
+            "if member.name == toolchain_manifest_name",
+            "contents[member.name] = stream.read(member_limit + 1)",
+        ),
+        "tools/release_trust/verify-publisher.sh": (
+            "if member.name == internal_name",
+            "contents[member.name] = stream.read(member_limit + 1)",
+        ),
+        "deploy/verify-candidate.ps1": (
+            "$MaximumBytesByName.ContainsKey($Name)",
+            "$InternalName = $MaxReleaseJsonBytes",
+        ),
+        "tools/release_trust/verify-publisher.ps1": (
+            "[string]$Entry.Name -ceq $InternalName",
+            "$Entry.Length -gt $MemberLimit",
+        ),
+    }
+    for relative, snippets in expected_snippets.items():
+        script = (ROOT / relative).read_text(encoding="utf-8")
+        for snippet in snippets:
+            assert snippet in script
+
+
+def test_posix_publisher_qualification_bootstrap_is_closed_and_compilable() -> None:
+    script = (ROOT / "tools" / "release_trust" / "verify-publisher.sh").read_text(encoding="utf-8")
+    here_doc_marker = "<<'PY'\n"
+
+    assert script.count(here_doc_marker) == 1
+    embedded, terminator, remainder = script.split(here_doc_marker, maxsplit=1)[1].partition(
+        "\nPY\n"
+    )
+    assert terminator == "\nPY\n"
+    assert not remainder.strip()
+    compile(embedded, "verify-publisher.sh::<authenticated-python>", "exec")
+
+    for mode in ("ValidatorSchema", "ValidatorProfile", "ValidatorLegacy", "Receipt"):
+        assert mode in script
+    assert "qualification-launcher.py" not in script
+    assert 'pathlib.Path("/opt/ruisheng/qualification-runtime")' in script
+    assert 'pathlib.Path(\n    "/run/ruisheng/receipt-signing-agent.sock"\n)' in script
+    assert '"PYTHONDONTWRITEBYTECODE": "1"' in script
+    assert '"PYTHONNOUSERSITE": "1"' in script
+    assert "env=environment" in script
+    assert (
+        '"-I",\n                "-B",\n                "-S",\n                "-X",\n                "utf8"'
+        in script
+    )
+
+    authenticated = script.index(
+        'print("[publisher] VERIFIED: publisher signature and complete candidate hashes passed")'
+    )
+    qualification_dispatch = script.index('if qualification_mode != "None":', authenticated)
+    qualification_execution = script.index(
+        "qualification_exit_code = execute_authenticated_qualification(", qualification_dispatch
+    )
+    assert authenticated < qualification_dispatch < qualification_execution
+
+
+def test_posix_publisher_qualification_bootstrap_binds_resource_and_timeout_guards() -> None:
+    script = (ROOT / "tools" / "release_trust" / "verify-publisher.sh").read_text(encoding="utf-8")
+
+    assert "start_new_session=True" in script
+    assert "os.killpg(outcome.pid, signal.SIGKILL)" in script
+    assert "outcome.wait(timeout=30)" in script
+    assert "if initial_position != 0 or archive_size > MAX_QUALIFICATION_GZIP_BYTES:" in script
+    assert 'if gzip_header != b"\\x1f\\x8b\\x08\\x00\\x00\\x00\\x00\\x00\\x02\\xff":' in script
+    assert "validate_single_qualification_gzip_member(raw_archive)" in script
+    assert "zlib.error," in script
+
+    process_wait = script.index("outcome.wait(timeout=900)")
+    cleanup_finally = script.index("finally:", process_wait)
+    group_termination = script.index("os.killpg(outcome.pid, signal.SIGKILL)", cleanup_finally)
+    bounded_reap = script.index("outcome.wait(timeout=30)", group_termination)
+    timeout_failure = script.index(
+        'fail("authenticated qualification tool timed out")', bounded_reap
+    )
+    assert process_wait < cleanup_finally < group_termination < bounded_reap < timeout_failure
+
+    budget_check = script.index("if len(directories) >= MAX_QUALIFICATION_RUNTIME_DIRECTORIES:")
+    directory_add = script.index("directories.add(directory)", budget_check)
+    assert budget_check < directory_add
+
+
+def _find_test_bash() -> str | None:
+    candidates: list[Path] = []
+    discovered = shutil.which("bash")
+    if discovered is not None:
+        candidates.append(Path(discovered))
+    git = shutil.which("git")
+    if git is not None:
+        git_root = Path(git).resolve().parent.parent
+        candidates.extend((git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe"))
+    candidates.append(Path("C:/Git/bin/bash.exe"))
+
+    observed: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in observed or not resolved.is_file():
+            continue
+        observed.add(resolved)
+        probe = subprocess.run(
+            [str(resolved), "--noprofile", "--norc", "-c", "exit 0"],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+        if probe.returncode == 0:
+            return str(resolved)
+    return None
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_error"),
+    (
+        (
+            ("--qualification-profile-path", "attacker.py"),
+            "qualification-only parameters require an explicit qualification mode",
+        ),
+        (
+            (
+                "--qualification-mode",
+                "ValidatorSchema",
+                "--qualification-profile-path",
+                "attacker.py",
+            ),
+            "ValidatorSchema does not accept additional qualification parameters",
+        ),
+        (
+            ("--qualification-mode", "Receipt"),
+            "Receipt requires only output, signing identity, verifier ID, and verifier key ID",
+        ),
+        (
+            (
+                "--qualification-mode",
+                "ValidatorSchema",
+                "--qualification-mode",
+                "ValidatorLegacy",
+            ),
+            "duplicate qualification mode",
+        ),
+    ),
+)
+def test_posix_publisher_rejects_open_ended_qualification_parameter_sets(
+    arguments: tuple[str, ...], expected_error: str
+) -> None:
+    bash = _find_test_bash()
+    if bash is None:
+        pytest.skip("a usable Bash runtime is unavailable")
+    script = ROOT / "tools" / "release_trust" / "verify-publisher.sh"
+
+    result = subprocess.run(
+        [bash, str(script), "missing-candidate", *arguments],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    output = result.stderr + result.stdout
+    assert result.returncode != 0
+    assert expected_error in output
+    assert "/usr/bin/python3 is required" not in output
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+def test_windows_publisher_bootstrap_parses_without_errors() -> None:
+    script = ROOT / "tools" / "release_trust" / "verify-publisher.ps1"
+    command = r"""
+$tokens = $null
+$errors = $null
+[System.Management.Automation.Language.Parser]::ParseFile(
+    $env:RS_VERIFY_SCRIPT, [ref]$tokens, [ref]$errors
+) | Out-Null
+if ($errors.Count -ne 0) {
+    $errors | ForEach-Object { Write-Error $_.Message }
+    exit 1
+}
+"""
+    environment = os.environ.copy()
+    environment["RS_VERIFY_SCRIPT"] = str(script)
+
+    result = subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    (
+        ("rewrite", "candidate file content changed during snapshot"),
+        ("replace", "identity or metadata changed"),
+    ),
+)
+def test_windows_publisher_snapshot_rejects_identity_preserving_size_attacks(
+    tmp_path: Path, mutation: str, expected_error: str
+) -> None:
+    result = _run_powershell_publisher_snapshot_mutation(tmp_path, mutation)
+
+    assert result.returncode != 0
+    assert expected_error in (result.stderr + result.stdout)
+    assert not (tmp_path / "snapshot.bin").exists()
+
+
+def test_windows_publisher_qualification_mode_is_a_closed_external_bootstrap() -> None:
+    script = (ROOT / "tools" / "release_trust" / "verify-publisher.ps1").read_text(encoding="utf-8")
+
+    assert (
+        '[ValidateSet("None", "ValidatorSchema", "ValidatorProfile", "ValidatorLegacy", "Receipt")]'
+    ) in script
+    assert "QualificationArguments" not in script
+    assert "--trust-directory" not in script
+    assert '"tools/validate_device_point_profile.py"' in script
+    assert '"tools/release_verification_receipt.py"' in script
+    assert (
+        '"sha256:$($AuthenticatedManifest.qualification_toolchain.receipt_producer.sha256)"'
+    ) in script
+    assert "Open-ProtectedSystemPython" in script
+    assert r"C:\ProgramData\Ruisheng\runtime" in script
+    assert "qualification-runtime-manifest.json" in script
+    assert "Program Files\\Python31x\\python.exe" not in script
+    assert '"-I", "-B", "-S", "-X", "utf8"' in script
+    assert "sys.version_info[:2] != (3, 11)" in script
+    assert "qualification dependency_root was not isolated for bootstrap" in script
+    assert "ArgumentList.Add" in script
+    assert "unsupported qualification entrypoint" in script
+    bootstrap_start = script.index("$Bootstrap = @'\n") + len("$Bootstrap = @'\n")
+    bootstrap_end = script.index("\n'@", bootstrap_start)
+    compile(
+        script[bootstrap_start:bootstrap_end],
+        "verify-publisher.ps1::<qualification-bootstrap>",
+        "exec",
+    )
+    job_create = script.index("[Ruisheng.ReleaseTrust.KillOnCloseJob]::Create($JobName)")
+    process_start = script.index("$Process = [Diagnostics.Process]::Start($Start)", job_create)
+    job_assignment = script.index("$Job.Assign($Process.SafeHandle)", process_start)
+    gate_release = script.index("$Gate.Set()", job_assignment)
+    process_exit = script.index("WaitForProcessExit(", gate_release)
+    job_termination = script.index("$Job.Terminate(1)", process_exit)
+    bounded_collection = script.index(
+        "30000 - [int]$CleanupClock.ElapsedMilliseconds", job_termination
+    )
+    runtime_recheck = script.index(
+        "Assert-ProtectedQualificationRuntimeUnchanged $Runtime", bounded_collection
+    )
+    runtime_disposal = script.index("foreach ($RuntimeLock in $Runtime.Locks)", runtime_recheck)
+    assert job_create < process_start < job_assignment < gate_release < process_exit
+    assert process_exit < job_termination < bounded_collection < runtime_recheck < runtime_disposal
+    assert "open_event(0x00100000, False, gate_name)" in script
+    assert "process assignment to qualification job was not effective" in script
+    assert '$Start.Environment["RUISHENG_QUALIFICATION_GATE"] = $GateName' in script
+    assert "RUISHENG_QUALIFICATION_COMPLETE_${Code}" in script
+    assert "RUISHENG_QUALIFICATION_HOLD" in script
+    assert "DescendantProcessSet]::Capture" in script
+
+
+def _run_windows_publisher_process_containment(
+    tmp_path: Path, *, mode: str
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    marker = tmp_path / f"windows-publisher-descendant-{mode}.txt"
+    child = tmp_path / "qualification-descendant.py"
+    child.write_text(
+        "import os,pathlib,sys,time\n"
+        "pathlib.Path(sys.argv[1]+'.ppid').write_text(str(os.getppid()))\n"
+        "time.sleep(1)\n"
+        "pathlib.Path(sys.argv[1]).write_text('escaped', encoding='ascii')\n",
+        encoding="ascii",
+    )
+    parent = tmp_path / "gated-qualification-parent.py"
+    parent.write_text(
+        "import ctypes,os,subprocess,sys,time\n"
+        "gate_name=os.environ.pop('RUISHENG_QUALIFICATION_GATE')\n"
+        "kernel32=ctypes.WinDLL('kernel32',use_last_error=True)\n"
+        "gate=kernel32.OpenEventW(0x00100000,False,gate_name)\n"
+        "assert gate and kernel32.WaitForSingleObject(gate,30000)==0\n"
+        "assert kernel32.CloseHandle(gate)\n"
+        "subprocess.Popen([sys.executable,sys.argv[1],sys.argv[2]])\n"
+        "if sys.argv[3]=='timeout': time.sleep(60)\n"
+        "completion=kernel32.OpenEventW("
+        "0x0002,False,os.environ['RUISHENG_QUALIFICATION_COMPLETE_0'])\n"
+        "hold=kernel32.OpenEventW("
+        "0x00100000,False,os.environ['RUISHENG_QUALIFICATION_HOLD'])\n"
+        "assert completion and hold and kernel32.SetEvent(completion)\n"
+        "kernel32.WaitForSingleObject(hold,0xffffffff)\n",
+        encoding="ascii",
+    )
+    command = r"""
+function Fail([string]$Message) { throw $Message }
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$begin = $source.IndexOf('# BEGIN qualification process containment helpers')
+$end = $source.IndexOf('# END qualification process containment helpers', $begin)
+if ($begin -lt 0 -or $end -lt 0) { throw 'qualification containment block not found' }
+. ([scriptblock]::Create($source.Substring($begin, $end - $begin)))
+$start = [Diagnostics.ProcessStartInfo]::new()
+$start.FileName = $env:RS_PYTHON
+$start.UseShellExecute = $false
+$start.RedirectStandardOutput = $true
+$start.RedirectStandardError = $true
+foreach ($argument in @($env:RS_PARENT, $env:RS_CHILD, $env:RS_MARKER, $env:RS_MODE)) {
+    [void]$start.ArgumentList.Add($argument)
+}
+$start.Environment.Clear()
+$timeout = if ($env:RS_MODE -ceq 'timeout') { 200 } else { 30000 }
+$result = Invoke-GatedQualificationProcess $start $timeout
+if ($result.StandardError) { [Console]::Error.Write($result.StandardError) }
+[Console]::Out.Write(
+    "EXIT=$($result.ExitCode);CAPTURE=$($result.CapturedDescendantCount);" +
+    "LATE=$($result.LateDescendantCount);ROOT=$($result.RootProcessId)"
+)
+"""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RS_VERIFY_SCRIPT": str(ROOT / "tools/release_trust/verify-publisher.ps1"),
+            "RS_PYTHON": sys.executable,
+            "RS_PARENT": str(parent),
+            "RS_CHILD": str(child),
+            "RS_MARKER": str(marker),
+            "RS_MODE": mode,
+        }
+    )
+    result = subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=45,
+    )
+    return result, marker
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 process containment contract",
+)
+@pytest.mark.parametrize("mode", ("normal", "timeout"))
+def test_windows_publisher_terminates_qualification_descendants_on_every_exit(
+    tmp_path: Path, mode: str
+) -> None:
+    result, marker = _run_windows_publisher_process_containment(tmp_path, mode=mode)
+
+    if mode == "normal":
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert result.stdout.startswith("EXIT=0;"), result.stderr
+    else:
+        assert result.returncode != 0
+        assert "qualification tool timed out" in (result.stderr + result.stdout)
+    time.sleep(1.5)
+    ppid_path = Path(str(marker) + ".ppid")
+    details = result.stdout + result.stderr
+    if ppid_path.exists():
+        details += ";CHILD_PPID=" + ppid_path.read_text()
+    assert not marker.exists(), details
+
+
+def test_windows_publisher_qualification_runtime_budgets_precede_allocation_and_hashing() -> None:
+    script = (ROOT / "tools" / "release_trust" / "verify-publisher.ps1").read_text(encoding="utf-8")
+    assert "$MaxQualificationRuntimeFiles = [Int64]32768" in script
+    assert "$MaxQualificationRuntimeDirectories = [Int64]32768" in script
+    assert "$MaxQualificationRuntimeFileBytes = [Int64]536870912" in script
+    assert "$MaxQualificationRuntimeTotalBytes = [Int64]34359738368" in script
+    assert "$MaxQualificationRuntimePathBytes = [Int64]4096" in script
+
+    runtime_start = script.index("function Open-ProtectedSystemPython")
+    count_guard = script.index(
+        "Assert-QualificationRuntimeManifestFileCount $Manifest.files", runtime_start
+    )
+    expected_files_allocation = script.index(
+        "$ExpectedFiles = [Collections.Generic.HashSet[string]]::new", count_guard
+    )
+    layout_preflight = script.index("Assert-QualificationRuntimeLayout", count_guard)
+    runtime_lock_allocation = script.index(
+        "$RuntimeFileLocks = [Collections.Generic.List[object]]::new()", layout_preflight
+    )
+    aggregate_guard = script.index(
+        "$TotalBytes = Add-QualificationRuntimeFileBytes", runtime_lock_allocation
+    )
+    hash_loop = script.index("foreach ($Lock in $RuntimeFileLocks)", aggregate_guard)
+    first_runtime_hash = script.index("Get-LockedFileSha256 $Lock.Stream", hash_loop)
+    assert count_guard < expected_files_allocation < layout_preflight
+    assert layout_preflight < runtime_lock_allocation < aggregate_guard < first_runtime_hash
+
+    directory_helper = script.index("function Add-ExpectedQualificationRuntimeDirectory")
+    directory_guard = script.index(
+        "$ExpectedDirectories.Count -ge $MaxQualificationRuntimeDirectories",
+        directory_helper,
+    )
+    directory_allocation = script.index("$CaseInsensitiveMembers.Add(", directory_guard)
+    assert directory_guard < directory_allocation
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+def test_windows_publisher_accepts_32768_total_runtime_files() -> None:
+    result = _run_powershell_qualification_runtime_budget("file-count-boundary")
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout == "ACCEPTED"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    ("action", "expected_error"),
+    (
+        ("file-count", "qualification runtime manifest files are invalid"),
+        ("single-file", "qualification runtime synthetic file exceeds its byte limit"),
+        ("aggregate", "qualification runtime exceeds its aggregate byte limit"),
+        ("int64-overflow", "qualification runtime exceeds its aggregate byte limit"),
+        ("directory", "qualification runtime contains too many directories"),
+        ("path", "qualification runtime file path is not a canonical relative path"),
+    ),
+)
+def test_windows_publisher_rejects_qualification_runtime_budget_overflow(
+    action: str, expected_error: str
+) -> None:
+    result = _run_powershell_qualification_runtime_budget(action)
+
+    assert result.returncode != 0
+    assert expected_error in (result.stderr + result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    ("action", "lock_target", "marker"),
+    (
+        ("verify", "python.exe", "VERIFIED"),
+        ("lock", "qualification-runtime-manifest.json", "LOCKED"),
+        ("lock", "python.exe", "LOCKED"),
+        ("lock", "Lib/site-packages/dependency.py", "LOCKED"),
+    ),
+)
+def test_windows_publisher_accepts_only_the_manifest_bound_fixed_runtime(
+    tmp_path: Path, action: str, lock_target: str, marker: str
+) -> None:
+    runtime, _, uv_lock_sha256 = _write_minimal_qualification_runtime(tmp_path)
+
+    result = _run_powershell_qualification_runtime(
+        runtime, uv_lock_sha256, action=action, lock_target=lock_target
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout == marker
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("python_version", "3.12"),
+        ("uv_lock_sha256", "b" * 64),
+        ("dependency_root", "../outside"),
+        ("files", {"path": "python.exe", "sha256": "a" * 64}),
+    ),
+)
+def test_windows_publisher_rejects_invalid_qualification_runtime_manifest_contract(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    runtime, manifest, uv_lock_sha256 = _write_minimal_qualification_runtime(tmp_path)
+    manifest[field] = value
+    _write_qualification_runtime_manifest(runtime, manifest)
+
+    result = _run_powershell_qualification_runtime(runtime, uv_lock_sha256)
+
+    assert result.returncode != 0
+    assert "qualification runtime manifest contract is invalid" in (result.stderr + result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    (
+        ("manifest-extra-key", "qualification runtime manifest keys mismatch"),
+        ("file-extra-key", "qualification runtime file identity keys mismatch"),
+        ("unordered-files", "qualification runtime files are not in strict ordinal path order"),
+    ),
+)
+def test_windows_publisher_rejects_noncanonical_qualification_runtime_manifest(
+    tmp_path: Path, mutation: str, expected_error: str
+) -> None:
+    runtime, manifest, uv_lock_sha256 = _write_minimal_qualification_runtime(tmp_path)
+    if mutation == "manifest-extra-key":
+        manifest["unexpected"] = True
+    else:
+        identities = cast(list[dict[str, object]], manifest["files"])
+        if mutation == "file-extra-key":
+            identities[0]["unexpected"] = True
+        elif mutation == "unordered-files":
+            identities.reverse()
+        else:  # pragma: no cover - parametrization is closed above
+            raise AssertionError(f"unsupported mutation: {mutation}")
+    _write_qualification_runtime_manifest(runtime, manifest)
+
+    result = _run_powershell_qualification_runtime(runtime, uv_lock_sha256)
+
+    assert result.returncode != 0
+    assert expected_error in (result.stderr + result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    (
+        ("extra-file", "qualification runtime file allowlist mismatch"),
+        ("missing-file", "qualification runtime file allowlist mismatch"),
+        ("empty-directory", "qualification runtime file allowlist mismatch"),
+        ("same-length-rewrite", "qualification runtime file SHA-256 mismatch"),
+    ),
+)
+def test_windows_publisher_rejects_qualification_runtime_layout_or_content_drift(
+    tmp_path: Path, mutation: str, expected_error: str
+) -> None:
+    runtime, _, uv_lock_sha256 = _write_minimal_qualification_runtime(tmp_path)
+    dependency = runtime / "Lib" / "site-packages" / "dependency.py"
+    if mutation == "extra-file":
+        (runtime / "attacker.py").write_bytes(b"unmanifested\n")
+    elif mutation == "missing-file":
+        dependency.unlink()
+    elif mutation == "empty-directory":
+        (runtime / "unused").mkdir()
+    elif mutation == "same-length-rewrite":
+        dependency.write_bytes(b"X" * dependency.stat().st_size)
+    else:  # pragma: no cover - parametrization is closed above
+        raise AssertionError(f"unsupported mutation: {mutation}")
+
+    result = _run_powershell_qualification_runtime(runtime, uv_lock_sha256)
+
+    assert result.returncode != 0
+    assert expected_error in (result.stderr + result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+def test_windows_publisher_rejects_case_ambiguous_qualification_runtime_directories(
+    tmp_path: Path,
+) -> None:
+    runtime, manifest, uv_lock_sha256 = _write_minimal_qualification_runtime(tmp_path)
+    _add_qualification_runtime_file(
+        runtime, manifest, "lib/site-packages/attacker.py", b"ATTACK = True\n"
+    )
+
+    result = _run_powershell_qualification_runtime(runtime, uv_lock_sha256)
+
+    assert result.returncode != 0
+    assert "qualification runtime contains a case-insensitive path collision" in (
+        result.stderr + result.stdout
+    )
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize("relative", ("attacker.pth", "pyvenv.cfg"))
+def test_windows_publisher_rejects_python_path_injection_files(
+    tmp_path: Path, relative: str
+) -> None:
+    runtime, manifest, uv_lock_sha256 = _write_minimal_qualification_runtime(tmp_path)
+    _add_qualification_runtime_file(runtime, manifest, relative, b"import site\n")
+
+    result = _run_powershell_qualification_runtime(runtime, uv_lock_sha256)
+
+    assert result.returncode != 0
+    assert f"qualification runtime contains a forbidden file: {relative}" in (
+        result.stderr + result.stdout
+    )
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    ("configuration", "expected_error"),
+    (
+        (b"import site\n", "qualification runtime Python _pth must not import site"),
+        (
+            b"Lib/site-packages\n",
+            "qualification runtime dependency_root must be added only by the bootstrap",
+        ),
+    ),
+)
+def test_windows_publisher_rejects_unsafe_python_pth_configuration(
+    tmp_path: Path, configuration: bytes, expected_error: str
+) -> None:
+    runtime, manifest, uv_lock_sha256 = _write_minimal_qualification_runtime(tmp_path)
+    _add_qualification_runtime_file(runtime, manifest, "python311._pth", configuration)
+
+    result = _run_powershell_qualification_runtime(runtime, uv_lock_sha256)
+
+    assert result.returncode != 0
+    assert expected_error in (result.stderr + result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+def test_windows_publisher_rejects_hard_linked_qualification_runtime_files(
+    tmp_path: Path,
+) -> None:
+    runtime, manifest, uv_lock_sha256 = _write_minimal_qualification_runtime(tmp_path)
+    python = runtime / "python.exe"
+    dll = runtime / "python311.dll"
+    dll.unlink()
+    os.link(python, dll)
+    for identity in cast(list[dict[str, str]], manifest["files"]):
+        if identity["path"] == "python311.dll":
+            identity["sha256"] = hashlib.sha256(python.read_bytes()).hexdigest()
+    _write_qualification_runtime_manifest(runtime, manifest)
+
+    result = _run_powershell_qualification_runtime(runtime, uv_lock_sha256)
+
+    assert result.returncode != 0
+    assert "qualification runtime file has multiple hard links" in (result.stderr + result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    ("guard", "expected_error"),
+    (("acl", "unsafe ACL"), ("ancestor", "unsafe ancestor")),
+)
+def test_windows_publisher_checks_runtime_acl_and_ancestors(
+    tmp_path: Path, guard: str, expected_error: str
+) -> None:
+    runtime, _, uv_lock_sha256 = _write_minimal_qualification_runtime(tmp_path)
+
+    result = _run_powershell_qualification_runtime(runtime, uv_lock_sha256, fail_guard=guard)
+
+    assert result.returncode != 0
+    assert expected_error in (result.stderr + result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+def test_windows_publisher_rejects_runtime_reparse_points(tmp_path: Path) -> None:
+    runtime, _, uv_lock_sha256 = _write_minimal_qualification_runtime(tmp_path)
+    target = tmp_path / "junction-target"
+    target.mkdir()
+    junction = runtime / "junction"
+    created = subprocess.run(
+        ["cmd.exe", "/c", "mklink", "/J", str(junction), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if created.returncode != 0:
+        pytest.skip(created.stderr or created.stdout or "cannot create test junction")
+    try:
+        result = _run_powershell_qualification_runtime(runtime, uv_lock_sha256)
+        assert result.returncode != 0
+        assert "fixed qualification runtime contains a reparse point" in (
+            result.stderr + result.stdout
+        )
+    finally:
+        junction.rmdir()
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    ("mode", "entrypoint", "argument_prefix"),
+    (
+        ("ValidatorSchema", "tools/validate_device_point_profile.py", ["schema"]),
+        ("ValidatorProfile", "tools/validate_device_point_profile.py", ["validate"]),
+        (
+            "ValidatorLegacy",
+            "tools/validate_device_point_profile.py",
+            ["validate-legacy"],
+        ),
+        ("Receipt", "tools/release_verification_receipt.py", None),
+    ),
+)
+def test_windows_publisher_builds_only_fixed_qualification_invocations(
+    tmp_path: Path,
+    mode: str,
+    entrypoint: str,
+    argument_prefix: list[str] | None,
+) -> None:
+    result = _run_powershell_qualification_invocation(tmp_path, mode)
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    invocation = json.loads(result.stdout)
+    assert invocation["Entrypoint"] == entrypoint
+    arguments = invocation["Arguments"]
+    if argument_prefix is not None:
+        assert arguments[: len(argument_prefix)] == argument_prefix
+    else:
+        assert arguments == [
+            str((tmp_path / "candidate").resolve()),
+            "--output-directory",
+            str((tmp_path / "receipts").resolve()),
+            "--signing-identity",
+            str((tmp_path / "release-receipt.pub").resolve()),
+            "--verifier-id",
+            "protected-release-verifier",
+            "--verifier-key-id",
+            "release-receipt-key",
+            "--verifier-tool-sha256",
+            "sha256:" + "a" * 64,
+        ]
+    assert "--trust-directory" not in arguments
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    ("arguments", "expected_error"),
+    (
+        (
+            ("-QualificationProfilePath", "attacker.py"),
+            "qualification-only parameters require an explicit qualification mode",
+        ),
+        (
+            (
+                "-QualificationMode",
+                "ValidatorSchema",
+                "-QualificationProfilePath",
+                "attacker.py",
+            ),
+            "ValidatorSchema does not accept additional qualification parameters",
+        ),
+        (
+            ("-QualificationMode", "Receipt"),
+            "Receipt requires only output, signing identity, verifier ID, and verifier key ID",
+        ),
+    ),
+)
+def test_windows_publisher_rejects_open_ended_qualification_parameter_sets(
+    arguments: tuple[str, ...], expected_error: str
+) -> None:
+    script = ROOT / "tools" / "release_trust" / "verify-publisher.ps1"
+
+    result = subprocess.run(
+        [
+            shutil.which("pwsh") or "pwsh",
+            "-NoProfile",
+            "-File",
+            str(script),
+            "missing-candidate",
+            *arguments,
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in (result.stderr + result.stdout)

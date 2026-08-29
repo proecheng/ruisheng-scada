@@ -16,6 +16,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$script:AuditMaxFileBytes = 16 * 1024 * 1024
+$script:AuditMaxLineBytes = 64 * 1024
+$script:AuditMaxRecords = 50000
 
 function ConvertTo-PowerShellUtf8Expression {
   param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
@@ -145,10 +148,24 @@ function Write-OperatorAudit {
   try {
     $previousHash = "0" * 64
     $duplicate = $false
+    $auditLength = 0
+    $recordCount = 0
     if (Test-Path -LiteralPath $auditPath -PathType Leaf) {
       Assert-RestrictedFile -Path $auditPath
+      $auditItem = Get-Item -LiteralPath $auditPath -Force
+      $auditLength = [long]$auditItem.Length
+      if ($auditLength -gt $script:AuditMaxFileBytes) {
+        throw "operator_audit_file_limit_exceeded"
+      }
       foreach ($existingLine in Get-Content -LiteralPath $auditPath -Encoding UTF8 -ErrorAction Stop) {
         if (-not $existingLine) { continue }
+        if ([Text.Encoding]::UTF8.GetByteCount($existingLine) -gt $script:AuditMaxLineBytes) {
+          throw "operator_audit_line_limit_exceeded"
+        }
+        $recordCount++
+        if ($recordCount -gt $script:AuditMaxRecords) {
+          throw "operator_audit_record_limit_exceeded"
+        }
         try {
           $previous = $existingLine | ConvertFrom-Json
           if ([string]$previous.previous_hash -ne $previousHash) { throw "invalid link" }
@@ -211,7 +228,18 @@ function Write-OperatorAudit {
     $record.record_hash = $recordHash
     $line = $record | ConvertTo-Json -Depth 4 -Compress
     $utf8 = New-Object Text.UTF8Encoding($false)
-    [IO.File]::AppendAllText($auditPath, $line + [Environment]::NewLine, $utf8)
+    $appendText = $line + [Environment]::NewLine
+    $appendBytes = [Text.Encoding]::UTF8.GetByteCount($appendText)
+    if ([Text.Encoding]::UTF8.GetByteCount($line) -gt $script:AuditMaxLineBytes) {
+      throw "operator_audit_line_limit_exceeded"
+    }
+    if ($recordCount -ge $script:AuditMaxRecords) {
+      throw "operator_audit_record_limit_exceeded"
+    }
+    if ($auditLength + $appendBytes -gt $script:AuditMaxFileBytes) {
+      throw "operator_audit_file_limit_exceeded"
+    }
+    [IO.File]::AppendAllText($auditPath, $appendText, $utf8)
   }
   finally { $appendLock.Dispose() }
 }
@@ -260,6 +288,10 @@ $SiteRoot = __SITE_ROOT__
 $LeaseSeconds = __LEASE_SECONDS__
 $DryRun = __DRY_RUN__
 $Approved = __APPROVED__
+$script:AuditMaxFileBytes = 16 * 1024 * 1024
+$script:AuditMaxLineBytes = 64 * 1024
+$script:AuditMaxRecords = 50000
+$script:TargetAuditSnapshot = $null
 
 $ComposeFile = Join-Path $CandidateRoot "docker-compose.prod.yml"
 $OverrideFile = Join-Path $CandidateRoot "site-network.override.yml"
@@ -737,13 +769,117 @@ function Assert-ComposePolicy {
   }
 }
 
+function Test-ExactJsonObjectKeys {
+  param(
+    [Parameter(Mandatory)][AllowNull()]$Value,
+    [Parameter(Mandatory)][string[]]$ExpectedKeys
+  )
+  if ($null -eq $Value -or $Value -isnot [PSCustomObject]) { return $false }
+  $actualKeys = @($Value.PSObject.Properties | ForEach-Object { [string]$_.Name })
+  if ($actualKeys.Count -ne $ExpectedKeys.Count) { return $false }
+  foreach ($key in $ExpectedKeys) {
+    if ($actualKeys -cnotcontains $key) { return $false }
+  }
+  return $true
+}
+
+function Assert-QualificationToolchainDescriptor {
+  param([Parameter(Mandatory)][AllowNull()]$Descriptor)
+
+  $descriptorKeys = @(
+    "path", "sha256", "format", "semantic_validator", "schema", "validator",
+    "producer", "receipt_producer", "toolchain_manifest"
+  )
+  if (-not (Test-ExactJsonObjectKeys -Value $Descriptor -ExpectedKeys $descriptorKeys)) {
+    throw "manifest_schema_invalid"
+  }
+  if (
+    $Descriptor.path -isnot [string] -or
+    $Descriptor.path -cne "qualification-toolchain.tar.gz" -or
+    $Descriptor.sha256 -isnot [string] -or
+    $Descriptor.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    $Descriptor.format -isnot [string] -or
+    $Descriptor.format -cne "tar+gzip" -or
+    $Descriptor.semantic_validator -isnot [string] -or
+    $Descriptor.semantic_validator -cne "ruisheng.device-point-profile-validator/v5"
+  ) {
+    throw "manifest_schema_invalid"
+  }
+
+  $identityPaths = [ordered]@{
+    schema = "schemas/point-profile/point-profile-v1.schema.json"
+    validator = "tools/validate_device_point_profile.py"
+    producer = "tools/release_artifacts.py"
+    receipt_producer = "tools/release_verification_receipt.py"
+    toolchain_manifest = "qualification-toolchain-manifest.json"
+  }
+  foreach ($name in $identityPaths.Keys) {
+    $identity = $Descriptor.$name
+    if (
+      -not (Test-ExactJsonObjectKeys -Value $identity -ExpectedKeys @("path", "sha256")) -or
+      $identity.path -isnot [string] -or
+      $identity.path -cne $identityPaths[$name] -or
+      $identity.sha256 -isnot [string] -or
+      $identity.sha256 -cnotmatch '^[0-9a-f]{64}$'
+    ) {
+      throw "manifest_schema_invalid"
+    }
+  }
+}
+
+function Assert-CandidateManifestSchema {
+  param([Parameter(Mandatory)]$Manifest)
+  $baseKeys = @(
+    "schema_version", "candidate_id", "source_commit", "generated_at", "target_os",
+    "target_architecture", "alembic_head", "logical_identity", "tools", "authenticity",
+    "images"
+  )
+  $isInteger =
+    $Manifest.schema_version -isnot [bool] -and (
+      $Manifest.schema_version -is [int] -or $Manifest.schema_version -is [long]
+    )
+  if (-not $isInteger) { throw "manifest_schema_invalid" }
+  $schemaVersion = [int64]$Manifest.schema_version
+  if ($schemaVersion -eq 2) {
+    $expectedKeys = $baseKeys
+  }
+  elseif ($schemaVersion -eq 3) {
+    $expectedKeys = @($baseKeys) + "qualification_toolchain"
+  }
+  else {
+    throw "manifest_schema_invalid"
+  }
+  if (-not (Test-ExactJsonObjectKeys -Value $Manifest -ExpectedKeys $expectedKeys)) {
+    throw "manifest_schema_invalid"
+  }
+  if ($schemaVersion -eq 3) {
+    Assert-QualificationToolchainDescriptor -Descriptor $Manifest.qualification_toolchain
+  }
+  if ($Manifest.images -isnot [Array]) { throw "manifest_schema_invalid" }
+  $imageKeys = @(
+    "component", "source_reference", "repo_digest", "candidate_reference", "image_id",
+    "os", "architecture", "archive", "sha256"
+  )
+  foreach ($image in @($Manifest.images)) {
+    if (-not (Test-ExactJsonObjectKeys -Value $image -ExpectedKeys $imageKeys)) {
+      throw "manifest_schema_invalid"
+    }
+  }
+}
+
 function Assert-ManifestImageIdentity {
   param([Parameter(Mandatory)]$Model)
   try { $manifest = Get-Content -LiteralPath $ManifestFile -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json }
   catch { throw "manifest_invalid" }
+  Assert-CandidateManifestSchema -Manifest $manifest
   if (
-    [int]$manifest.schema_version -ne 1 -or
-    [string]$manifest.candidate_id -ne (Split-Path -Leaf $CandidateRoot)
+    $manifest.candidate_id -isnot [string] -or
+    [string]$manifest.candidate_id -notmatch '^[a-z0-9][a-z0-9._-]{0,62}$' -or
+    [string]$manifest.candidate_id -ne (Split-Path -Leaf $CandidateRoot) -or
+    $manifest.source_commit -isnot [string] -or
+    [string]$manifest.source_commit -notmatch '^[0-9a-f]{40}$' -or
+    $manifest.logical_identity -isnot [string] -or
+    [string]$manifest.logical_identity -notmatch '^sha256:[0-9a-f]{64}$'
   ) {
     throw "manifest_identity_invalid"
   }
@@ -942,12 +1078,32 @@ function Release-Locks {
   }
 }
 
-function Get-TargetAuditTailHash {
+function Read-TargetAuditSnapshot {
   $previousHash = "0" * 64
+  $records = New-Object System.Collections.ArrayList
+  $auditLength = 0L
+  $lastWriteTicks = 0L
+  $contentSha256 = ""
+  $auditExists = $false
   if (Test-Path -LiteralPath $AuditPath -PathType Leaf) {
     Assert-RestrictedFile -Path $AuditPath
+    $beforeItem = Get-Item -LiteralPath $AuditPath -Force
+    $auditExists = $true
+    $auditLength = [long]$beforeItem.Length
+    $lastWriteTicks = [long]$beforeItem.LastWriteTimeUtc.Ticks
+    if ($auditLength -gt $script:AuditMaxFileBytes) {
+      throw "audit_file_limit_exceeded"
+    }
+    $recordCount = 0
     foreach ($existingLine in Get-Content -LiteralPath $AuditPath -Encoding UTF8 -ErrorAction Stop) {
       if (-not $existingLine) { continue }
+      if ([Text.Encoding]::UTF8.GetByteCount($existingLine) -gt $script:AuditMaxLineBytes) {
+        throw "audit_line_limit_exceeded"
+      }
+      $recordCount++
+      if ($recordCount -gt $script:AuditMaxRecords) {
+        throw "audit_record_limit_exceeded"
+      }
       try {
         $previous = $existingLine | ConvertFrom-Json
         if ([string]$previous.previous_hash -ne $previousHash) { throw "invalid" }
@@ -961,16 +1117,66 @@ function Get-TargetAuditTailHash {
         $verifiedHash = Get-Sha256Text -Text $verifiedJson
         if ($verifiedHash -ne [string]$previous.record_hash) { throw "invalid" }
         $previousHash = $verifiedHash
+        [void]$records.Add($previous)
       }
       catch { throw "audit_chain_invalid" }
     }
+    Assert-RestrictedFile -Path $AuditPath
+    $afterItem = Get-Item -LiteralPath $AuditPath -Force
+    if (
+      [long]$afterItem.Length -ne $auditLength -or
+      [long]$afterItem.LastWriteTimeUtc.Ticks -ne $lastWriteTicks
+    ) {
+      throw "audit_chain_changed"
+    }
+    $contentSha256 = (Get-FileHash -LiteralPath $AuditPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    Assert-RestrictedFile -Path $AuditPath
+    $hashedItem = Get-Item -LiteralPath $AuditPath -Force
+    if (
+      [long]$hashedItem.Length -ne $auditLength -or
+      [long]$hashedItem.LastWriteTimeUtc.Ticks -ne $lastWriteTicks
+    ) {
+      throw "audit_chain_changed"
+    }
   }
-  return $previousHash
+  return [pscustomobject]@{
+    TailHash          = $previousHash
+    Records           = @($records)
+    RecordCount       = $records.Count
+    FileLength        = $auditLength
+    LastWriteUtcTicks = $lastWriteTicks
+    ContentSha256     = $contentSha256
+    Exists            = $auditExists
+  }
+}
+
+function Get-TargetAuditSnapshot {
+  param([switch]$ForceRefresh)
+  if (-not $ForceRefresh -and $null -ne $script:TargetAuditSnapshot) {
+    $exists = Test-Path -LiteralPath $AuditPath -PathType Leaf
+    if (-not $exists -and -not [bool]$script:TargetAuditSnapshot.Exists) {
+      return $script:TargetAuditSnapshot
+    }
+    if ($exists -and [bool]$script:TargetAuditSnapshot.Exists) {
+      Assert-RestrictedFile -Path $AuditPath
+      $item = Get-Item -LiteralPath $AuditPath -Force
+      if (
+        [long]$item.Length -eq [long]$script:TargetAuditSnapshot.FileLength -and
+        [long]$item.LastWriteTimeUtc.Ticks -eq [long]$script:TargetAuditSnapshot.LastWriteUtcTicks -and
+        (Get-FileHash -LiteralPath $AuditPath -Algorithm SHA256).Hash.ToLowerInvariant() -ceq
+          [string]$script:TargetAuditSnapshot.ContentSha256
+      ) {
+        return $script:TargetAuditSnapshot
+      }
+    }
+  }
+  $script:TargetAuditSnapshot = Read-TargetAuditSnapshot
+  return $script:TargetAuditSnapshot
 }
 
 function Assert-TargetAuditChain {
   $appendLock = Open-ExclusiveAuditLock -Path (Join-Path $AuditDirectory ".remote-maintenance-audit.lock")
-  try { [void](Get-TargetAuditTailHash) }
+  try { [void](Get-TargetAuditSnapshot -ForceRefresh) }
   finally { $appendLock.Dispose() }
 }
 
@@ -978,18 +1184,14 @@ function Assert-OperationAuditCorrelation {
   param([Parameter(Mandatory)]$Record)
   Assert-TargetAuditChain
   $matched = $false
-  if (Test-Path -LiteralPath $AuditPath -PathType Leaf) {
-    foreach ($line in Get-Content -LiteralPath $AuditPath -Encoding UTF8 -ErrorAction Stop) {
-      if (-not $line) { continue }
-      $entry = $line | ConvertFrom-Json
-      if (
-        [string]$entry.operation_id -eq [string]$Record.operation_id -and
-        [string]$entry.audit_id -eq [string]$Record.audit_id -and
-        [string]$entry.result -eq [string]$Record.status -and
-        [string]$entry.event -in @("lifecycle_completed", "lifecycle_rejected")
-      ) {
-        $matched = $true
-      }
+  foreach ($entry in @($script:TargetAuditSnapshot.Records)) {
+    if (
+      [string]$entry.operation_id -eq [string]$Record.operation_id -and
+      [string]$entry.audit_id -eq [string]$Record.audit_id -and
+      [string]$entry.result -eq [string]$Record.status -and
+      [string]$entry.event -in @("lifecycle_completed", "lifecycle_rejected")
+    ) {
+      $matched = $true
     }
   }
   if (-not $matched) { throw "operation_audit_correlation_missing" }
@@ -1006,7 +1208,8 @@ function Write-TargetAudit {
   )
   $appendLock = Open-ExclusiveAuditLock -Path (Join-Path $AuditDirectory ".remote-maintenance-audit.lock")
   try {
-    $previousHash = Get-TargetAuditTailHash
+    $snapshot = Get-TargetAuditSnapshot
+    $previousHash = [string]$snapshot.TailHash
     if (-not $auditId) { $script:auditId = [Guid]::NewGuid().ToString("D") }
     $identity = Get-RemoteIdentity
     $payload = [ordered]@{
@@ -1035,7 +1238,28 @@ function Write-TargetAudit {
     $record.record_hash = $recordHash
     $line = $record | ConvertTo-Json -Depth 6 -Compress
     $utf8 = New-Object Text.UTF8Encoding($false)
-    [IO.File]::AppendAllText($AuditPath, $line + [Environment]::NewLine, $utf8)
+    $appendText = $line + [Environment]::NewLine
+    $lineBytes = [Text.Encoding]::UTF8.GetByteCount($line)
+    $appendBytes = [Text.Encoding]::UTF8.GetByteCount($appendText)
+    if ($lineBytes -gt $script:AuditMaxLineBytes) { throw "audit_line_limit_exceeded" }
+    if ([int]$snapshot.RecordCount -ge $script:AuditMaxRecords) {
+      throw "audit_record_limit_exceeded"
+    }
+    if ([long]$snapshot.FileLength + $appendBytes -gt $script:AuditMaxFileBytes) {
+      throw "audit_file_limit_exceeded"
+    }
+    [IO.File]::AppendAllText($AuditPath, $appendText, $utf8)
+    Assert-RestrictedFile -Path $AuditPath
+    $updatedItem = Get-Item -LiteralPath $AuditPath -Force
+    $script:TargetAuditSnapshot = [pscustomobject]@{
+      TailHash          = $recordHash
+      Records           = @($snapshot.Records) + @([pscustomobject]$record)
+      RecordCount       = [int]$snapshot.RecordCount + 1
+      FileLength        = [long]$updatedItem.Length
+      LastWriteUtcTicks = [long]$updatedItem.LastWriteTimeUtc.Ticks
+      ContentSha256     = (Get-FileHash -LiteralPath $AuditPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      Exists            = $true
+    }
   }
   finally { $appendLock.Dispose() }
 }
@@ -1089,10 +1313,8 @@ function Assert-OperationIdentity {
 function Find-TerminalOperationAudit {
   param([Parameter(Mandatory)]$Record)
   $matched = $null
-  if (-not (Test-Path -LiteralPath $AuditPath -PathType Leaf)) { return $null }
-  foreach ($line in Get-Content -LiteralPath $AuditPath -Encoding UTF8 -ErrorAction Stop) {
-    if (-not $line) { continue }
-    $entry = $line | ConvertFrom-Json
+  if ($null -eq $script:TargetAuditSnapshot) { Assert-TargetAuditChain }
+  foreach ($entry in @($script:TargetAuditSnapshot.Records)) {
     if (
       [string]$entry.operation_id -eq [string]$Record.operation_id -and
       [string]$entry.audit_id -eq [string]$Record.audit_id -and

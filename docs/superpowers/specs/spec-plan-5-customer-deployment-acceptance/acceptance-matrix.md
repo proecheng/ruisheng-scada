@@ -13,10 +13,10 @@
 | G0-00 | 必需 | 批准 `site-acceptance-profile.md` | 所有适用字段有确定值和三方签署，N/A 有理由；后续变更可追踪并触发受影响项重测 |
 | G0-01 | 必需 | 在候选提交运行后端与 Web CI | 静态检查、单元、集成、迁移、回放、构建、mock E2E 和真实后端 E2E 全部成功 |
 | G0-02 | 必需 | 渲染根与离线 Compose 并按 allowlist 归一化比较 | 非 allowlist 差异为零；离线无 build/pull；通知、告警刷新、WAL、镜像、端口、依赖和卷契约完整 |
-| G0-03 | 必需 | 生成候选包并验证发布身份、manifest/SHA256；重复解析同一构建输入 | 正常包签名/可信来源与归档校验通过，任一文件篡改后验证失败；Compose 标签可加载到清单镜像 ID；相同输入解析到相同逻辑身份，不强求未证明可复现的 gzip 字节一致 |
+| G0-03 | 必需 | 生成候选包并验证发布身份、manifest/SHA256；从包外 bootstrap 执行四种 qualification；重复解析同一构建输入 | 使用批准的 OpenSSH 信任锚验证 `SHA256SUMS`、精确 v2/v3 文件集、Manifest 和逻辑身份，任一文件篡改后失败；v2 仅通过一般候选验证并可供既有远程维护，任何 B-08 qualification/receipt 请求必须拒绝；v3 候选只携带签名静态 toolchain，不携带 launcher，候选包外受保护 publisher 仅接受 `ValidatorSchema/ValidatorProfile/ValidatorLegacy/Receipt` 及各自精确参数，Windows system qualification 经通用 Python bootstrap 必须拒绝并转向受保护 PowerShell publisher。Toolchain 必须为 canonical 单 gzip member、deterministic strict USTAR、精确 regular-file allowlist、零 padding/有界零 trailer；Docker 外层与嵌套 layer 在扩展 payload 分配前拒绝全部 PAX/GNU header，receipt migration 检查拒绝重复外层成员。一般 OCI 输入在分配/解压前拒绝超过 4 MiB JSON/config、32,768 外层成员、8 GiB 单成员、32 GiB 总展开或 64 MiB 聚合 metadata，whiteout 仅接受合法目标的零长度 regular file。Receipt 从实际加载 API 镜像最终 overlay 静态重建 source-only Alembic graph，迁移至多 4,096 个、单个 2 MiB、合计 64 MiB，禁止导入/执行 migration，唯一 head 与 Manifest/receipt 一致；构建与 receipt 对同候选共享主机级锁，receipt 发布后锁释放失败必须保留 receipt/tags 并明确失败。Windows runtime 限制总计 32,768 个实际文件（包含 manifest）、32,768 个目录、512 MiB 单文件、32 GiB 总量和 4,096-byte 路径；Windows gated kill-on-close Job 与 POSIX 进程组在所有出口有界回收。相同输入解析到同一逻辑身份，不强求未证明可复现的应用镜像 gzip 字节一致 |
 | G0-04 | 必需 | 扫描制品、镜像历史、环境模板和日志 | 无真实密钥、令牌、联系人、客户数据或未批准样本 |
 | G0-05 | 必需 | 在空白生产模式检查 bootstrap 与 seed | 服务首次监听时公开默认密码不可登录；无未批准 Demo 租户/用户/设备/点位；唯一管理员引导凭据已安全交接 |
-| G0-06 | 必需 | 逐项关闭 `deployment-contract.md` 的当前阻断项 | B-01、B-02、B-03、B-04、B-07 有修复/控制证据且不得 N/A；B-05、B-06 由实现证据或已批准且可验证的站点约束解决 |
+| G0-06 | 必需 | 逐项关闭 `deployment-contract.md` 的当前阻断项 | B-01、B-02、B-03、B-04、B-07、B-08、B-08-T、B-08-W 有修复/控制证据且不得 N/A；B-08 只接受 manifest v3 与有效 `ReleaseVerificationReceipt`，canonical gate digest、validator source digest、事前 `CalibrationRunApproval` 和事后独立 `EligibilityApproval` 四角色签名、role/subject、线路/分类证据及受信 runner 全部闭合；每个 FC2 点另有 `FC2_ADDRESS_TRANSLATION`/`DISCRETE_INPUT_ADDRESS_TRANSLATION` 证据且未复用 FC1 coil evidence；receipt 早于 runtime、最终审批晚于 receipt/evidence/runtime；B-08-T 的外部高水位/freshness 和 B-08-W 的 Windows runtime/key isolation 均通过 Profile 验收，不能由 v2、合成 ELIGIBLE、仅本地 ACL 或旧策略测试替代；B-05、B-06 由实现证据或已批准且可验证的站点约束解决；B-07 与 B-08 必须分别关闭 |
 
 ## Gate 1：断网全新安装
 
@@ -53,11 +53,13 @@
 
 | ID | 级别 | 验收动作 | 通过条件 |
 |---|---|---|---|
-| G4-01 | 必需 | 核对真机点表、地址、完整线路参数和容器设备映射 | 系统能表达并实际应用全部参数，配置与设备协议一致，同一总线无地址冲突且只允许单并发轮询 |
+| G4-01 | 必需 | 核对真机点表、地址、完整线路参数和容器设备映射 | 只接受 manifest v3、绑定 B-08 canonical gate digest、validator source digest、事前 `CalibrationRunApproval` 与事后独立 `EligibilityApproval` 四角色受信签名、逐点 role/subject、设备线路证据、分类校准证据内容、受信 runtime attestation，以及 trust-policy-recognized verifier 签名并由 `EligibilityApproval` 绑定的有效 `ReleaseVerificationReceipt` 运行目标的不可变 manifest；每个 FC2 点必须有专属 `FC2_ADDRESS_TRANSLATION` discrete-input 证据，FC1 coil evidence 不可替代；B-08-T/B-08-W 已关闭，validator 派生全部 `resolved + supported`，系统能表达并实际应用全部参数，配置与设备协议一致，同一总线无地址冲突且只允许单并发轮询；v2 或任一 `unknown/candidate/ambiguous/unsupported` 点禁止进入 canary |
 | G4-02 | 必需 | 按 Profile 批准时长连续采集并抽样与设备侧对账 | 实时、历史和现场读数在批准误差内一致，无持续队列/WAL/outbox 增长 |
 | G4-03 | 必需 | 拔插串口、重启 GW、制造短时断线 | 自动重连，状态变化可见，恢复后不重复入库且缺口符合批准策略 |
 | G4-04 | 必需 | 在隔离台架/仿真链路注入 CRC 错误、截断、重复和乱序帧 | 未向生产总线或未授权真机注入；坏帧被拒绝并计数，后续正常帧可恢复，不触发伪告警或失控 |
 | G4-05 | 条件 | 执行客户批准的真实控制命令 | 设备动作、响应、API 状态和审计一致；急停/回退步骤有效 |
+
+进入 G4-01 前必须另有经审查的 B-09 implementation/canary 规格和不可变现场执行审批，同时满足适用的 B-02/B-04、Profile、manifest v3 候选发布身份、有效 receipt、trust-root freshness、Windows verifier isolation 和回退前置。validator `ELIGIBLE` 不自动授权 canary；设备、固件、点表、Profile、Schema、validator policy、trust policy/high-water、签名人/密钥、证据 role/subject、runner、`ReleaseVerificationReceipt`、OpenSSH 发布根、verifier 工具/runtime 或运行镜像任一身份变化都会使结论失效并要求重验。canary 结果只形成 G4-01/G4-02 证据，不能自动启用持续生产轮询。
 
 ## Gate 5：告警与通知
 

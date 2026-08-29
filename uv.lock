@@ -1464,6 +1464,10 @@ provides-extras = ["serial"]
 name = "ruisheng-iot"
 version = "0.1.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "cryptography" },
+    { name = "pydantic" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1473,7 +1477,6 @@ dev = [
     { name = "mutmut" },
     { name = "mypy" },
     { name = "pre-commit" },
-    { name = "pydantic" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-benchmark" },
@@ -1486,6 +1489,10 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [
+    { name = "cryptography", specifier = ">=46" },
+    { name = "pydantic", specifier = ">=2.7" },
+]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1495,7 +1502,6 @@ dev = [
     { name = "mutmut", specifier = "==3.6.0" },
     { name = "mypy", specifier = ">=1.11" },
     { name = "pre-commit", specifier = ">=3.7" },
-    { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "pytest-benchmark", specifier = ">=5.2.3" },

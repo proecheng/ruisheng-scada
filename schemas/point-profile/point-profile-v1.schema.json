@@ -1,0 +1,1204 @@
+{
+  "$defs": {
+    "AnalogCalibrationProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "engineering_mapping": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EngineeringMapping"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "const": "analog",
+          "title": "Kind",
+          "type": "string"
+        },
+        "method": {
+          "const": "affine_holdout_return",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "method"
+      ],
+      "title": "AnalogCalibrationProfile",
+      "type": "object"
+    },
+    "ApprovalBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string",
+          "x-semantic-validation": "normalized POSIX repository-relative path; no symlinks/reparse points"
+        },
+        "sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 67108864,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "subject_gate_sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Subject Gate Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "subject_gate_sha256"
+      ],
+      "title": "ApprovalBinding",
+      "type": "object"
+    },
+    "BinaryCalibrationProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "active_raw": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Active Raw"
+        },
+        "inactive_raw": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inactive Raw"
+        },
+        "kind": {
+          "const": "binary",
+          "title": "Kind",
+          "type": "string"
+        },
+        "method": {
+          "const": "state_transition",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "method"
+      ],
+      "title": "BinaryCalibrationProfile",
+      "type": "object"
+    },
+    "CalibrationRunApprovalBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string",
+          "x-semantic-validation": "normalized POSIX repository-relative path; no symlinks/reparse points"
+        },
+        "sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 67108864,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "subject_plan_sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Subject Plan Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "subject_plan_sha256"
+      ],
+      "title": "CalibrationRunApprovalBinding",
+      "type": "object"
+    },
+    "Contradiction": {
+      "additionalProperties": false,
+      "properties": {
+        "contradiction_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Contradiction Id",
+          "type": "string"
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolution"
+        },
+        "resolution_evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Resolution Evidence Refs",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "resolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "subject_point_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Subject Point Ids",
+          "type": "array"
+        },
+        "summary": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contradiction_id",
+        "status",
+        "summary"
+      ],
+      "title": "Contradiction",
+      "type": "object"
+    },
+    "CounterCalibrationProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "counts_per_unit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Counts Per Unit"
+        },
+        "kind": {
+          "const": "counter",
+          "title": "Kind",
+          "type": "string"
+        },
+        "method": {
+          "const": "monotonicity_rollover",
+          "title": "Method",
+          "type": "string"
+        },
+        "modulus": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modulus"
+        },
+        "rollover_behavior": {
+          "default": "unknown",
+          "enum": [
+            "unknown",
+            "wrap",
+            "saturate",
+            "reset"
+          ],
+          "title": "Rollover Behavior",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "method"
+      ],
+      "title": "CounterCalibrationProfile",
+      "type": "object"
+    },
+    "DeviceIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "firmware_version": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Firmware Version"
+        },
+        "hardware_revision": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hardware Revision"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "point_map_version": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Point Map Version"
+        },
+        "status": {
+          "enum": [
+            "unknown",
+            "candidate",
+            "ambiguous",
+            "resolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "usb_serial_number": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usb Serial Number"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "DeviceIdentity",
+      "type": "object"
+    },
+    "EngineeringMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "offset": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Offset"
+        },
+        "ratio": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Ratio"
+        }
+      },
+      "required": [
+        "ratio",
+        "offset"
+      ],
+      "title": "EngineeringMapping",
+      "type": "object"
+    },
+    "EvidenceBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "media_type": {
+          "enum": [
+            "application/json",
+            "application/jsonl",
+            "application/octet-stream"
+          ],
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string",
+          "x-semantic-validation": "normalized POSIX repository-relative path; no symlinks/reparse points"
+        },
+        "role": {
+          "enum": [
+            "legacy_source",
+            "raw_observation",
+            "identity",
+            "authoritative_map",
+            "calibration",
+            "reference",
+            "contradiction_resolution",
+            "line_protocol"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 67108864,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "subject_point_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Subject Point Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "evidence_id",
+        "role",
+        "media_type"
+      ],
+      "title": "EvidenceBinding",
+      "type": "object"
+    },
+    "LineProtocol": {
+      "additionalProperties": false,
+      "properties": {
+        "baud_rate": {
+          "anyOf": [
+            {
+              "enum": [
+                1200,
+                2400,
+                4800,
+                9600,
+                19200,
+                38400,
+                57600,
+                115200
+              ],
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baud Rate"
+        },
+        "data_bits": {
+          "anyOf": [
+            {
+              "const": 8,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Bits"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "parity": {
+          "anyOf": [
+            {
+              "enum": [
+                "N",
+                "E",
+                "O"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parity"
+        },
+        "stable_device_path": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stable Device Path"
+        },
+        "status": {
+          "enum": [
+            "unknown",
+            "candidate",
+            "ambiguous",
+            "resolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "stop_bits": {
+          "anyOf": [
+            {
+              "enum": [
+                1,
+                2
+              ],
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stop Bits"
+        },
+        "unit_id": {
+          "anyOf": [
+            {
+              "maximum": 247,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit Id"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "LineProtocol",
+      "type": "object"
+    },
+    "PointEncoding": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_order": {
+          "enum": [
+            "unknown",
+            "big",
+            "little",
+            "not_applicable"
+          ],
+          "title": "Byte Order",
+          "type": "string"
+        },
+        "raw_domain": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawDomain"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "value_type": {
+          "enum": [
+            "unknown",
+            "bit",
+            "u16",
+            "s16",
+            "u32",
+            "s32",
+            "float32",
+            "bcd"
+          ],
+          "title": "Value Type",
+          "type": "string"
+        },
+        "word_order": {
+          "enum": [
+            "unknown",
+            "high_first",
+            "low_first",
+            "not_applicable"
+          ],
+          "title": "Word Order",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value_type",
+        "byte_order",
+        "word_order"
+      ],
+      "title": "PointEncoding",
+      "type": "object"
+    },
+    "PointProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "bit": {
+          "anyOf": [
+            {
+              "maximum": 15,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bit"
+        },
+        "calibration_profile": {
+          "discriminator": {
+            "mapping": {
+              "analog": "#/$defs/AnalogCalibrationProfile",
+              "binary": "#/$defs/BinaryCalibrationProfile",
+              "counter": "#/$defs/CounterCalibrationProfile",
+              "unknown": "#/$defs/UnknownCalibrationProfile"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/UnknownCalibrationProfile"
+            },
+            {
+              "$ref": "#/$defs/AnalogCalibrationProfile"
+            },
+            {
+              "$ref": "#/$defs/BinaryCalibrationProfile"
+            },
+            {
+              "$ref": "#/$defs/CounterCalibrationProfile"
+            }
+          ],
+          "title": "Calibration Profile"
+        },
+        "calibration_status": {
+          "enum": [
+            "unknown",
+            "provisional",
+            "ambiguous",
+            "resolved"
+          ],
+          "title": "Calibration Status",
+          "type": "string"
+        },
+        "encoding": {
+          "$ref": "#/$defs/PointEncoding"
+        },
+        "encoding_status": {
+          "enum": [
+            "unknown",
+            "candidate",
+            "ambiguous",
+            "resolved"
+          ],
+          "title": "Encoding Status",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "function_code": {
+          "enum": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "title": "Function Code",
+          "type": "integer"
+        },
+        "identity_status": {
+          "enum": [
+            "unknown",
+            "candidate",
+            "ambiguous",
+            "resolved"
+          ],
+          "title": "Identity Status",
+          "type": "string"
+        },
+        "implementation_status": {
+          "enum": [
+            "unknown",
+            "unsupported",
+            "supported"
+          ],
+          "title": "Implementation Status",
+          "type": "string"
+        },
+        "point_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Point Id",
+          "type": "string"
+        },
+        "point_name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Point Name",
+          "type": "string"
+        },
+        "register_width": {
+          "anyOf": [
+            {
+              "maximum": 125,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Register Width"
+        },
+        "semantic_status": {
+          "enum": [
+            "unknown",
+            "candidate",
+            "ambiguous",
+            "resolved"
+          ],
+          "title": "Semantic Status",
+          "type": "string"
+        },
+        "start_address": {
+          "maximum": 65535,
+          "minimum": 0,
+          "title": "Start Address",
+          "type": "integer"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "unit_status": {
+          "enum": [
+            "unknown",
+            "candidate",
+            "ambiguous",
+            "resolved"
+          ],
+          "title": "Unit Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "point_id",
+        "point_name",
+        "function_code",
+        "start_address",
+        "identity_status",
+        "semantic_status",
+        "encoding_status",
+        "unit_status",
+        "calibration_status",
+        "implementation_status",
+        "encoding",
+        "calibration_profile"
+      ],
+      "title": "PointProfile",
+      "type": "object"
+    },
+    "ProfilePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "device_identity": {
+          "$ref": "#/$defs/DeviceIdentity"
+        },
+        "line_protocol": {
+          "$ref": "#/$defs/LineProtocol"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/PointProfile"
+          },
+          "minItems": 1,
+          "title": "Points",
+          "type": "array"
+        }
+      },
+      "required": [
+        "device_identity",
+        "line_protocol",
+        "points"
+      ],
+      "title": "ProfilePayload",
+      "type": "object"
+    },
+    "RawDomain": {
+      "additionalProperties": false,
+      "properties": {
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Maximum"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Minimum"
+        }
+      },
+      "required": [
+        "minimum",
+        "maximum"
+      ],
+      "title": "RawDomain",
+      "type": "object"
+    },
+    "ReleaseVerificationReceiptBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string",
+          "x-semantic-validation": "normalized POSIX repository-relative path; no symlinks/reparse points"
+        },
+        "receipt_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Receipt Id",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 67108864,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "receipt_id"
+      ],
+      "title": "ReleaseVerificationReceiptBinding",
+      "type": "object"
+    },
+    "RuntimeEvidenceBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "check_id": {
+          "enum": [
+            "STRICT_VALUE_TYPE_VALIDATION",
+            "SIGNED_DECODE_BOUNDARIES",
+            "FC1_ADDRESS_TRANSLATION",
+            "FC2_ADDRESS_TRANSLATION",
+            "ATOMIC_DISABLED_ONBOARDING",
+            "SHARED_SERIAL_LOCK",
+            "PROFILE_DRY_RUN",
+            "RUNTIME_BUILD_BINDING"
+          ],
+          "title": "Check Id",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string",
+          "x-semantic-validation": "normalized POSIX repository-relative path; no symlinks/reparse points"
+        },
+        "sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 67108864,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "check_id"
+      ],
+      "title": "RuntimeEvidenceBinding",
+      "type": "object"
+    },
+    "RuntimeTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "alembic_head": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Alembic Head",
+          "type": "string"
+        },
+        "api_image_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Api Image Digest",
+          "type": "string"
+        },
+        "candidate_id": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+          "title": "Candidate Id",
+          "type": "string"
+        },
+        "gateway_image_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Gateway Image Digest",
+          "type": "string"
+        },
+        "logical_identity": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Logical Identity",
+          "type": "string"
+        },
+        "release_verification_receipt": {
+          "$ref": "#/$defs/ReleaseVerificationReceiptBinding"
+        },
+        "source_commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Source Commit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_commit",
+        "candidate_id",
+        "logical_identity",
+        "api_image_digest",
+        "gateway_image_digest",
+        "alembic_head",
+        "release_verification_receipt"
+      ],
+      "title": "RuntimeTarget",
+      "type": "object"
+    },
+    "UnknownCalibrationProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "unknown",
+          "title": "Kind",
+          "type": "string"
+        },
+        "method": {
+          "const": "unknown",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "method"
+      ],
+      "title": "UnknownCalibrationProfile",
+      "type": "object"
+    }
+  },
+  "$id": "https://ruisheng.local/schemas/point-profile/point-profile-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "approval_binding": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApprovalBinding"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "artifact_type": {
+      "const": "ruisheng.device-point-profile",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "calibration_run_approval_binding": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CalibrationRunApprovalBinding"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "contradictions": {
+      "items": {
+        "$ref": "#/$defs/Contradiction"
+      },
+      "title": "Contradictions",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "evidence_bindings": {
+      "items": {
+        "$ref": "#/$defs/EvidenceBinding"
+      },
+      "minItems": 1,
+      "title": "Evidence Bindings",
+      "type": "array"
+    },
+    "payload_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Payload Sha256",
+      "type": "string"
+    },
+    "policy_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Policy Sha256"
+    },
+    "profile_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Profile Id",
+      "type": "string"
+    },
+    "profile_payload": {
+      "$ref": "#/$defs/ProfilePayload"
+    },
+    "runtime_evidence": {
+      "items": {
+        "$ref": "#/$defs/RuntimeEvidenceBinding"
+      },
+      "title": "Runtime Evidence",
+      "type": "array"
+    },
+    "runtime_target": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeTarget"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Schema Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "semantic_validator": {
+      "const": "ruisheng.device-point-profile-validator/v5",
+      "title": "Semantic Validator",
+      "type": "string"
+    },
+    "trust_root_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Trust Root Sha256"
+    },
+    "validator_source_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Validator Source Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "profile_id",
+    "created_at",
+    "semantic_validator",
+    "validator_source_sha256",
+    "policy_sha256",
+    "trust_root_sha256",
+    "schema_sha256",
+    "profile_payload",
+    "payload_sha256",
+    "evidence_bindings"
+  ],
+  "title": "DevicePointProfile",
+  "type": "object",
+  "x-semantic-validation-contract": "JSON Schema is structural only; eligibility requires the referenced semantic validator, an external trust policy, nofollow single-read artifact verification, and policy-bound signatures.",
+  "x-semantic-validation-required": true,
+  "x-semantic-validator": "ruisheng.device-point-profile-validator/v5"
+}

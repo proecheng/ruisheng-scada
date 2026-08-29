@@ -8,24 +8,34 @@ import binascii
 import ctypes
 import gzip
 import hashlib
+import importlib
+import io
 import json
 import os
 import platform
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import tempfile
 import threading
 import uuid
+import zlib
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol, cast
+
+try:
+    import winreg
+except ImportError:  # pragma: no cover - Windows-only system Git discovery
+    winreg = None  # type: ignore[assignment]
 
 CANDIDATE_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}\Z")
 PLATFORM_PATTERN = re.compile(
@@ -33,6 +43,8 @@ PLATFORM_PATTERN = re.compile(
 )
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 SOURCE_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
+GIT_OBJECT_ID_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+GIT_SHA1_OBJECT_ID_LENGTH = 40
 
 COMPONENTS = ("postgres", "redis", "api", "gw", "web")
 SERVICES = ("postgres", "redis", "migrate", "api", "gw", "web")
@@ -45,7 +57,7 @@ IMAGE_ENV_KEYS = {
     "gw": "GW_IMAGE",
     "web": "WEB_IMAGE",
 }
-FIXED_PACKAGE_FILES = {
+FIXED_PACKAGE_FILES_V2 = {
     ".env.prod.example",
     "MANIFEST.json",
     "MANIFEST.md",
@@ -70,6 +82,23 @@ FIXED_PACKAGE_FILES = {
     "verify-candidate.ps1",
     "verify-candidate.sh",
 }
+QUALIFICATION_TOOLCHAIN_ARCHIVE = "qualification-toolchain.tar.gz"
+QUALIFICATION_TOOLCHAIN_FORMAT = "tar+gzip"
+QUALIFICATION_TOOLCHAIN_MANIFEST = "qualification-toolchain-manifest.json"
+QUALIFICATION_TOOLCHAIN_MEMBERS = (
+    "tools/validate_device_point_profile.py",
+    "schemas/point-profile/point-profile-v1.schema.json",
+    "tools/release_artifacts.py",
+    "tools/release_verification_receipt.py",
+    "pyproject.toml",
+    "uv.lock",
+)
+QUALIFICATION_TOOLCHAIN_ARTIFACT_TYPE = "ruisheng.qualification-toolchain"
+QUALIFICATION_TOOLCHAIN_SCHEMA_VERSION = 1
+SEMANTIC_VALIDATOR_ID = "ruisheng.device-point-profile-validator/v5"
+FIXED_PACKAGE_FILES = FIXED_PACKAGE_FILES_V2 | {
+    QUALIFICATION_TOOLCHAIN_ARCHIVE,
+}
 HASHED_FIXED_FILES = FIXED_PACKAGE_FILES - {"SHA256SUMS", "SHA256SUMS.sig"}
 
 PUBLISHER = "ruisheng-release"
@@ -83,12 +112,453 @@ FINGERPRINT_FILE = "release-key-fingerprint"
 FINGERPRINT_PATTERN = re.compile(r"SHA256:[A-Za-z0-9+/]{43}\Z")
 SSH_STRING_LENGTH_BYTES = 4
 ED25519_PUBLIC_KEY_BYTES = 32
-MANIFEST_SCHEMA_VERSION = 2
+MANIFEST_SCHEMA_VERSION = 3
+LEGACY_MANIFEST_SCHEMA_VERSION = 2
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = (LEGACY_MANIFEST_SCHEMA_VERSION, MANIFEST_SCHEMA_VERSION)
 SSHSIG_ARMOR_LINE_WIDTH = 70
+MAX_QUALIFICATION_MEMBER_BYTES = 64 * 1024 * 1024
+MAX_QUALIFICATION_RUNTIME_MANIFEST_BYTES = 4 * 1024 * 1024
+MAX_RELEASE_JSON_BYTES = 4 * 1024 * 1024
+MAX_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS = tarfile.RECORDSIZE // tarfile.BLOCKSIZE + 1
+MIN_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS = 2
+QUALIFICATION_USTAR_NAME_BYTES = 100
+MAX_QUALIFICATION_TAR_BYTES = (
+    (len(QUALIFICATION_TOOLCHAIN_MEMBERS) + 1) * tarfile.BLOCKSIZE
+    + len(QUALIFICATION_TOOLCHAIN_MEMBERS) * MAX_QUALIFICATION_MEMBER_BYTES
+    + MAX_RELEASE_JSON_BYTES
+    + MAX_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS * tarfile.BLOCKSIZE
+)
+MAX_QUALIFICATION_GZIP_BYTES = (
+    MAX_QUALIFICATION_TAR_BYTES + MAX_QUALIFICATION_TAR_BYTES // 100 + 64 * 1024
+)
+MAX_DOCKER_ARCHIVE_MEMBERS = 32_768
+MAX_DOCKER_ARCHIVE_MEMBER_BYTES = 8 * 1024 * 1024 * 1024
+MAX_DOCKER_ARCHIVE_TOTAL_BYTES = 32 * 1024 * 1024 * 1024
+MAX_DOCKER_DESCRIPTOR_REFERENCES = 32_768
+MAX_DOCKER_METADATA_BYTES = 64 * 1024 * 1024
+MAX_QUALIFICATION_RUNTIME_FILES = 32_768
+MAX_QUALIFICATION_RUNTIME_FILE_BYTES = 512 * 1024 * 1024
+QUALIFICATION_ENTRYPOINTS = {
+    "receipt": "tools/release_verification_receipt.py",
+    "validator": "tools/validate_device_point_profile.py",
+}
+QUALIFICATION_RUNTIME_ARTIFACT_TYPE = "ruisheng.qualification-runtime"
+QUALIFICATION_RUNTIME_SCHEMA_VERSION = 1
+QUALIFICATION_RUNTIME_PYTHON_VERSION = "3.11"
+QUALIFICATION_RUNTIME_MANIFEST = "qualification-runtime-manifest.json"
+POSIX_QUALIFICATION_RUNTIME_ROOT = Path("/opt/ruisheng/qualification-runtime")
+POSIX_QUALIFICATION_RUNTIME_PYTHON = "bin/python3.11"
+POSIX_QUALIFICATION_RUNTIME_DEPENDENCIES = "lib/python3.11/site-packages"
+QUALIFICATION_ALLOWED_EXIT_CODES = {
+    "receipt": frozenset({0}),
+    "validator": frozenset({0, 2, 3}),
+}
+WINDOWS_GIT_EXECUTABLE_LINKS = (
+    "mingw64/bin/git.exe",
+    "mingw64/bin/git-receive-pack.exe",
+    "mingw64/bin/git-upload-archive.exe",
+    "mingw64/bin/git-upload-pack.exe",
+)
+WINDOWS_GIT_RUNTIME_SHA256 = {
+    "mingw64/bin/git.exe": "fc0f1cae1304fcdcf4d0749f421c5ed21471efc856301f92f56d4b844be84363",
+    "mingw64/bin/libiconv-2.dll": "ff31fa811f9c07cc7fdaa68c9e8bca3a7b4fdf6e0a079a58175ea58ba139c7ae",
+    "mingw64/bin/libintl-8.dll": "7744fde3df3320fda0e3b599b4aa5349b1281f93d1e5c52865a52d0d3e4a7d39",
+    "mingw64/bin/libpcre2-8-0.dll": "c135a87ed0f11eae8ffc4cb469671ff0b3f5d71fab5fb024e9b1e7241ca25b52",
+    "mingw64/bin/libwinpthread-1.dll": "e271f374468d584905afcdf7da96a6adeb5ee15702b39869e2003b0f102f20c4",
+    "mingw64/bin/zlib1.dll": "cb7ab3788d10940df874acd97b1821bbb5ee4a91f3eec11982bb5bf7a3c96443",
+}
+DOCKER_ENVIRONMENT_KEYS = frozenset(
+    {
+        "DOCKER_CONFIG",
+        "DOCKER_CLI_PLUGIN_EXTRA_DIRS",
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "XDG_CONFIG_HOME",
+    }
+)
+
+WINDOWS_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+WINDOWS_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+WINDOWS_SYNCHRONIZE = 0x00100000
+WINDOWS_GENERIC_READ = 0x80000000
+WINDOWS_GENERIC_WRITE = 0x40000000
+WINDOWS_OPEN_ALWAYS = 4
+WINDOWS_FILE_ATTRIBUTE_NORMAL = 0x00000080
+WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+
+
+class _WindowsIoCounters(ctypes.Structure):
+    _fields_ = [
+        ("read_operation_count", ctypes.c_uint64),
+        ("write_operation_count", ctypes.c_uint64),
+        ("other_operation_count", ctypes.c_uint64),
+        ("read_transfer_count", ctypes.c_uint64),
+        ("write_transfer_count", ctypes.c_uint64),
+        ("other_transfer_count", ctypes.c_uint64),
+    ]
+
+
+class _WindowsJobBasicLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("per_process_user_time_limit", ctypes.c_int64),
+        ("per_job_user_time_limit", ctypes.c_int64),
+        ("limit_flags", ctypes.c_uint32),
+        ("minimum_working_set_size", ctypes.c_size_t),
+        ("maximum_working_set_size", ctypes.c_size_t),
+        ("active_process_limit", ctypes.c_uint32),
+        ("affinity", ctypes.c_size_t),
+        ("priority_class", ctypes.c_uint32),
+        ("scheduling_class", ctypes.c_uint32),
+    ]
+
+
+class _WindowsJobExtendedLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("basic_limit_information", _WindowsJobBasicLimitInformation),
+        ("io_info", _WindowsIoCounters),
+        ("process_memory_limit", ctypes.c_size_t),
+        ("job_memory_limit", ctypes.c_size_t),
+        ("peak_process_memory_used", ctypes.c_size_t),
+        ("peak_job_memory_used", ctypes.c_size_t),
+    ]
+
+
+def _windows_kernel32() -> Any:
+    return ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _close_windows_native_handle(handle: int) -> None:
+    kernel32 = _windows_kernel32()
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+    if not close_handle(ctypes.c_void_p(handle)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _create_windows_kill_on_close_job() -> int:
+    kernel32 = _windows_kernel32()
+    create_job = kernel32.CreateJobObjectW
+    create_job.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+    create_job.restype = ctypes.c_void_p
+    handle = create_job(None, None)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    job_handle = int(handle)
+    information = _WindowsJobExtendedLimitInformation()
+    information.basic_limit_information.limit_flags = WINDOWS_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    set_information = kernel32.SetInformationJobObject
+    set_information.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    ]
+    set_information.restype = ctypes.c_int
+    if not set_information(
+        ctypes.c_void_p(job_handle),
+        WINDOWS_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    ):
+        error = ctypes.WinError(ctypes.get_last_error())
+        _close_windows_native_handle(job_handle)
+        raise error
+    return job_handle
+
+
+def _create_windows_process_gate() -> tuple[int, str]:
+    name = f"Local\\RuishengQualification-{uuid.uuid4()}"
+    kernel32 = _windows_kernel32()
+    create_event = kernel32.CreateEventW
+    create_event.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_wchar_p]
+    create_event.restype = ctypes.c_void_p
+    handle = create_event(None, 1, 0, name)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(handle), name
+
+
+def _assign_windows_process_to_job(job_handle: int, process: subprocess.Popen[bytes]) -> None:
+    process_handle = getattr(process, "_handle", None)
+    if process_handle is None:  # pragma: no cover - Windows subprocess invariant
+        raise OSError("isolated process has no native handle")
+    kernel32 = _windows_kernel32()
+    assign = kernel32.AssignProcessToJobObject
+    assign.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    assign.restype = ctypes.c_int
+    if not assign(ctypes.c_void_p(job_handle), ctypes.c_void_p(int(process_handle))):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _signal_windows_process_gate(gate_handle: int) -> None:
+    kernel32 = _windows_kernel32()
+    set_event = kernel32.SetEvent
+    set_event.argtypes = [ctypes.c_void_p]
+    set_event.restype = ctypes.c_int
+    if not set_event(ctypes.c_void_p(gate_handle)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _terminate_isolated_process_tree(
+    process: subprocess.Popen[bytes], *, job_handle: int | None
+) -> None:
+    cleanup_error: OSError | None = None
+    if os.name == "nt":
+        if job_handle is not None:
+            try:
+                _close_windows_native_handle(job_handle)
+            except OSError as error:
+                cleanup_error = error
+        if process.poll() is None:
+            try:
+                process.kill()
+            except OSError as error:
+                cleanup_error = cleanup_error or error
+    else:
+        kill_process_group = getattr(os, "killpg", None)
+        sigkill = getattr(signal, "SIGKILL", None)
+        if kill_process_group is None or sigkill is None:  # pragma: no cover - POSIX invariant
+            raise ReleaseArtifactError("POSIX process-group termination is unavailable")
+        try:
+            kill_process_group(process.pid, sigkill)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            cleanup_error = error
+            if process.poll() is None:
+                with suppress(OSError):
+                    process.kill()
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired as error:
+        raise ReleaseArtifactError("isolated command process tree could not be reaped") from error
+    if cleanup_error is not None:
+        raise ReleaseArtifactError(
+            f"cannot terminate isolated command process tree: {cleanup_error}"
+        ) from cleanup_error
+
+
+def candidate_tag_lock_name(candidate_id: str) -> str:
+    return f".{candidate_id}.candidate-tags.lock"
+
+
+@contextmanager
+def candidate_tag_operation_lock(lock_directory: Path, candidate_id: str) -> Iterator[None]:
+    lock_path = lock_directory / candidate_tag_lock_name(candidate_id)
+    if os.name == "nt":
+        kernel32 = _windows_kernel32()
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
+        create_file.restype = ctypes.c_void_p
+        handle = create_file(
+            os.fspath(lock_path),
+            WINDOWS_GENERIC_READ | WINDOWS_GENERIC_WRITE,
+            0,
+            None,
+            WINDOWS_OPEN_ALWAYS,
+            WINDOWS_FILE_ATTRIBUTE_NORMAL | WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        if handle in (None, ctypes.c_void_p(-1).value):
+            raise ReleaseArtifactError(f"candidate tag operation is already active: {candidate_id}")
+        lock_handle = int(handle)
+        try:
+            observed = os.stat(lock_path, follow_symlinks=False)
+            if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                raise ReleaseArtifactError(
+                    "candidate tag operation lock is not a private regular file"
+                )
+            yield
+        finally:
+            _close_windows_native_handle(lock_handle)
+        return
+
+    directory_descriptor: int | None = None
+    lock_descriptor: int | None = None
+    try:
+        directory_descriptor = os.open(
+            lock_directory,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        lock_descriptor = os.open(
+            lock_path.name,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+        observed = os.fstat(lock_descriptor)
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_nlink != 1
+            or observed.st_uid != os.geteuid()  # type: ignore[attr-defined]
+            or stat.S_IMODE(observed.st_mode) & 0o077
+        ):
+            raise ReleaseArtifactError("candidate tag operation lock is not a private regular file")
+        fcntl = importlib.import_module("fcntl")
+        try:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ReleaseArtifactError(
+                f"candidate tag operation is already active: {candidate_id}"
+            ) from error
+        yield
+    except ReleaseArtifactError:
+        raise
+    except OSError as error:
+        raise ReleaseArtifactError(
+            f"candidate tag operation cannot be locked: {candidate_id}: {error}"
+        ) from error
+    finally:
+        if lock_descriptor is not None:
+            os.close(lock_descriptor)
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+
+
+def system_candidate_tag_lock_root() -> Path:
+    lock_root = (
+        Path(r"C:\ProgramData\Ruisheng\locks")
+        if os.name == "nt"
+        else Path("/var/lib/ruisheng/locks")
+    )
+    try:
+        lock_root.mkdir(mode=0o700, exist_ok=True)
+    except OSError as error:
+        raise ReleaseArtifactError(
+            f"cannot create host-global candidate tag lock root: {error}"
+        ) from error
+    return _validate_atomic_publish_root(lock_root.absolute())
+
+
+def _is_docker_executable(value: str) -> bool:
+    return Path(value).name.casefold() in {"docker", "docker.exe"}
+
+
+def _is_git_executable(value: str) -> bool:
+    return Path(value).name.casefold() in {"git", "git.exe"}
+
+
+def _local_docker_endpoint() -> str:
+    return "npipe:////./pipe/docker_engine" if os.name == "nt" else "unix:///var/run/docker.sock"
+
+
+def _system_docker() -> Path:
+    path = (
+        Path(r"C:\Program Files\Docker\Docker\resources\bin\docker.exe")
+        if os.name == "nt"
+        else Path("/usr/bin/docker")
+    )
+    if path.is_symlink() or not path.is_file():
+        raise ReleaseArtifactError(f"fixed system Docker CLI is unavailable: {path}")
+    _validate_fixed_system_tool(path)
+    if os.name == "nt":
+        _validate_windows_fixed_system_tool_permissions(path)
+    return path
+
+
+def _system_git() -> Path:  # noqa: PLR0912
+    if os.name == "nt":
+        assert winreg is not None
+        try:
+            install_roots: set[str] = set()
+            access_modes = (
+                winreg.KEY_READ | getattr(winreg, "KEY_WOW64_64KEY", 0),
+                winreg.KEY_READ | getattr(winreg, "KEY_WOW64_32KEY", 0),
+            )
+            for access in access_modes:
+                try:
+                    with winreg.OpenKey(
+                        winreg.HKEY_LOCAL_MACHINE,
+                        r"SOFTWARE\GitForWindows",
+                        0,
+                        access,
+                    ) as key:
+                        value, value_type = winreg.QueryValueEx(key, "InstallPath")
+                except FileNotFoundError:
+                    continue
+                if value_type != winreg.REG_SZ or not isinstance(value, str) or not value.strip():
+                    raise ReleaseArtifactError(
+                        "machine GitForWindows InstallPath registry value is invalid"
+                    )
+                install_roots.add(os.path.normcase(os.path.abspath(value.strip())))
+        except OSError as error:
+            raise ReleaseArtifactError(
+                f"cannot resolve machine GitForWindows installation: {error}"
+            ) from error
+        if len(install_roots) != 1:
+            raise ReleaseArtifactError("machine GitForWindows installation is missing or ambiguous")
+        install_root = Path(next(iter(install_roots)))
+        path = install_root / WINDOWS_GIT_EXECUTABLE_LINKS[0]
+        link_metadata = path.stat(follow_symlinks=False)
+        if link_metadata.st_nlink != len(WINDOWS_GIT_EXECUTABLE_LINKS):
+            raise ReleaseArtifactError(
+                "fixed system Git executable hard-link set has an unexpected size"
+            )
+        for relative in WINDOWS_GIT_EXECUTABLE_LINKS:
+            linked = install_root / relative
+            if linked.is_symlink() or not linked.is_file():
+                raise ReleaseArtifactError(
+                    f"fixed system Git executable link is unavailable: {linked}"
+                )
+            if not os.path.samestat(link_metadata, linked.stat(follow_symlinks=False)):
+                raise ReleaseArtifactError(
+                    f"fixed system Git executable hard-link set is inconsistent: {linked}"
+                )
+        for relative, expected_digest in WINDOWS_GIT_RUNTIME_SHA256.items():
+            runtime_file = install_root / relative
+            if runtime_file.is_symlink() or not runtime_file.is_file():
+                raise ReleaseArtifactError(
+                    f"fixed system Git runtime file is unavailable: {runtime_file}"
+                )
+            if relative == WINDOWS_GIT_EXECUTABLE_LINKS[0]:
+                expected_links = len(WINDOWS_GIT_EXECUTABLE_LINKS)
+            else:
+                counterpart = install_root / relative.replace(
+                    "mingw64/bin/", "mingw64/libexec/git-core/", 1
+                )
+                if (
+                    counterpart.is_symlink()
+                    or not counterpart.is_file()
+                    or not os.path.samestat(
+                        runtime_file.stat(follow_symlinks=False),
+                        counterpart.stat(follow_symlinks=False),
+                    )
+                ):
+                    raise ReleaseArtifactError(
+                        f"fixed system Git runtime hard-link set is inconsistent: {runtime_file}"
+                    )
+                expected_links = 2
+            if _sha256_stable_file(runtime_file, expected_links=expected_links) != expected_digest:
+                raise ReleaseArtifactError(
+                    f"fixed system Git runtime file is not authenticated: {runtime_file}"
+                )
+            _validate_windows_fixed_system_tool_permissions(runtime_file)
+    else:
+        path = Path("/usr/bin/git")
+    if path.is_symlink() or not path.is_file():
+        raise ReleaseArtifactError(f"fixed system Git CLI is unavailable: {path}")
+    _validate_fixed_system_tool(path)
+    return path
 
 
 class ReleaseArtifactError(RuntimeError):
     """Raised when a candidate violates the release artifact contract."""
+
+
+@dataclass(frozen=True)
+class CommandOutcome:
+    stdout: str
+    stderr: str
+    returncode: int
 
 
 class Runner(Protocol):
@@ -99,7 +569,21 @@ class Runner(Protocol):
         cwd: Path,
         env: Mapping[str, str] | None = None,
         input_bytes: bytes | None = None,
+        timeout_seconds: float | None = None,
+        inherit_environment: bool = True,
     ) -> str: ...
+
+    def run_outcome(
+        self,
+        args: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_bytes: bytes | None = None,
+        timeout_seconds: float | None = None,
+        inherit_environment: bool = True,
+        isolate_process_tree: bool = False,
+    ) -> CommandOutcome: ...
 
     def image_exists(self, image: str, *, cwd: Path) -> bool: ...
 
@@ -109,6 +593,59 @@ class Runner(Protocol):
 class SubprocessRunner:
     """Production command runner; tests inject a deterministic fake."""
 
+    def __init__(self) -> None:
+        self._docker_config_owner: tempfile.TemporaryDirectory[str] | None = None
+
+    def _docker_config(self) -> Path:
+        if self._docker_config_owner is None:
+            self._docker_config_owner = tempfile.TemporaryDirectory(
+                prefix="ruisheng-docker-client-"
+            )
+            directory = Path(self._docker_config_owner.name)
+            os.chmod(directory, 0o700)
+            config = directory / "config.json"
+            config.write_text("{}\n", encoding="ascii", newline="\n")
+            os.chmod(config, 0o600)
+        return Path(self._docker_config_owner.name)
+
+    def _command(self, args: Sequence[str]) -> list[str]:
+        command = list(args)
+        if not command:
+            return command
+        if _is_docker_executable(command[0]):
+            return [
+                str(_system_docker()),
+                "--host",
+                _local_docker_endpoint(),
+                "--config",
+                str(self._docker_config()),
+                *command[1:],
+            ]
+        if _is_git_executable(command[0]):
+            return [
+                str(_system_git()),
+                "--no-replace-objects",
+                "-c",
+                "core.fsmonitor=false",
+                *command[1:],
+            ]
+        return command
+
+    @staticmethod
+    def _command_environment() -> dict[str, str]:
+        command_env = os.environ.copy()
+        for key in DOCKER_ENVIRONMENT_KEYS:
+            command_env.pop(key, None)
+        return command_env
+
+    @staticmethod
+    def _git_command_environment() -> dict[str, str]:
+        command_env = {
+            key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")
+        }
+        command_env["GIT_NO_REPLACE_OBJECTS"] = "1"
+        return command_env
+
     def run(
         self,
         args: Sequence[str],
@@ -116,39 +653,167 @@ class SubprocessRunner:
         cwd: Path,
         env: Mapping[str, str] | None = None,
         input_bytes: bytes | None = None,
+        timeout_seconds: float | None = None,
+        inherit_environment: bool = True,
     ) -> str:
-        command_env = os.environ.copy()
+        outcome = self.run_outcome(
+            args,
+            cwd=cwd,
+            env=env,
+            input_bytes=input_bytes,
+            timeout_seconds=timeout_seconds,
+            inherit_environment=inherit_environment,
+        )
+        if outcome.returncode != 0:
+            details = (outcome.stderr or outcome.stdout or "no output").strip()
+            raise ReleaseArtifactError(
+                f"command failed ({outcome.returncode}): {' '.join(self._command(args))}: {details}"
+            )
+        return outcome.stdout.strip()
+
+    def run_outcome(
+        self,
+        args: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_bytes: bytes | None = None,
+        timeout_seconds: float | None = None,
+        inherit_environment: bool = True,
+        isolate_process_tree: bool = False,
+    ) -> CommandOutcome:
+        command = self._command(args)
+        is_docker = bool(args) and _is_docker_executable(args[0])
+        is_git = bool(args) and _is_git_executable(args[0])
+        if is_docker:
+            command_env = self._command_environment() if inherit_environment else {}
+        elif is_git:
+            command_env = self._git_command_environment() if inherit_environment else {}
+        else:
+            command_env = os.environ.copy() if inherit_environment else {}
         if env:
-            command_env.update(env)
+            command_env.update(
+                {
+                    key: value
+                    for key, value in env.items()
+                    if (
+                        (not is_docker or key.upper() not in DOCKER_ENVIRONMENT_KEYS)
+                        and (not is_git or not key.upper().startswith("GIT_"))
+                    )
+                }
+            )
         try:
+            if isolate_process_tree:
+                return self._run_isolated_outcome(
+                    command,
+                    cwd=cwd,
+                    env=command_env,
+                    input_bytes=input_bytes,
+                    timeout_seconds=600 if timeout_seconds is None else timeout_seconds,
+                )
             result = subprocess.run(
-                list(args),
+                command,
                 cwd=cwd,
                 env=command_env,
-                check=True,
+                check=False,
                 capture_output=True,
                 input=input_bytes,
-                timeout=600,
+                timeout=600 if timeout_seconds is None else timeout_seconds,
             )
         except FileNotFoundError as error:
-            raise ReleaseArtifactError(f"required command not found: {args[0]}") from error
+            raise ReleaseArtifactError(f"required command not found: {command[0]}") from error
         except subprocess.TimeoutExpired as error:
-            raise ReleaseArtifactError(f"command timed out: {' '.join(args)}") from error
-        except subprocess.CalledProcessError as error:
-            details = error.stderr or error.stdout or b"no output"
-            if isinstance(details, bytes):
-                details = details.decode("utf-8", errors="replace")
-            details = details.strip()
-            raise ReleaseArtifactError(
-                f"command failed ({error.returncode}): {' '.join(args)}: {details}"
-            ) from error
-        return result.stdout.decode("utf-8", errors="replace").strip()
+            raise ReleaseArtifactError(f"command timed out: {' '.join(command)}") from error
+        return CommandOutcome(
+            stdout=result.stdout.decode("utf-8", errors="replace"),
+            stderr=result.stderr.decode("utf-8", errors="replace"),
+            returncode=result.returncode,
+        )
+
+    @staticmethod
+    def _run_isolated_outcome(  # noqa: PLR0912, PLR0915
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str],
+        input_bytes: bytes | None,
+        timeout_seconds: float,
+    ) -> CommandOutcome:
+        if input_bytes is not None:
+            raise ReleaseArtifactError("isolated qualification does not accept standard input")
+        with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+            job_handle: int | None = None
+            gate_handle: int | None = None
+            process: subprocess.Popen[bytes] | None = None
+            timed_out = False
+            command_env = dict(env)
+            try:
+                if os.name == "nt":
+                    job_handle = _create_windows_kill_on_close_job()
+                    gate_handle, gate_name = _create_windows_process_gate()
+                    command_env["RUISHENG_PROCESS_JOB_GATE"] = gate_name
+                process = subprocess.Popen(
+                    command,
+                    cwd=cwd,
+                    env=command_env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    start_new_session=os.name != "nt",
+                )
+                if os.name == "nt":
+                    assert job_handle is not None and gate_handle is not None
+                    _assign_windows_process_to_job(job_handle, process)
+                    _signal_windows_process_gate(gate_handle)
+                try:
+                    process.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+            except FileNotFoundError:
+                raise
+            except OSError as error:
+                raise ReleaseArtifactError(
+                    f"cannot start isolated command: {' '.join(command)}: {error}"
+                ) from error
+            finally:
+                cleanup_error: BaseException | None = None
+                if process is not None:
+                    owned_job_handle = job_handle
+                    job_handle = None
+                    try:
+                        _terminate_isolated_process_tree(process, job_handle=owned_job_handle)
+                    except BaseException as error:
+                        cleanup_error = error
+                if gate_handle is not None:
+                    try:
+                        _close_windows_native_handle(gate_handle)
+                    except BaseException as error:
+                        cleanup_error = cleanup_error or error
+                if job_handle is not None:
+                    try:
+                        _close_windows_native_handle(job_handle)
+                    except BaseException as error:
+                        cleanup_error = cleanup_error or error
+                if cleanup_error is not None:
+                    raise cleanup_error
+
+            if timed_out:
+                raise ReleaseArtifactError(f"command timed out: {' '.join(command)}")
+            assert process is not None
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            return CommandOutcome(
+                stdout=stdout_file.read().decode("utf-8", errors="replace"),
+                stderr=stderr_file.read().decode("utf-8", errors="replace"),
+                returncode=process.returncode,
+            )
 
     def image_exists(self, image: str, *, cwd: Path) -> bool:
         try:
             result = subprocess.run(
-                ["docker", "image", "inspect", image, "--format", "{{json .Id}}"],
+                self._command(["docker", "image", "inspect", image, "--format", "{{json .Id}}"]),
                 cwd=cwd,
+                env=self._command_environment(),
                 check=False,
                 capture_output=True,
                 text=True,
@@ -175,8 +840,9 @@ class SubprocessRunner:
         try:
             with tempfile.TemporaryFile() as stderr_file:
                 process = subprocess.Popen(
-                    ["docker", "image", "save", image],
+                    self._command(["docker", "image", "save", image]),
                     cwd=cwd,
+                    env=self._command_environment(),
                     stdout=subprocess.PIPE,
                     stderr=stderr_file,
                 )
@@ -246,6 +912,25 @@ class ImageArtifact:
 
 
 @dataclass(frozen=True)
+class ArtifactIdentity:
+    path: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class QualificationToolchainDescriptor:
+    path: str
+    sha256: str
+    format: str
+    semantic_validator: str
+    schema: ArtifactIdentity
+    validator: ArtifactIdentity
+    producer: ArtifactIdentity
+    receipt_producer: ArtifactIdentity
+    toolchain_manifest: ArtifactIdentity
+
+
+@dataclass(frozen=True)
 class CandidateManifest:
     schema_version: int
     candidate_id: str
@@ -258,9 +943,13 @@ class CandidateManifest:
     tools: dict[str, str]
     authenticity: dict[str, str]
     images: tuple[ImageArtifact, ...]
+    qualification_toolchain: QualificationToolchainDescriptor | None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        if self.qualification_toolchain is None:
+            del value["qualification_toolchain"]
+        return value
 
 
 @dataclass(frozen=True)
@@ -378,13 +1067,110 @@ def _validate_fixed_system_tool(path: Path) -> None:
                 )
 
 
+WINDOWS_FIXED_SYSTEM_TOOL_VALIDATOR = r"""
+$ErrorActionPreference = "Stop"
+$current = Get-Item -Force -LiteralPath $env:RUISHENG_FIXED_SYSTEM_TOOL
+$allowedSids = @(
+    "S-1-5-18",
+    "S-1-5-32-544",
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+) | Select-Object -Unique
+$directUnsafeRights = [Security.AccessControl.FileSystemRights]::AppendData -bor
+    [Security.AccessControl.FileSystemRights]::WriteData -bor
+    [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+    [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+    [Security.AccessControl.FileSystemRights]::Delete -bor
+    [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+    [Security.AccessControl.FileSystemRights]::TakeOwnership
+$ancestorUnsafeRights = [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+    [Security.AccessControl.FileSystemRights]::Delete -bor
+    [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+    [Security.AccessControl.FileSystemRights]::TakeOwnership
+$isDirect = $true
+while ($null -ne $current) {
+    if (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "fixed system tool path contains a reparse point: $($current.FullName)"
+    }
+    $acl = Get-Acl -LiteralPath $current.FullName
+    try {
+        $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    } catch {
+        throw "fixed system tool path has an unresolvable owner: $($current.FullName)"
+    }
+    if ($ownerSid -notin $allowedSids) {
+        throw "fixed system tool path has an unapproved owner: $($current.FullName)"
+    }
+    $unsafeRights = if ($isDirect) { $directUnsafeRights } else { $ancestorUnsafeRights }
+    foreach ($rule in $acl.Access) {
+        if (($rule.PropagationFlags -band
+                [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0 -or
+            $rule.AccessControlType -ne "Allow" -or
+            ($rule.FileSystemRights -band $unsafeRights) -eq 0) {
+            continue
+        }
+        try {
+            $sid = $rule.IdentityReference.Translate(
+                [Security.Principal.SecurityIdentifier]
+            ).Value
+        } catch {
+            throw "fixed system tool path has an unresolvable replacement identity: $($current.FullName)"
+        }
+        if ($sid -notin $allowedSids) {
+            throw "fixed system tool path permits replacement by an unapproved identity: $($current.FullName)"
+        }
+    }
+    $isDirect = $false
+    $current = $current.Parent
+}
+"""
+
+
+def _windows_system_directory() -> Path:
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+    if length <= 0 or length >= len(buffer):
+        raise ReleaseArtifactError("cannot resolve the Windows system directory")
+    return Path(buffer.value)
+
+
+def _validate_windows_fixed_system_tool_permissions(path: Path) -> None:
+    system_directory = _windows_system_directory()
+    powershell = system_directory / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if powershell.is_symlink() or not powershell.is_file():
+        raise ReleaseArtifactError(f"fixed system PowerShell is unavailable: {powershell}")
+    windows_root = system_directory.parent
+    result = subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            WINDOWS_FIXED_SYSTEM_TOOL_VALIDATOR,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        env={
+            "COMSPEC": str(system_directory / "cmd.exe"),
+            "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+            "RUISHENG_FIXED_SYSTEM_TOOL": str(path),
+            "SYSTEMROOT": str(windows_root),
+            "WINDIR": str(windows_root),
+        },
+    )
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout or "no output").strip()
+        raise ReleaseArtifactError(f"fixed system Git CLI failed owner/ACL validation: {details}")
+
+
 def _system_ssh_keygen() -> Path:
     if os.name == "nt":
-        buffer = ctypes.create_unicode_buffer(32768)
-        length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
-        if length <= 0 or length >= len(buffer):
-            raise ReleaseArtifactError("cannot resolve the Windows system directory")
-        path = Path(buffer.value) / "OpenSSH" / "ssh-keygen.exe"
+        path = _windows_system_directory() / "OpenSSH" / "ssh-keygen.exe"
     else:
         path = Path("/usr/bin/ssh-keygen")
     if path.is_symlink() or not path.is_file():
@@ -505,11 +1291,7 @@ while ($null -ne $current) {
 
 
 def _windows_system_powershell() -> Path:
-    buffer = ctypes.create_unicode_buffer(32768)
-    length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
-    if length <= 0 or length >= len(buffer):
-        raise ReleaseArtifactError("cannot resolve the Windows system directory")
-    path = Path(buffer.value) / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    path = _windows_system_directory() / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     if path.is_symlink() or not path.is_file():
         raise ReleaseArtifactError(f"fixed system PowerShell is unavailable: {path}")
     _validate_fixed_system_tool(path)
@@ -727,6 +1509,37 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_stable_file(path: Path, *, expected_links: int) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ReleaseArtifactError(
+            f"cannot open authenticated system file {path}: {error}"
+        ) from error
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != expected_links:
+            raise ReleaseArtifactError(f"authenticated system file identity is invalid: {path}")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        after = os.fstat(descriptor)
+        path_after = path.stat(follow_symlinks=False)
+        if (
+            _file_stat_identity(before) != _file_stat_identity(after)
+            or _file_stat_identity(after) != _file_stat_identity(path_after)
+            or not os.path.samestat(after, path_after)
+        ):
+            raise ReleaseArtifactError(f"authenticated system file changed while hashing: {path}")
+        return digest.hexdigest()
+    except OSError as error:
+        raise ReleaseArtifactError(f"cannot authenticate system file {path}: {error}") from error
+    finally:
+        os.close(descriptor)
+
+
 def _validate_relative_path(value: str) -> str:
     if not value or "\\" in value or "\x00" in value:
         raise ReleaseArtifactError(f"unsafe package path: {value!r}")
@@ -748,14 +1561,898 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     return _read_json_object_bytes(contents, label=str(path))
 
 
+class _DuplicateJsonKeyError(ValueError):
+    pass
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise _DuplicateJsonKeyError(f"duplicate JSON object key: {key!r}")
+        value[key] = item
+    return value
+
+
 def _read_json_object_bytes(contents: bytes, *, label: str) -> dict[str, Any]:
+    if len(contents) > MAX_RELEASE_JSON_BYTES:
+        raise ReleaseArtifactError(
+            f"invalid JSON file {label}: exceeds {MAX_RELEASE_JSON_BYTES}-byte limit"
+        )
     try:
-        value = json.loads(contents.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        value = json.loads(
+            contents.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        _DuplicateJsonKeyError,
+        RecursionError,
+        MemoryError,
+    ) as error:
         raise ReleaseArtifactError(f"invalid JSON file {label}: {error}") from error
     if not isinstance(value, dict):
         raise ReleaseArtifactError(f"JSON root must be an object: {label}")
     return value
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return (json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _file_stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+@dataclass(frozen=True)
+class _QualificationRuntime:
+    root: Path
+    python: Path
+    dependency_root: Path
+    strict: bool
+    authenticated_uv_lock_sha256: str | None = None
+    files: tuple[tuple[str, str], ...] = ()
+
+
+def _validate_root_protected_posix_path(path: Path, *, label: str) -> os.stat_result:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ReleaseArtifactError(f"{label} is unavailable: {path}: {error}") from error
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ReleaseArtifactError(f"{label} is linked: {path}")
+    if metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        raise ReleaseArtifactError(f"{label} is not root protected: {path}")
+    return metadata
+
+
+def _hash_stable_runtime_file(path: Path, *, label: str) -> tuple[str, os.stat_result]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ReleaseArtifactError(f"cannot open {label}: {path}: {error}") from error
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > MAX_QUALIFICATION_RUNTIME_FILE_BYTES
+        ):
+            raise ReleaseArtifactError(f"{label} is not an allowed regular file: {path}")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        after = os.fstat(descriptor)
+        try:
+            path_after = path.stat(follow_symlinks=False)
+        except OSError as error:
+            raise ReleaseArtifactError(f"{label} changed while being read: {path}") from error
+        if (
+            _file_stat_identity(before) != _file_stat_identity(after)
+            or _file_stat_identity(after) != _file_stat_identity(path_after)
+            or not os.path.samestat(after, path_after)
+        ):
+            raise ReleaseArtifactError(f"{label} changed while being read: {path}")
+        return digest.hexdigest(), after
+    finally:
+        os.close(descriptor)
+
+
+def _qualification_runtime_expected_directories(files: Sequence[str]) -> set[str]:
+    directories: set[str] = set()
+    for relative in files:
+        parent = PurePosixPath(relative).parent
+        while parent != PurePosixPath("."):
+            directories.add(parent.as_posix())
+            parent = parent.parent
+    return directories
+
+
+def _qualification_runtime_layout(
+    root: Path,
+    *,
+    expected_files: set[str],
+    expected_directories: set[str],
+) -> tuple[set[str], set[str]]:
+    actual_files: set[str] = set()
+    actual_directories: set[str] = set()
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = os.scandir(current)
+        except OSError as error:
+            raise ReleaseArtifactError(
+                f"cannot enumerate qualification runtime: {current}: {error}"
+            ) from error
+        with entries:
+            for entry in entries:
+                path = Path(entry.path)
+                relative = path.relative_to(root).as_posix()
+                metadata = _validate_root_protected_posix_path(
+                    path,
+                    label=f"qualification runtime member {relative}",
+                )
+                if stat.S_ISDIR(metadata.st_mode):
+                    if relative not in expected_directories:
+                        raise ReleaseArtifactError("qualification runtime file allowlist mismatch")
+                    actual_directories.add(relative)
+                    pending.append(path)
+                elif stat.S_ISREG(metadata.st_mode):
+                    if relative not in expected_files:
+                        raise ReleaseArtifactError("qualification runtime file allowlist mismatch")
+                    actual_files.add(relative)
+                else:
+                    raise ReleaseArtifactError(
+                        f"qualification runtime member is not a file or directory: {relative}"
+                    )
+    return actual_files, actual_directories
+
+
+def _validate_posix_qualification_runtime(  # noqa: PLR0912, PLR0915
+    root: Path,
+    *,
+    authenticated_uv_lock_sha256: str,
+) -> _QualificationRuntime:
+    if os.name == "nt":
+        raise ReleaseArtifactError("POSIX qualification runtime validation is unavailable")
+    if SHA256_PATTERN.fullmatch(authenticated_uv_lock_sha256) is None:
+        raise ReleaseArtifactError("authenticated qualification uv.lock SHA-256 is invalid")
+    root = root.absolute()
+    for current in (root, *root.parents):
+        metadata = _validate_root_protected_posix_path(
+            current,
+            label="qualification runtime path",
+        )
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ReleaseArtifactError(f"qualification runtime path is not a directory: {current}")
+
+    manifest_path = root / QUALIFICATION_RUNTIME_MANIFEST
+    manifest_digest, manifest_metadata = _hash_stable_runtime_file(
+        manifest_path,
+        label="qualification runtime manifest",
+    )
+    if manifest_metadata.st_size > MAX_QUALIFICATION_RUNTIME_MANIFEST_BYTES:
+        raise ReleaseArtifactError("qualification runtime manifest is too large")
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+    except OSError as error:
+        raise ReleaseArtifactError(
+            f"cannot read qualification runtime manifest: {error}"
+        ) from error
+    if hashlib.sha256(manifest_bytes).hexdigest() != manifest_digest:
+        raise ReleaseArtifactError("qualification runtime manifest changed while being read")
+    manifest = _read_json_object_bytes(manifest_bytes, label=str(manifest_path))
+    if set(manifest) != {
+        "artifact_type",
+        "schema_version",
+        "python_version",
+        "uv_lock_sha256",
+        "dependency_root",
+        "files",
+    }:
+        raise ReleaseArtifactError("qualification runtime manifest keys mismatch")
+    if (
+        manifest["artifact_type"] != QUALIFICATION_RUNTIME_ARTIFACT_TYPE
+        or type(manifest["schema_version"]) is not int
+        or manifest["schema_version"] != QUALIFICATION_RUNTIME_SCHEMA_VERSION
+        or manifest["python_version"] != QUALIFICATION_RUNTIME_PYTHON_VERSION
+        or manifest["uv_lock_sha256"] != authenticated_uv_lock_sha256
+        or manifest["dependency_root"] != POSIX_QUALIFICATION_RUNTIME_DEPENDENCIES
+    ):
+        raise ReleaseArtifactError("qualification runtime manifest contract is invalid")
+    file_values = manifest["files"]
+    if (
+        not isinstance(file_values, list)
+        or not file_values
+        or len(file_values) >= MAX_QUALIFICATION_RUNTIME_FILES
+    ):
+        raise ReleaseArtifactError("qualification runtime manifest files are invalid")
+
+    expected_files = {QUALIFICATION_RUNTIME_MANIFEST}
+    identities: list[tuple[str, str]] = []
+    previous_path: str | None = None
+    for identity in file_values:
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != {"path", "sha256"}
+            or not isinstance(identity.get("path"), str)
+            or not isinstance(identity.get("sha256"), str)
+        ):
+            raise ReleaseArtifactError("qualification runtime file identity is invalid")
+        relative = _validate_relative_path(identity["path"])
+        expected_digest = identity["sha256"]
+        if SHA256_PATTERN.fullmatch(expected_digest) is None:
+            raise ReleaseArtifactError("qualification runtime file identity is invalid")
+        if previous_path is not None and previous_path >= relative:
+            raise ReleaseArtifactError(
+                "qualification runtime files are not in strict ordinal path order"
+            )
+        folded = relative.casefold()
+        if (
+            relative == QUALIFICATION_RUNTIME_MANIFEST
+            or folded.endswith(".pth")
+            or PurePosixPath(folded).name in {"pyvenv.cfg", "sitecustomize.py", "usercustomize.py"}
+        ):
+            raise ReleaseArtifactError(
+                f"qualification runtime contains a forbidden file: {relative}"
+            )
+        if relative in expected_files:
+            raise ReleaseArtifactError("qualification runtime contains a duplicate file path")
+        expected_files.add(relative)
+        identities.append((relative, expected_digest))
+        previous_path = relative
+
+    required = {
+        POSIX_QUALIFICATION_RUNTIME_PYTHON,
+        "lib/python3.11/encodings/__init__.py",
+    }
+    if not required.issubset(expected_files) or not any(
+        relative.startswith(POSIX_QUALIFICATION_RUNTIME_DEPENDENCIES + "/")
+        for relative, _digest in identities
+    ):
+        raise ReleaseArtifactError(
+            "qualification runtime is not a self-contained Python 3.11 dependency closure"
+        )
+    expected_directories = _qualification_runtime_expected_directories(tuple(expected_files))
+    actual_files, actual_directories = _qualification_runtime_layout(
+        root,
+        expected_files=expected_files,
+        expected_directories=expected_directories,
+    )
+    if actual_files != expected_files or actual_directories != expected_directories:
+        raise ReleaseArtifactError("qualification runtime file allowlist mismatch")
+
+    observed: list[tuple[str, str]] = []
+    for relative, expected_digest in identities:
+        path = root / relative
+        actual_digest, metadata = _hash_stable_runtime_file(
+            path,
+            label=f"qualification runtime file {relative}",
+        )
+        if metadata.st_uid != 0 or metadata.st_mode & 0o022:
+            raise ReleaseArtifactError(
+                f"qualification runtime file is not root protected: {relative}"
+            )
+        if actual_digest != expected_digest:
+            raise ReleaseArtifactError(f"qualification runtime file SHA-256 mismatch: {relative}")
+        observed.append((relative, actual_digest))
+
+    python = root / POSIX_QUALIFICATION_RUNTIME_PYTHON
+    if not os.access(python, os.X_OK):
+        raise ReleaseArtifactError("qualification runtime Python is not executable")
+    dependency_root = root / POSIX_QUALIFICATION_RUNTIME_DEPENDENCIES
+    if not dependency_root.is_dir():
+        raise ReleaseArtifactError("qualification runtime dependency_root is missing")
+    return _QualificationRuntime(
+        root=root,
+        python=python,
+        dependency_root=dependency_root,
+        strict=True,
+        authenticated_uv_lock_sha256=authenticated_uv_lock_sha256,
+        files=((QUALIFICATION_RUNTIME_MANIFEST, manifest_digest), *observed),
+    )
+
+
+def _development_qualification_runtime() -> _QualificationRuntime:
+    python = Path(sys.executable).resolve(strict=True)
+    dependency_root = Path(sysconfig.get_path("purelib")).resolve(strict=True)
+    if not dependency_root.is_dir():
+        raise ReleaseArtifactError("development qualification dependency_root is unavailable")
+    return _QualificationRuntime(
+        root=Path(sys.prefix).resolve(strict=True),
+        python=python,
+        dependency_root=dependency_root,
+        strict=False,
+    )
+
+
+def _qualification_environment(temporary_root: Path) -> dict[str, str]:
+    environment = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+    }
+    if os.name == "nt":
+        system_directory = _windows_system_directory()
+        windows_root = system_directory.parent
+        environment.update(
+            {
+                "COMSPEC": str(system_directory / "cmd.exe"),
+                "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+                "SYSTEMROOT": str(windows_root),
+                "TEMP": str(temporary_root),
+                "TMP": str(temporary_root),
+                "WINDIR": str(windows_root),
+            }
+        )
+    else:
+        environment["TMPDIR"] = str(temporary_root)
+    return environment
+
+
+def _read_toolchain_source(root: Path, relative: str) -> bytes:
+    source = root / relative
+    if source.is_symlink() or not source.is_file():
+        raise ReleaseArtifactError(
+            f"qualification toolchain source is missing or linked: {relative}"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(source, flags)
+    except OSError as error:
+        raise ReleaseArtifactError(
+            f"cannot open qualification toolchain source {relative}: {error}"
+        ) from error
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_QUALIFICATION_MEMBER_BYTES:
+            raise ReleaseArtifactError(
+                f"qualification toolchain source is not an allowed regular file: {relative}"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as source_stream:
+            contents = source_stream.read(MAX_QUALIFICATION_MEMBER_BYTES + 1)
+            source_stream.seek(0)
+            repeated = source_stream.read(MAX_QUALIFICATION_MEMBER_BYTES + 1)
+        after = os.fstat(descriptor)
+        try:
+            path_after = source.stat(follow_symlinks=False)
+        except OSError as error:
+            raise ReleaseArtifactError(
+                f"qualification toolchain source changed while being read: {relative}"
+            ) from error
+        if (
+            contents != repeated
+            or len(contents) != before.st_size
+            or _file_stat_identity(before) != _file_stat_identity(after)
+            or _file_stat_identity(after) != _file_stat_identity(path_after)
+            or not os.path.samestat(after, path_after)
+        ):
+            raise ReleaseArtifactError(
+                f"qualification toolchain source changed while being read: {relative}"
+            )
+        return contents
+    finally:
+        os.close(descriptor)
+
+
+def _read_committed_toolchain_source(
+    root: Path,
+    relative: str,
+    *,
+    source_commit: str,
+    runner: Runner,
+) -> bytes:
+    if SOURCE_COMMIT_PATTERN.fullmatch(source_commit) is None:
+        raise ReleaseArtifactError("qualification toolchain source commit is invalid")
+    git_relative = relative
+    contents = _read_toolchain_source(root, relative)
+    expected_object = runner.run(
+        [
+            "git",
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            f"{source_commit}:{git_relative}",
+        ],
+        cwd=root,
+    )
+    if GIT_OBJECT_ID_PATTERN.fullmatch(expected_object) is None:
+        raise ReleaseArtifactError(
+            f"qualification toolchain Git object identity is invalid: {git_relative}"
+        )
+    object_payload = b"blob " + str(len(contents)).encode("ascii") + b"\0" + contents
+    if len(expected_object) == GIT_SHA1_OBJECT_ID_LENGTH:
+        actual_object = hashlib.sha1(  # noqa: S324 - Git SHA-1 object identity.
+            object_payload,
+            usedforsecurity=False,
+        ).hexdigest()
+    else:
+        actual_object = hashlib.sha256(object_payload).hexdigest()
+    if actual_object != expected_object:
+        raise ReleaseArtifactError(
+            f"qualification toolchain source does not match {source_commit}:{git_relative}"
+        )
+    return contents
+
+
+def _deterministic_qualification_tar_info(name: str, size: int) -> tarfile.TarInfo:
+    member = tarfile.TarInfo(name)
+    member.size = size
+    member.mtime = 0
+    member.uid = 0
+    member.gid = 0
+    member.uname = ""
+    member.gname = ""
+    member.mode = 0o644
+    return member
+
+
+def _add_deterministic_tar_member(archive: tarfile.TarFile, name: str, contents: bytes) -> None:
+    member = _deterministic_qualification_tar_info(name, len(contents))
+    archive.addfile(member, io.BytesIO(contents))
+
+
+def _write_qualification_toolchain(
+    root: Path,
+    package: Path,
+    *,
+    source_commit: str,
+    runner: Runner,
+) -> QualificationToolchainDescriptor:
+    producer_contents = _read_committed_toolchain_source(
+        root,
+        "tools/release_artifacts.py",
+        source_commit=source_commit,
+        runner=runner,
+    )
+    member_contents = {
+        relative: (
+            producer_contents
+            if relative == "tools/release_artifacts.py"
+            else _read_committed_toolchain_source(
+                root,
+                relative,
+                source_commit=source_commit,
+                runner=runner,
+            )
+        )
+        for relative in QUALIFICATION_TOOLCHAIN_MEMBERS
+    }
+    member_identities = [
+        {"path": relative, "sha256": hashlib.sha256(member_contents[relative]).hexdigest()}
+        for relative in QUALIFICATION_TOOLCHAIN_MEMBERS
+    ]
+    toolchain_manifest_bytes = _canonical_json_bytes(
+        {
+            "artifact_type": QUALIFICATION_TOOLCHAIN_ARTIFACT_TYPE,
+            "members": member_identities,
+            "schema_version": QUALIFICATION_TOOLCHAIN_SCHEMA_VERSION,
+            "semantic_validator": SEMANTIC_VALIDATOR_ID,
+        }
+    )
+    archive_path = package / QUALIFICATION_TOOLCHAIN_ARCHIVE
+    try:
+        with (
+            archive_path.open("xb") as raw_archive,
+            gzip.GzipFile(
+                filename="",
+                mode="wb",
+                compresslevel=9,
+                fileobj=raw_archive,
+                mtime=0,
+            ) as compressed,
+            tarfile.open(
+                fileobj=cast(BinaryIO, compressed), mode="w", format=tarfile.USTAR_FORMAT
+            ) as archive,
+        ):
+            for relative in QUALIFICATION_TOOLCHAIN_MEMBERS:
+                _add_deterministic_tar_member(archive, relative, member_contents[relative])
+            _add_deterministic_tar_member(
+                archive, QUALIFICATION_TOOLCHAIN_MANIFEST, toolchain_manifest_bytes
+            )
+    except (OSError, tarfile.TarError) as error:
+        archive_path.unlink(missing_ok=True)
+        raise ReleaseArtifactError(f"cannot create qualification toolchain: {error}") from error
+
+    identities = {
+        value["path"]: ArtifactIdentity(path=value["path"], sha256=value["sha256"])
+        for value in member_identities
+    }
+    return QualificationToolchainDescriptor(
+        path=QUALIFICATION_TOOLCHAIN_ARCHIVE,
+        sha256=sha256_file(archive_path),
+        format=QUALIFICATION_TOOLCHAIN_FORMAT,
+        semantic_validator=SEMANTIC_VALIDATOR_ID,
+        schema=identities["schemas/point-profile/point-profile-v1.schema.json"],
+        validator=identities["tools/validate_device_point_profile.py"],
+        producer=identities["tools/release_artifacts.py"],
+        receipt_producer=identities["tools/release_verification_receipt.py"],
+        toolchain_manifest=ArtifactIdentity(
+            path=QUALIFICATION_TOOLCHAIN_MANIFEST,
+            sha256=hashlib.sha256(toolchain_manifest_bytes).hexdigest(),
+        ),
+    )
+
+
+def _validate_toolchain_identity(identity: ArtifactIdentity, *, expected_path: str) -> None:
+    if identity.path != expected_path or SHA256_PATTERN.fullmatch(identity.sha256) is None:
+        raise ReleaseArtifactError(
+            f"qualification toolchain identity is invalid for {expected_path}"
+        )
+
+
+def _exact_qualification_tar_members(
+    archive: tarfile.TarFile,
+    expected: tuple[str, ...],
+) -> tuple[tarfile.TarInfo, ...]:
+    members: list[tarfile.TarInfo] = []
+    for index, member in enumerate(archive):
+        if index >= len(expected) or member.name != expected[index]:
+            raise ReleaseArtifactError("qualification toolchain archive member allowlist mismatch")
+        members.append(member)
+    if len(members) != len(expected):
+        raise ReleaseArtifactError("qualification toolchain archive member allowlist mismatch")
+    return tuple(members)
+
+
+def _qualification_ustar_octal(field: bytes, *, label: str) -> int:
+    if not field or field[0] & 0x80:
+        raise ReleaseArtifactError(f"qualification toolchain USTAR {label} is invalid")
+    digits = field.rstrip(b"\0 ").lstrip(b" ")
+    if not digits or any(value < ord("0") or value > ord("7") for value in digits):
+        raise ReleaseArtifactError(f"qualification toolchain USTAR {label} is invalid")
+    return int(digits, 8)
+
+
+def _discard_qualification_ustar_payload(
+    stream: gzip.GzipFile,
+    size: int,
+    *,
+    require_zero: bool = False,
+) -> None:
+    remaining = size
+    while remaining:
+        chunk = stream.read(min(64 * 1024, remaining))
+        if not chunk:
+            raise ReleaseArtifactError("qualification toolchain USTAR payload is truncated")
+        if len(chunk) > remaining:
+            raise ReleaseArtifactError("qualification toolchain USTAR payload framing is invalid")
+        if require_zero and any(chunk):
+            raise ReleaseArtifactError(
+                "qualification toolchain archive contains non-zero USTAR padding"
+            )
+        remaining -= len(chunk)
+
+
+def _qualification_ustar_member_size(header: bytes, *, expected_name: str) -> int:
+    expected_checksum = _qualification_ustar_octal(header[148:156], label="checksum")
+    checksum_header = header[:148] + (b" " * 8) + header[156:]
+    if sum(checksum_header) != expected_checksum:
+        raise ReleaseArtifactError("qualification toolchain USTAR header checksum is invalid")
+    if header[257:263] != b"ustar\0" or header[263:265] != b"00":
+        raise ReleaseArtifactError("qualification toolchain archive is not strict USTAR")
+    if header[156:157] != tarfile.REGTYPE:
+        raise ReleaseArtifactError(
+            "qualification toolchain archive contains a non-regular USTAR member"
+        )
+
+    encoded_name = expected_name.encode("ascii")
+    if (
+        len(encoded_name) > QUALIFICATION_USTAR_NAME_BYTES
+        or header[:QUALIFICATION_USTAR_NAME_BYTES]
+        != encoded_name.ljust(QUALIFICATION_USTAR_NAME_BYTES, b"\0")
+        or header[345:500] != b"\0" * 155
+    ):
+        raise ReleaseArtifactError("qualification toolchain archive member allowlist mismatch")
+
+    member_size = _qualification_ustar_octal(header[124:136], label="size")
+    member_limit = (
+        MAX_RELEASE_JSON_BYTES
+        if expected_name == QUALIFICATION_TOOLCHAIN_MANIFEST
+        else MAX_QUALIFICATION_MEMBER_BYTES
+    )
+    if member_size > member_limit:
+        raise ReleaseArtifactError(
+            f"qualification toolchain member is not an allowed regular file: {expected_name}"
+        )
+    expected_header = _deterministic_qualification_tar_info(expected_name, member_size).tobuf(
+        format=tarfile.USTAR_FORMAT
+    )
+    if header != expected_header:
+        raise ReleaseArtifactError(
+            f"qualification toolchain USTAR header is not deterministic: {expected_name}"
+        )
+    return member_size
+
+
+def _validate_single_qualification_gzip_member(raw_archive: BinaryIO) -> None:
+    initial_position = raw_archive.tell()
+    decompressor = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+    expanded_bytes = 0
+    try:
+        while not decompressor.eof:
+            compressed = raw_archive.read(64 * 1024)
+            if not compressed:
+                raise ReleaseArtifactError("qualification toolchain gzip member is truncated")
+            pending = compressed
+            while pending and not decompressor.eof:
+                maximum_output = min(
+                    64 * 1024,
+                    MAX_QUALIFICATION_TAR_BYTES - expanded_bytes + 1,
+                )
+                expanded = decompressor.decompress(pending, maximum_output)
+                expanded_bytes += len(expanded)
+                if expanded_bytes > MAX_QUALIFICATION_TAR_BYTES:
+                    raise ReleaseArtifactError(
+                        "qualification toolchain expanded archive exceeds its byte budget"
+                    )
+                next_pending = decompressor.unconsumed_tail
+                if next_pending == pending and not expanded:
+                    raise ReleaseArtifactError(
+                        "qualification toolchain gzip member made no progress"
+                    )
+                pending = next_pending
+        if decompressor.unused_data or raw_archive.read(1):
+            raise ReleaseArtifactError(
+                "qualification toolchain archive must contain exactly one gzip member"
+            )
+    finally:
+        raw_archive.seek(initial_position)
+
+
+def _preflight_qualification_ustar_archive(
+    raw_archive: BinaryIO,
+    expected: tuple[str, ...],
+) -> None:
+    zero_block = b"\0" * tarfile.BLOCKSIZE
+    try:
+        initial_position = raw_archive.tell()
+        raw_archive.seek(0, os.SEEK_END)
+        archive_size = raw_archive.tell()
+        raw_archive.seek(initial_position)
+        if initial_position != 0 or archive_size > MAX_QUALIFICATION_GZIP_BYTES:
+            raise ReleaseArtifactError(
+                "qualification toolchain gzip archive exceeds its byte budget"
+            )
+        gzip_header = raw_archive.read(10)
+        raw_archive.seek(initial_position)
+        if gzip_header != b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\xff":
+            raise ReleaseArtifactError("qualification toolchain gzip header is not canonical")
+        _validate_single_qualification_gzip_member(raw_archive)
+
+        with gzip.GzipFile(fileobj=raw_archive, mode="rb") as stream:
+            member_blocks = 0
+            for expected_name in expected:
+                header = stream.read(tarfile.BLOCKSIZE)
+                if len(header) != tarfile.BLOCKSIZE or header == zero_block:
+                    raise ReleaseArtifactError(
+                        "qualification toolchain archive member allowlist mismatch"
+                    )
+                member_size = _qualification_ustar_member_size(header, expected_name=expected_name)
+                padded_size = (
+                    (member_size + tarfile.BLOCKSIZE - 1) // tarfile.BLOCKSIZE * tarfile.BLOCKSIZE
+                )
+                _discard_qualification_ustar_payload(stream, member_size)
+                _discard_qualification_ustar_payload(
+                    stream,
+                    padded_size - member_size,
+                    require_zero=True,
+                )
+                member_blocks += 1 + padded_size // tarfile.BLOCKSIZE
+
+            record_blocks = tarfile.RECORDSIZE // tarfile.BLOCKSIZE
+            trailing_zero_blocks = MIN_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS + (
+                -(member_blocks + MIN_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS) % record_blocks
+            )
+            if trailing_zero_blocks > MAX_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS:
+                raise ReleaseArtifactError(
+                    "qualification toolchain USTAR trailer exceeds its zero-block budget"
+                )
+            for _index in range(trailing_zero_blocks):
+                block = stream.read(tarfile.BLOCKSIZE)
+                if len(block) != tarfile.BLOCKSIZE or block != zero_block:
+                    raise ReleaseArtifactError("qualification toolchain USTAR trailer is invalid")
+            if stream.read(1):
+                raise ReleaseArtifactError(
+                    "qualification toolchain archive member allowlist mismatch"
+                )
+    except ReleaseArtifactError:
+        raise
+    except (EOFError, MemoryError, OSError, zlib.error) as error:
+        raise ReleaseArtifactError(
+            f"invalid qualification toolchain gzip/USTAR archive: {error}"
+        ) from error
+
+
+def _verify_qualification_toolchain(  # noqa: PLR0912, PLR0915
+    package: Path,
+    descriptor: QualificationToolchainDescriptor,
+    sums: Mapping[str, str],
+) -> None:
+    if descriptor.path != QUALIFICATION_TOOLCHAIN_ARCHIVE:
+        raise ReleaseArtifactError("qualification toolchain path is invalid")
+    if descriptor.format != QUALIFICATION_TOOLCHAIN_FORMAT:
+        raise ReleaseArtifactError("qualification toolchain format is invalid")
+    if descriptor.semantic_validator != SEMANTIC_VALIDATOR_ID:
+        raise ReleaseArtifactError("qualification toolchain semantic validator is invalid")
+    if SHA256_PATTERN.fullmatch(descriptor.sha256) is None:
+        raise ReleaseArtifactError("qualification toolchain SHA-256 is invalid")
+    if sums.get(descriptor.path) != descriptor.sha256:
+        raise ReleaseArtifactError("qualification toolchain descriptor/SHA256SUMS mismatch")
+    expected_identity_paths = {
+        "schema": "schemas/point-profile/point-profile-v1.schema.json",
+        "validator": "tools/validate_device_point_profile.py",
+        "producer": "tools/release_artifacts.py",
+        "receipt_producer": "tools/release_verification_receipt.py",
+        "toolchain_manifest": QUALIFICATION_TOOLCHAIN_MANIFEST,
+    }
+    for name, expected_path in expected_identity_paths.items():
+        _validate_toolchain_identity(getattr(descriptor, name), expected_path=expected_path)
+
+    archive_path = package / descriptor.path
+    expected_members = (*QUALIFICATION_TOOLCHAIN_MEMBERS, QUALIFICATION_TOOLCHAIN_MANIFEST)
+    try:
+        with archive_path.open("rb") as raw_archive:
+            _preflight_qualification_ustar_archive(raw_archive, expected_members)
+            raw_archive.seek(0)
+            with tarfile.open(fileobj=raw_archive, mode="r:gz") as archive:
+                members = _exact_qualification_tar_members(archive, expected_members)
+                contents: dict[str, bytes] = {}
+                for member in members:
+                    _validate_relative_path(member.name)
+                    member_limit = (
+                        MAX_RELEASE_JSON_BYTES
+                        if member.name == QUALIFICATION_TOOLCHAIN_MANIFEST
+                        else MAX_QUALIFICATION_MEMBER_BYTES
+                    )
+                    if not member.isfile() or member.size > member_limit:
+                        raise ReleaseArtifactError(
+                            f"qualification toolchain member is not an allowed regular file: "
+                            f"{member.name}"
+                        )
+                    stream = archive.extractfile(member)
+                    if stream is None:
+                        raise ReleaseArtifactError(
+                            f"qualification toolchain member cannot be read: {member.name}"
+                        )
+                    value = stream.read(member_limit + 1)
+                    if len(value) != member.size:
+                        raise ReleaseArtifactError(
+                            f"qualification toolchain member size mismatch: {member.name}"
+                        )
+                    contents[member.name] = value
+    except (OSError, tarfile.TarError) as error:
+        raise ReleaseArtifactError(f"invalid qualification toolchain archive: {error}") from error
+
+    manifest_bytes = contents[QUALIFICATION_TOOLCHAIN_MANIFEST]
+    if hashlib.sha256(manifest_bytes).hexdigest() != descriptor.toolchain_manifest.sha256:
+        raise ReleaseArtifactError("qualification toolchain manifest SHA-256 mismatch")
+    toolchain_manifest = _read_json_object_bytes(
+        manifest_bytes, label=f"{archive_path}:{QUALIFICATION_TOOLCHAIN_MANIFEST}"
+    )
+    if set(toolchain_manifest) != {
+        "artifact_type",
+        "members",
+        "schema_version",
+        "semantic_validator",
+    }:
+        raise ReleaseArtifactError("qualification toolchain manifest keys mismatch")
+    if (
+        toolchain_manifest["artifact_type"] != QUALIFICATION_TOOLCHAIN_ARTIFACT_TYPE
+        or toolchain_manifest["schema_version"] != QUALIFICATION_TOOLCHAIN_SCHEMA_VERSION
+        or type(toolchain_manifest["schema_version"]) is not int
+        or toolchain_manifest["semantic_validator"] != SEMANTIC_VALIDATOR_ID
+    ):
+        raise ReleaseArtifactError("qualification toolchain manifest contract is invalid")
+    member_values = toolchain_manifest["members"]
+    if not isinstance(member_values, list) or len(member_values) != len(
+        QUALIFICATION_TOOLCHAIN_MEMBERS
+    ):
+        raise ReleaseArtifactError("qualification toolchain manifest members are invalid")
+    identities: dict[str, str] = {}
+    for index, expected_path in enumerate(QUALIFICATION_TOOLCHAIN_MEMBERS):
+        identity = member_values[index]
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != {"path", "sha256"}
+            or identity.get("path") != expected_path
+            or not isinstance(identity.get("sha256"), str)
+            or SHA256_PATTERN.fullmatch(identity["sha256"]) is None
+        ):
+            raise ReleaseArtifactError(
+                f"qualification toolchain manifest identity is invalid: {expected_path}"
+            )
+        actual_digest = hashlib.sha256(contents[expected_path]).hexdigest()
+        if identity["sha256"] != actual_digest:
+            raise ReleaseArtifactError(
+                f"qualification toolchain member SHA-256 mismatch: {expected_path}"
+            )
+        identities[expected_path] = actual_digest
+    for name, expected_path in expected_identity_paths.items():
+        if name == "toolchain_manifest":
+            continue
+        if getattr(descriptor, name).sha256 != identities[expected_path]:
+            raise ReleaseArtifactError(
+                f"qualification toolchain descriptor identity mismatch: {expected_path}"
+            )
+
+
+def _extract_qualification_toolchain(
+    package: Path,
+    manifest: CandidateManifest,
+    *,
+    parent: Path,
+) -> Path:
+    descriptor = manifest.qualification_toolchain
+    if descriptor is None:
+        raise ReleaseArtifactError("candidate has no authenticated qualification toolchain")
+    extraction = Path(tempfile.mkdtemp(prefix="ruisheng-qualification-", dir=parent))
+    os.chmod(extraction, 0o700)
+    expected = (*QUALIFICATION_TOOLCHAIN_MEMBERS, QUALIFICATION_TOOLCHAIN_MANIFEST)
+    try:
+        with (package / descriptor.path).open("rb") as raw_archive:
+            _preflight_qualification_ustar_archive(raw_archive, expected)
+            raw_archive.seek(0)
+            with tarfile.open(fileobj=raw_archive, mode="r:gz") as archive:
+                members = _exact_qualification_tar_members(archive, expected)
+                for member in members:
+                    member_limit = (
+                        MAX_RELEASE_JSON_BYTES
+                        if member.name == QUALIFICATION_TOOLCHAIN_MANIFEST
+                        else MAX_QUALIFICATION_MEMBER_BYTES
+                    )
+                    if not member.isfile() or member.size > member_limit:
+                        raise ReleaseArtifactError(
+                            f"qualification toolchain member is not an allowed regular file: "
+                            f"{member.name}"
+                        )
+                    stream = archive.extractfile(member)
+                    if stream is None:
+                        raise ReleaseArtifactError(
+                            f"qualification toolchain member cannot be read: {member.name}"
+                        )
+                    destination = extraction / member.name
+                    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    with destination.open("xb") as output:
+                        contents = stream.read(member_limit + 1)
+                        if len(contents) != member.size:
+                            raise ReleaseArtifactError(
+                                f"qualification toolchain member size mismatch: {member.name}"
+                            )
+                        output.write(contents)
+                    os.chmod(destination, 0o600)
+        identities = {
+            identity.path: identity.sha256
+            for identity in (
+                descriptor.schema,
+                descriptor.validator,
+                descriptor.producer,
+                descriptor.receipt_producer,
+                descriptor.toolchain_manifest,
+            )
+        }
+        toolchain_manifest = _read_json_object(extraction / QUALIFICATION_TOOLCHAIN_MANIFEST)
+        for identity in toolchain_manifest["members"]:
+            identities[identity["path"]] = identity["sha256"]
+        for relative in expected:
+            if sha256_file(extraction / relative) != identities[relative]:
+                raise ReleaseArtifactError(
+                    f"extracted qualification toolchain member SHA-256 mismatch: {relative}"
+                )
+        return extraction
+    except BaseException:
+        shutil.rmtree(extraction, ignore_errors=True)
+        raise
 
 
 OCI_IMAGE_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
@@ -768,40 +2465,192 @@ SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1"
 OCI_SCHEMA_VERSION = 2
 
 
+def _bounded_docker_archive_members(archive: tarfile.TarFile, path: Path) -> list[tarfile.TarInfo]:
+    members: list[tarfile.TarInfo] = []
+    total_bytes = 0
+    for member in archive:
+        if len(members) >= MAX_DOCKER_ARCHIVE_MEMBERS:
+            raise ReleaseArtifactError(f"archive has too many members: {path}")
+        if member.size < 0 or member.size > MAX_DOCKER_ARCHIVE_MEMBER_BYTES:
+            raise ReleaseArtifactError(
+                f"archive member exceeds the byte budget: {path}:{member.name}"
+            )
+        total_bytes += member.size
+        if total_bytes > MAX_DOCKER_ARCHIVE_TOTAL_BYTES:
+            raise ReleaseArtifactError(f"archive exceeds the total byte budget: {path}")
+        members.append(member)
+    return members
+
+
+_FORBIDDEN_TAR_EXTENSION_TYPES = frozenset(
+    {
+        tarfile.XHDTYPE,
+        tarfile.XGLTYPE,
+        tarfile.GNUTYPE_LONGNAME,
+        tarfile.GNUTYPE_LONGLINK,
+        tarfile.GNUTYPE_SPARSE,
+        *((tarfile.SOLARIS_XHDTYPE,) if hasattr(tarfile, "SOLARIS_XHDTYPE") else ()),
+    }
+)
+
+
+def _discard_tar_bytes(stream: BinaryIO, size: int, *, label: str) -> None:
+    remaining = size
+    while remaining:
+        chunk = stream.read(min(1024 * 1024, remaining))
+        if not chunk:
+            raise ReleaseArtifactError(f"{label} is truncated")
+        remaining -= len(chunk)
+
+
+def _preflight_docker_tar_stream(
+    stream: BinaryIO,
+    *,
+    label: str,
+    maximum_members: int,
+    maximum_member_bytes: int,
+    maximum_total_bytes: int,
+) -> None:
+    """Bound raw tar headers before tarfile can allocate PAX/GNU extension payloads."""
+
+    members = 0
+    total_bytes = 0
+    zero_blocks = 0
+    while True:
+        header = stream.read(tarfile.BLOCKSIZE)
+        if not header:
+            if zero_blocks >= MIN_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS:
+                return
+            raise ReleaseArtifactError(f"{label} has no complete tar trailer")
+        if len(header) != tarfile.BLOCKSIZE:
+            raise ReleaseArtifactError(f"{label} has a truncated tar header")
+        if header == b"\0" * tarfile.BLOCKSIZE:
+            zero_blocks += 1
+            if zero_blocks >= MIN_QUALIFICATION_TAR_TRAILING_ZERO_BLOCKS:
+                return
+            continue
+        if zero_blocks:
+            raise ReleaseArtifactError(f"{label} has data after an incomplete tar trailer")
+        try:
+            member = tarfile.TarInfo.frombuf(
+                header,
+                encoding="utf-8",
+                errors="surrogateescape",
+            )
+        except (tarfile.TarError, ValueError) as error:
+            raise ReleaseArtifactError(f"{label} has an invalid tar header") from error
+        if member.type in _FORBIDDEN_TAR_EXTENSION_TYPES:
+            raise ReleaseArtifactError(f"{label} contains forbidden tar extension metadata")
+        members += 1
+        if members > maximum_members:
+            raise ReleaseArtifactError(f"{label} has too many members")
+        if member.size < 0 or member.size > maximum_member_bytes:
+            raise ReleaseArtifactError(f"{label} member exceeds the byte budget")
+        total_bytes += member.size
+        if total_bytes > maximum_total_bytes:
+            raise ReleaseArtifactError(f"{label} exceeds the total byte budget")
+        padded_size = member.size + (-member.size % tarfile.BLOCKSIZE)
+        _discard_tar_bytes(stream, padded_size, label=label)
+
+
+def _preflight_docker_archive(path: Path) -> None:
+    with gzip.open(path, mode="rb") as stream:
+        _preflight_docker_tar_stream(
+            cast(BinaryIO, stream),
+            label=f"Docker image archive {path}",
+            maximum_members=MAX_DOCKER_ARCHIVE_MEMBERS,
+            maximum_member_bytes=MAX_DOCKER_ARCHIVE_MEMBER_BYTES,
+            maximum_total_bytes=MAX_DOCKER_ARCHIVE_TOTAL_BYTES,
+        )
+
+
+def _read_archive_member_bytes(
+    archive: tarfile.TarFile, member: tarfile.TarInfo, path: Path, *, label: str
+) -> bytes:
+    if not member.isfile() or member.size > MAX_RELEASE_JSON_BYTES:
+        raise ReleaseArtifactError(f"archive {label} exceeds the JSON byte limit: {path}")
+    stream = archive.extractfile(member)
+    if stream is None:
+        raise ReleaseArtifactError(f"archive {label} is not a regular file: {path}")
+    contents = stream.read(MAX_RELEASE_JSON_BYTES + 1)
+    if len(contents) != member.size:
+        raise ReleaseArtifactError(f"archive {label} size is inconsistent: {path}")
+    return contents
+
+
+@dataclass
+class _ArchiveInspection:
+    archive: tarfile.TarFile
+    path: Path
+    members_by_name: Mapping[str, tarfile.TarInfo]
+    references_seen: int = 0
+    metadata_bytes_seen: int = 0
+    blob_cache: dict[str, bytes | None] | None = None
+
+    def __post_init__(self) -> None:
+        self.blob_cache = {}
+
+    def consume_reference(self) -> None:
+        self.references_seen += 1
+        if self.references_seen > MAX_DOCKER_DESCRIPTOR_REFERENCES:
+            raise ReleaseArtifactError(f"archive descriptor reference budget exceeded: {self.path}")
+
+    def consume_metadata_bytes(self, size: int) -> None:
+        if size > MAX_DOCKER_METADATA_BYTES - self.metadata_bytes_seen:
+            raise ReleaseArtifactError(f"archive metadata byte budget exceeded: {self.path}")
+        self.metadata_bytes_seen += size
+
+
 def _read_archive_sha256_blob(
-    archive: tarfile.TarFile,
-    path: Path,
+    inspection: _ArchiveInspection,
     digest: object,
     *,
     label: str,
     allow_missing: bool = False,
 ) -> bytes | None:
+    inspection.consume_reference()
     if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
-        raise ReleaseArtifactError(f"archive {label} digest is invalid: {path}")
+        raise ReleaseArtifactError(f"archive {label} digest is invalid: {inspection.path}")
     blob_name = f"blobs/sha256/{digest.removeprefix('sha256:')}"
-    try:
-        member = archive.getmember(blob_name)
-    except KeyError as error:
+    assert inspection.blob_cache is not None
+    if blob_name in inspection.blob_cache:
+        cached = inspection.blob_cache[blob_name]
+        if cached is None and not allow_missing:
+            raise ReleaseArtifactError(
+                f"archive {label} blob is missing: {inspection.path}:{blob_name}"
+            )
+        return cached
+    member = inspection.members_by_name.get(blob_name)
+    if member is None:
+        inspection.blob_cache[blob_name] = None
         if allow_missing:
             return None
         raise ReleaseArtifactError(
-            f"archive {label} blob is missing: {path}:{blob_name}"
-        ) from error
-    stream = archive.extractfile(member)
+            f"archive {label} blob is missing: {inspection.path}:{blob_name}"
+        )
+    if not member.isfile() or member.size > MAX_RELEASE_JSON_BYTES:
+        raise ReleaseArtifactError(
+            f"archive {label} exceeds the JSON byte limit: {inspection.path}"
+        )
+    inspection.consume_metadata_bytes(member.size)
+    stream = inspection.archive.extractfile(member)
     if stream is None:
         raise ReleaseArtifactError(
-            f"archive {label} blob is not a regular file: {path}:{blob_name}"
+            f"archive {label} blob is not a regular file: {inspection.path}:{blob_name}"
         )
-    contents = stream.read()
+    contents = stream.read(MAX_RELEASE_JSON_BYTES + 1)
+    if len(contents) != member.size:
+        raise ReleaseArtifactError(f"archive {label} size is inconsistent: {inspection.path}")
     if f"sha256:{hashlib.sha256(contents).hexdigest()}" != digest:
-        raise ReleaseArtifactError(f"archive {label} digest mismatch: {path}")
+        raise ReleaseArtifactError(f"archive {label} digest mismatch: {inspection.path}")
+    inspection.blob_cache[blob_name] = contents
     return contents
 
 
 def _parse_archive_json_object(contents: bytes, path: Path, *, label: str) -> dict[str, Any]:
     try:
         value = json.loads(contents)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, MemoryError) as error:
         raise ReleaseArtifactError(f"archive {label} is invalid JSON: {path}") from error
     if not isinstance(value, dict):
         raise ReleaseArtifactError(f"archive {label} root is invalid: {path}")
@@ -839,8 +2688,7 @@ def _validate_slsa_provenance_statement(
 
 
 def _resolve_main_manifest_digest(
-    archive: tarfile.TarFile,
-    path: Path,
+    inspection: _ArchiveInspection,
     descriptor_digest: str,
     descriptor_value: dict[str, Any],
     config_digest: str,
@@ -857,8 +2705,7 @@ def _resolve_main_manifest_digest(
     for nested in nested_descriptors:
         nested_digest = nested.get("digest") if isinstance(nested, dict) else None
         nested_bytes = _read_archive_sha256_blob(
-            archive,
-            path,
+            inspection,
             nested_digest,
             label="nested descriptor",
             # Docker 29 retains source index entries for platforms whose blobs
@@ -868,23 +2715,26 @@ def _resolve_main_manifest_digest(
         if nested_bytes is None:
             continue
         assert isinstance(nested_digest, str)
-        nested_value = _parse_archive_json_object(nested_bytes, path, label="nested descriptor")
+        nested_value = _parse_archive_json_object(
+            nested_bytes, inspection.path, label="nested descriptor"
+        )
         nested_config = nested_value.get("config")
         if not isinstance(nested_config, dict):
             continue
         platform_value = nested.get("platform")
         if platform_value is not None and not isinstance(platform_value, dict):
-            raise ReleaseArtifactError(f"archive nested descriptor platform is invalid: {path}")
+            raise ReleaseArtifactError(
+                f"archive nested descriptor platform is invalid: {inspection.path}"
+            )
         if nested_config.get("digest") != config_digest:
             nested_config_bytes = _read_archive_sha256_blob(
-                archive,
-                path,
+                inspection,
                 nested_config.get("digest"),
                 label="nested config",
             )
             assert nested_config_bytes is not None
             nested_config_value = _parse_archive_json_object(
-                nested_config_bytes, path, label="nested config"
+                nested_config_bytes, inspection.path, label="nested config"
             )
             attachment_platform = (
                 nested_config_value.get("os"),
@@ -900,23 +2750,24 @@ def _resolve_main_manifest_digest(
                 "unknown",
             ):
                 raise ReleaseArtifactError(
-                    f"archive contains an additional runnable descriptor: {path}"
+                    f"archive contains an additional runnable descriptor: {inspection.path}"
                 )
             continue
         if isinstance(platform_value, dict) and (
             platform_value.get("os") != config.get("os")
             or platform_value.get("architecture") != config.get("architecture")
         ):
-            raise ReleaseArtifactError(f"archive nested descriptor platform mismatch: {path}")
+            raise ReleaseArtifactError(
+                f"archive nested descriptor platform mismatch: {inspection.path}"
+            )
         matching_nested.append(nested_digest)
     if len(matching_nested) > 1:
-        raise ReleaseArtifactError(f"archive main descriptor is not unique: {path}")
+        raise ReleaseArtifactError(f"archive main descriptor is not unique: {inspection.path}")
     return matching_nested[0] if matching_nested else None
 
 
 def _validate_provenance_attachment(
-    archive: tarfile.TarFile,
-    path: Path,
+    inspection: _ArchiveInspection,
     descriptor: dict[str, Any],
     descriptor_value: dict[str, Any],
     main_manifest_digest: str,
@@ -926,93 +2777,103 @@ def _validate_provenance_attachment(
         or descriptor_value.get("schemaVersion") != OCI_SCHEMA_VERSION
         or descriptor_value.get("mediaType") != OCI_IMAGE_MANIFEST_MEDIA_TYPE
     ):
-        raise ReleaseArtifactError(f"unsupported archive attachment: {path}")
+        raise ReleaseArtifactError(f"unsupported archive attachment: {inspection.path}")
     annotations = descriptor.get("annotations")
     subject = (
         annotations.get(CONTAINERD_SUBJECT_ANNOTATION) if isinstance(annotations, dict) else None
     )
     if subject != main_manifest_digest:
-        raise ReleaseArtifactError(f"archive provenance subject mismatch: {path}")
+        raise ReleaseArtifactError(f"archive provenance subject mismatch: {inspection.path}")
     descriptor_platform = descriptor.get("platform")
     if descriptor_platform is not None and (
         not isinstance(descriptor_platform, dict)
         or descriptor_platform.get("os") != "unknown"
         or descriptor_platform.get("architecture") != "unknown"
     ):
-        raise ReleaseArtifactError(f"archive provenance descriptor platform mismatch: {path}")
+        raise ReleaseArtifactError(
+            f"archive provenance descriptor platform mismatch: {inspection.path}"
+        )
     manifest_subject = descriptor_value.get("subject")
     if manifest_subject is not None and (
         not isinstance(manifest_subject, dict)
         or manifest_subject.get("digest") != main_manifest_digest
     ):
-        raise ReleaseArtifactError(f"archive provenance subject mismatch: {path}")
+        raise ReleaseArtifactError(f"archive provenance subject mismatch: {inspection.path}")
 
     config_descriptor = descriptor_value.get("config")
     if (
         not isinstance(config_descriptor, dict)
         or config_descriptor.get("mediaType") != OCI_IMAGE_CONFIG_MEDIA_TYPE
     ):
-        raise ReleaseArtifactError(f"archive provenance config is invalid: {path}")
+        raise ReleaseArtifactError(f"archive provenance config is invalid: {inspection.path}")
     config_bytes = _read_archive_sha256_blob(
-        archive,
-        path,
+        inspection,
         config_descriptor.get("digest"),
         label="provenance config",
     )
     assert config_bytes is not None
-    provenance_config = _parse_archive_json_object(config_bytes, path, label="provenance config")
+    provenance_config = _parse_archive_json_object(
+        config_bytes, inspection.path, label="provenance config"
+    )
     if (
         provenance_config.get("os") != "unknown"
         or provenance_config.get("architecture") != "unknown"
     ):
-        raise ReleaseArtifactError(f"archive provenance config platform mismatch: {path}")
+        raise ReleaseArtifactError(
+            f"archive provenance config platform mismatch: {inspection.path}"
+        )
 
     layers = descriptor_value.get("layers")
     if not isinstance(layers, list) or len(layers) != 1:
-        raise ReleaseArtifactError(f"archive provenance layers are invalid: {path}")
+        raise ReleaseArtifactError(f"archive provenance layers are invalid: {inspection.path}")
     for layer in layers:
         if not isinstance(layer, dict) or layer.get("mediaType") != IN_TOTO_MEDIA_TYPE:
-            raise ReleaseArtifactError(f"archive provenance layer media type is invalid: {path}")
+            raise ReleaseArtifactError(
+                f"archive provenance layer media type is invalid: {inspection.path}"
+            )
         layer_annotations = layer.get("annotations")
         if (
             not isinstance(layer_annotations, dict)
             or layer_annotations.get(IN_TOTO_PREDICATE_ANNOTATION) != SLSA_PROVENANCE_V1
         ):
-            raise ReleaseArtifactError(f"archive provenance layer is invalid: {path}")
+            raise ReleaseArtifactError(f"archive provenance layer is invalid: {inspection.path}")
         layer_bytes = _read_archive_sha256_blob(
-            archive,
-            path,
+            inspection,
             layer.get("digest"),
             label="provenance layer",
         )
         assert layer_bytes is not None
-        statement = _parse_archive_json_object(layer_bytes, path, label="provenance layer")
-        _validate_slsa_provenance_statement(statement, path, main_manifest_digest)
+        statement = _parse_archive_json_object(
+            layer_bytes, inspection.path, label="provenance layer"
+        )
+        _validate_slsa_provenance_statement(statement, inspection.path, main_manifest_digest)
 
 
 def inspect_docker_archive(  # noqa: PLR0912, PLR0915
     path: Path, expected_reference: str
 ) -> ArchiveIdentity:
     try:
+        _preflight_docker_archive(path)
         with tarfile.open(path, mode="r:gz") as archive:
-            members = archive.getmembers()
+            members = _bounded_docker_archive_members(archive, path)
             names = [member.name for member in members]
             if len(names) != len(set(names)):
                 raise ReleaseArtifactError(f"archive contains duplicate members: {path}")
+            members_by_name = {member.name: member for member in members}
+            inspection = _ArchiveInspection(archive, path, members_by_name)
             for member in members:
                 _validate_relative_path(member.name.rstrip("/") or member.name)
                 if member.issym() or member.islnk():
                     raise ReleaseArtifactError(
                         f"archive contains a link member: {path}:{member.name}"
                     )
-            try:
-                manifest_member = archive.getmember("manifest.json")
-            except KeyError as error:
-                raise ReleaseArtifactError(f"archive is missing manifest.json: {path}") from error
-            manifest_stream = archive.extractfile(manifest_member)
-            if manifest_stream is None:
-                raise ReleaseArtifactError(f"archive manifest.json is not a regular file: {path}")
-            manifest_value = json.load(manifest_stream)
+            manifest_member = members_by_name.get("manifest.json")
+            if manifest_member is None:
+                raise ReleaseArtifactError(f"archive is missing manifest.json: {path}")
+            manifest_bytes = _read_archive_member_bytes(
+                archive, manifest_member, path, label="manifest.json"
+            )
+            manifest_value = json.loads(manifest_bytes)
             if not isinstance(manifest_value, list) or len(manifest_value) != 1:
                 raise ReleaseArtifactError(f"archive must contain exactly one image: {path}")
             entry = manifest_value[0]
@@ -1028,18 +2889,10 @@ def inspect_docker_archive(  # noqa: PLR0912, PLR0915
             if not isinstance(config_name, str):
                 raise ReleaseArtifactError(f"archive config path is invalid: {path}")
             _validate_relative_path(config_name)
-            try:
-                config_member = archive.getmember(config_name)
-            except KeyError as error:
-                raise ReleaseArtifactError(
-                    f"archive config is missing: {path}:{config_name}"
-                ) from error
-            config_stream = archive.extractfile(config_member)
-            if config_stream is None:
-                raise ReleaseArtifactError(
-                    f"archive config is not a regular file: {path}:{config_name}"
-                )
-            config_bytes = config_stream.read()
+            config_member = members_by_name.get(config_name)
+            if config_member is None:
+                raise ReleaseArtifactError(f"archive config is missing: {path}:{config_name}")
+            config_bytes = _read_archive_member_bytes(archive, config_member, path, label="config")
             try:
                 config = json.loads(config_bytes)
             except json.JSONDecodeError as error:
@@ -1049,16 +2902,21 @@ def inspect_docker_archive(  # noqa: PLR0912, PLR0915
             config_digest = f"sha256:{hashlib.sha256(config_bytes).hexdigest()}"
             image_id = config_digest
             if "index.json" in names:
-                index_stream = archive.extractfile("index.json")
-                if index_stream is None:
-                    raise ReleaseArtifactError(f"archive index.json is not a regular file: {path}")
-                index_value = json.load(index_stream)
+                index_member = members_by_name["index.json"]
+                index_bytes = _read_archive_member_bytes(
+                    archive, index_member, path, label="index.json"
+                )
+                index_value = json.loads(index_bytes)
                 descriptors = (
                     index_value.get("manifests") if isinstance(index_value, dict) else None
                 )
                 if not isinstance(descriptors, list) or not descriptors:
                     raise ReleaseArtifactError(
                         f"archive index must contain image descriptors: {path}"
+                    )
+                if len(descriptors) > MAX_DOCKER_DESCRIPTOR_REFERENCES:
+                    raise ReleaseArtifactError(
+                        f"archive descriptor reference budget exceeded: {path}"
                     )
                 loaded_descriptors: list[
                     tuple[dict[str, Any], str, dict[str, Any], str | None]
@@ -1068,8 +2926,7 @@ def inspect_docker_archive(  # noqa: PLR0912, PLR0915
                         raise ReleaseArtifactError(f"archive descriptor is invalid: {path}")
                     descriptor_digest = descriptor.get("digest")
                     descriptor_bytes = _read_archive_sha256_blob(
-                        archive,
-                        path,
+                        inspection,
                         descriptor_digest,
                         label="descriptor",
                     )
@@ -1079,8 +2936,7 @@ def inspect_docker_archive(  # noqa: PLR0912, PLR0915
                         descriptor_bytes, path, label="descriptor"
                     )
                     main_manifest_digest = _resolve_main_manifest_digest(
-                        archive,
-                        path,
+                        inspection,
                         descriptor_digest,
                         descriptor_value,
                         config_digest,
@@ -1105,8 +2961,7 @@ def inspect_docker_archive(  # noqa: PLR0912, PLR0915
                 for descriptor, _digest, descriptor_value, resolved in loaded_descriptors:
                     if resolved is None:
                         _validate_provenance_attachment(
-                            archive,
-                            path,
+                            inspection,
                             descriptor,
                             descriptor_value,
                             main_manifest_digest,
@@ -1115,6 +2970,8 @@ def inspect_docker_archive(  # noqa: PLR0912, PLR0915
         tarfile.TarError,
         gzip.BadGzipFile,
         json.JSONDecodeError,
+        RecursionError,
+        MemoryError,
         EOFError,
         OSError,
     ) as error:
@@ -1166,6 +3023,27 @@ def inspect_image(reference: str, runner: Runner, *, root: Path) -> InspectedIma
     )
 
 
+def _inspect_loaded_candidate_image(
+    image: ImageArtifact, runner: Runner, *, root: Path
+) -> InspectedImage:
+    expected = (image.image_id, image.os, image.architecture)
+    inspected = inspect_image(image.image_id, runner, root=root)
+    actual = (inspected.image_id, inspected.os, inspected.architecture)
+    if actual != expected:
+        raise ReleaseArtifactError(
+            f"loaded image identity mismatch for {image.component}: "
+            f"expected {expected}, got {actual}"
+        )
+    reference = inspect_image(image.candidate_reference, runner, root=root)
+    reference_identity = (reference.image_id, reference.os, reference.architecture)
+    if reference_identity != expected or image.candidate_reference not in reference.repo_tags:
+        raise ReleaseArtifactError(
+            f"loaded candidate reference mismatch for {image.component}: "
+            f"expected {expected}, got {reference_identity}"
+        )
+    return inspected
+
+
 def _repository_name(reference: str) -> str:
     without_digest = reference.split("@", maxsplit=1)[0]
     last_slash = without_digest.rfind("/")
@@ -1189,8 +3067,9 @@ def compute_logical_identity(
     target_architecture: str,
     alembic_head: str,
     images: Sequence[ImageArtifact],
+    qualification_toolchain: QualificationToolchainDescriptor | None = None,
 ) -> str:
-    value = {
+    value: dict[str, Any] = {
         "alembic_head": alembic_head,
         "candidate_id": candidate_id,
         "images": [
@@ -1207,6 +3086,8 @@ def compute_logical_identity(
         "target_architecture": target_architecture,
         "target_os": target_os,
     }
+    if qualification_toolchain is not None:
+        value["qualification_toolchain"] = asdict(qualification_toolchain)
     encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return f"sha256:{hashlib.sha256(encoded.encode()).hexdigest()}"
 
@@ -1249,6 +3130,28 @@ def render_manifest_markdown(manifest: CandidateManifest) -> str:
                 archive=image.archive,
                 sha256=image.sha256,
             )
+        )
+    if manifest.qualification_toolchain is not None:
+        toolchain = manifest.qualification_toolchain
+        lines.extend(
+            [
+                "",
+                "## Qualification Toolchain",
+                "",
+                f"- Archive: `{toolchain.path}`",
+                f"- Format: `{toolchain.format}`",
+                f"- SHA-256: `{toolchain.sha256}`",
+                f"- Semantic validator: `{toolchain.semantic_validator}`",
+                f"- Schema: `{toolchain.schema.path}` (`{toolchain.schema.sha256}`)",
+                f"- Validator: `{toolchain.validator.path}` (`{toolchain.validator.sha256}`)",
+                f"- Producer: `{toolchain.producer.path}` (`{toolchain.producer.sha256}`)",
+                "- Receipt producer: "
+                f"`{toolchain.receipt_producer.path}` "
+                f"(`{toolchain.receipt_producer.sha256}`)",
+                "- Toolchain manifest: "
+                f"`{toolchain.toolchain_manifest.path}` "
+                f"(`{toolchain.toolchain_manifest.sha256}`)",
+            ]
         )
     lines.extend(
         [
@@ -1326,8 +3229,55 @@ def _parse_sha256sums(path: Path) -> dict[str, str]:
     return _parse_sha256sums_bytes(value)
 
 
-def _manifest_from_dict(value: dict[str, Any]) -> CandidateManifest:
+def _artifact_identity_from_dict(value: object, *, label: str) -> ArtifactIdentity:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"path", "sha256"}
+        or not isinstance(value.get("path"), str)
+        or not isinstance(value.get("sha256"), str)
+    ):
+        raise ReleaseArtifactError(f"MANIFEST.json {label} identity is invalid")
+    return ArtifactIdentity(path=value["path"], sha256=value["sha256"])
+
+
+def _qualification_descriptor_from_dict(value: object) -> QualificationToolchainDescriptor:
     required_keys = {
+        "path",
+        "sha256",
+        "format",
+        "semantic_validator",
+        "schema",
+        "validator",
+        "producer",
+        "receipt_producer",
+        "toolchain_manifest",
+    }
+    if not isinstance(value, dict) or set(value) != required_keys:
+        raise ReleaseArtifactError("MANIFEST.json qualification_toolchain keys mismatch")
+    if not all(
+        isinstance(value.get(name), str)
+        for name in ("path", "sha256", "format", "semantic_validator")
+    ):
+        raise ReleaseArtifactError("MANIFEST.json qualification_toolchain fields are invalid")
+    return QualificationToolchainDescriptor(
+        path=value["path"],
+        sha256=value["sha256"],
+        format=value["format"],
+        semantic_validator=value["semantic_validator"],
+        schema=_artifact_identity_from_dict(value["schema"], label="schema"),
+        validator=_artifact_identity_from_dict(value["validator"], label="validator"),
+        producer=_artifact_identity_from_dict(value["producer"], label="producer"),
+        receipt_producer=_artifact_identity_from_dict(
+            value["receipt_producer"], label="receipt_producer"
+        ),
+        toolchain_manifest=_artifact_identity_from_dict(
+            value["toolchain_manifest"], label="toolchain_manifest"
+        ),
+    )
+
+
+def _manifest_from_dict(value: dict[str, Any]) -> CandidateManifest:
+    base_keys = {
         "schema_version",
         "candidate_id",
         "source_commit",
@@ -1340,6 +3290,12 @@ def _manifest_from_dict(value: dict[str, Any]) -> CandidateManifest:
         "authenticity",
         "images",
     }
+    schema_version = value.get("schema_version")
+    required_keys = (
+        base_keys | {"qualification_toolchain"}
+        if schema_version == MANIFEST_SCHEMA_VERSION and not isinstance(schema_version, bool)
+        else base_keys
+    )
     if set(value) != required_keys:
         raise ReleaseArtifactError(
             f"MANIFEST.json keys mismatch: expected {sorted(required_keys)}, got {sorted(value)}"
@@ -1356,6 +3312,11 @@ def _manifest_from_dict(value: dict[str, Any]) -> CandidateManifest:
             images.append(ImageArtifact(**image_value))
         except TypeError as error:
             raise ReleaseArtifactError(f"MANIFEST.json image {index} is invalid") from error
+    qualification_toolchain = None
+    if schema_version == MANIFEST_SCHEMA_VERSION and not isinstance(schema_version, bool):
+        qualification_toolchain = _qualification_descriptor_from_dict(
+            value["qualification_toolchain"]
+        )
     try:
         return CandidateManifest(
             schema_version=value["schema_version"],
@@ -1369,6 +3330,7 @@ def _manifest_from_dict(value: dict[str, Any]) -> CandidateManifest:
             tools=value["tools"],
             authenticity=value["authenticity"],
             images=tuple(images),
+            qualification_toolchain=qualification_toolchain,
         )
     except TypeError as error:
         raise ReleaseArtifactError("MANIFEST.json has invalid field types") from error
@@ -1389,7 +3351,7 @@ def _validate_manifest(manifest: CandidateManifest) -> None:  # noqa: PLR0912, P
     if (
         not isinstance(manifest.schema_version, int)
         or isinstance(manifest.schema_version, bool)
-        or manifest.schema_version != MANIFEST_SCHEMA_VERSION
+        or manifest.schema_version not in SUPPORTED_MANIFEST_SCHEMA_VERSIONS
     ):
         raise ReleaseArtifactError("unsupported manifest schema_version")
     try:
@@ -1431,6 +3393,29 @@ def _validate_manifest(manifest: CandidateManifest) -> None:  # noqa: PLR0912, P
     fingerprint = manifest.authenticity.get("key_fingerprint")
     if not isinstance(fingerprint, str) or FINGERPRINT_PATTERN.fullmatch(fingerprint) is None:
         raise ReleaseArtifactError("manifest release key fingerprint is invalid")
+    if manifest.schema_version == LEGACY_MANIFEST_SCHEMA_VERSION:
+        if manifest.qualification_toolchain is not None:
+            raise ReleaseArtifactError("manifest v2 forbids qualification_toolchain")
+    else:
+        descriptor = manifest.qualification_toolchain
+        if descriptor is None:
+            raise ReleaseArtifactError("manifest v3 requires qualification_toolchain")
+        if descriptor.path != QUALIFICATION_TOOLCHAIN_ARCHIVE:
+            raise ReleaseArtifactError("qualification toolchain path is invalid")
+        if descriptor.format != QUALIFICATION_TOOLCHAIN_FORMAT:
+            raise ReleaseArtifactError("qualification toolchain format is invalid")
+        if descriptor.semantic_validator != SEMANTIC_VALIDATOR_ID:
+            raise ReleaseArtifactError("qualification toolchain semantic validator is invalid")
+        if SHA256_PATTERN.fullmatch(descriptor.sha256) is None:
+            raise ReleaseArtifactError("qualification toolchain SHA-256 is invalid")
+        for name, expected_path in {
+            "schema": "schemas/point-profile/point-profile-v1.schema.json",
+            "validator": "tools/validate_device_point_profile.py",
+            "producer": "tools/release_artifacts.py",
+            "receipt_producer": "tools/release_verification_receipt.py",
+            "toolchain_manifest": QUALIFICATION_TOOLCHAIN_MANIFEST,
+        }.items():
+            _validate_toolchain_identity(getattr(descriptor, name), expected_path=expected_path)
     if tuple(image.component for image in manifest.images) != COMPONENTS:
         raise ReleaseArtifactError(
             "manifest must contain postgres, redis, api, gw, and web in order"
@@ -1494,6 +3479,7 @@ def _validate_manifest(manifest: CandidateManifest) -> None:  # noqa: PLR0912, P
         target_architecture=manifest.target_architecture,
         alembic_head=manifest.alembic_head,
         images=manifest.images,
+        qualification_toolchain=manifest.qualification_toolchain,
     )
     if manifest.logical_identity != expected_identity:
         raise ReleaseArtifactError("manifest logical_identity does not match its immutable inputs")
@@ -1581,8 +3567,34 @@ def _validate_compose(package: Path, manifest: CandidateManifest, runner: Runner
             raise ReleaseArtifactError(f"candidate Compose service can pull: {name}")
 
 
-def _expected_candidate_files() -> set[str]:
-    return FIXED_PACKAGE_FILES | {f"images/{component}.tar.gz" for component in COMPONENTS}
+def _expected_candidate_files(schema_version: int = MANIFEST_SCHEMA_VERSION) -> set[str]:
+    if schema_version == LEGACY_MANIFEST_SCHEMA_VERSION:
+        fixed_files = FIXED_PACKAGE_FILES_V2
+    elif schema_version == MANIFEST_SCHEMA_VERSION:
+        fixed_files = FIXED_PACKAGE_FILES
+    else:
+        raise ReleaseArtifactError("unsupported manifest schema_version")
+    return fixed_files | {f"images/{component}.tar.gz" for component in COMPONENTS}
+
+
+def _select_candidate_file_set(actual_files: set[str]) -> tuple[int, set[str]]:
+    matches = [
+        (schema_version, _expected_candidate_files(schema_version))
+        for schema_version in SUPPORTED_MANIFEST_SCHEMA_VERSIONS
+        if actual_files == _expected_candidate_files(schema_version)
+    ]
+    if len(matches) != 1:
+        expected_v2 = _expected_candidate_files(LEGACY_MANIFEST_SCHEMA_VERSION)
+        expected_v3 = _expected_candidate_files(MANIFEST_SCHEMA_VERSION)
+        raise ReleaseArtifactError(
+            "publisher authenticity FAILED: candidate file allowlist mismatch: does not match "
+            "complete v2 or v3: "
+            f"v2_missing={sorted(expected_v2 - actual_files)}, "
+            f"v2_extra={sorted(actual_files - expected_v2)}, "
+            f"v3_missing={sorted(expected_v3 - actual_files)}, "
+            f"v3_extra={sorted(actual_files - expected_v3)}"
+        )
+    return matches[0]
 
 
 @contextmanager
@@ -1594,29 +3606,59 @@ def _protected_candidate_snapshot(  # noqa: PLR0912, PLR0915
             "publisher authenticity FAILED: candidate directory is missing or linked"
         )
     package = package.resolve()
-    expected_files = _expected_candidate_files()
     actual_files = _package_file_set(package)
-    if actual_files != expected_files:
-        missing = sorted(expected_files - actual_files)
-        extra = sorted(actual_files - expected_files)
+    _schema_version, expected_files = _select_candidate_file_set(actual_files)
+    initial_identities: dict[str, tuple[int, int, int, int, int, int]] = {}
+    initial_digests: dict[str, str] = {}
+    try:
+        for relative in sorted(expected_files):
+            source = package / relative
+            path_before = source.stat(follow_symlinks=False)
+            if not stat.S_ISREG(path_before.st_mode) or path_before.st_nlink != 1:
+                raise ReleaseArtifactError(
+                    "publisher authenticity FAILED: candidate file is not a unique "
+                    f"regular file: {relative}"
+                )
+            expected_identity = _file_stat_identity(path_before)
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(source, flags)
+            try:
+                before = os.fstat(descriptor)
+                if _file_stat_identity(before) != expected_identity or not os.path.samestat(
+                    before, path_before
+                ):
+                    raise ReleaseArtifactError(
+                        "publisher authenticity FAILED: candidate file changed before "
+                        f"snapshot: {relative}"
+                    )
+                digest = hashlib.sha256()
+                read_size = 0
+                with os.fdopen(descriptor, "rb", closefd=False) as source_stream:
+                    for chunk in iter(lambda: source_stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                        read_size += len(chunk)
+                after = os.fstat(descriptor)
+                path_after = source.stat(follow_symlinks=False)
+                if (
+                    read_size != before.st_size
+                    or _file_stat_identity(after) != expected_identity
+                    or _file_stat_identity(path_after) != expected_identity
+                    or not os.path.samestat(after, path_after)
+                ):
+                    raise ReleaseArtifactError(
+                        "publisher authenticity FAILED: candidate file changed during "
+                        f"snapshot initial scan: {relative}"
+                    )
+                initial_identities[relative] = expected_identity
+                initial_digests[relative] = digest.hexdigest()
+            finally:
+                os.close(descriptor)
+    except OSError as error:
         raise ReleaseArtifactError(
-            "publisher authenticity FAILED: candidate file allowlist mismatch: "
-            f"missing={missing}, extra={extra}"
-        )
-    initial_sizes: dict[str, int] = {}
-    for relative in sorted(expected_files):
-        source = package / relative
-        if source.is_symlink():
-            raise ReleaseArtifactError(
-                f"publisher authenticity FAILED: candidate file changed or linked: {relative}"
-            )
-        metadata = source.stat()
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ReleaseArtifactError(
-                f"publisher authenticity FAILED: candidate file is not regular: {relative}"
-            )
-        initial_sizes[relative] = metadata.st_size
-    total_size = sum(initial_sizes.values())
+            "publisher authenticity FAILED: cannot complete initial candidate snapshot scan: "
+            f"{error}"
+        ) from error
+    total_size = sum(identity[3] for identity in initial_identities.values())
     snapshot_parent = Path(parent) if parent is not None else Path(tempfile.gettempdir())
     reserve = max(64 * 1024 * 1024, total_size // 10)
     if shutil.disk_usage(snapshot_parent).free < total_size + reserve:
@@ -1633,22 +3675,23 @@ def _protected_candidate_snapshot(  # noqa: PLR0912, PLR0915
             for relative in sorted(expected_files):
                 source = package / relative
                 destination = snapshot / relative
-                if source.is_symlink() or not source.is_file():
-                    raise ReleaseArtifactError(
-                        f"publisher authenticity FAILED: candidate file changed or linked: "
-                        f"{relative}"
-                    )
                 flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
                 descriptor = os.open(source, flags)
                 try:
                     opened = os.fstat(descriptor)
-                    expected_size = initial_sizes[relative]
-                    if not stat.S_ISREG(opened.st_mode) or opened.st_size != expected_size:
+                    expected_identity = initial_identities[relative]
+                    if (
+                        not stat.S_ISREG(opened.st_mode)
+                        or opened.st_nlink != 1
+                        or _file_stat_identity(opened) != expected_identity
+                    ):
                         raise ReleaseArtifactError(
                             "publisher authenticity FAILED: candidate file changed before "
                             f"snapshot: {relative}"
                         )
+                    expected_size = expected_identity[3]
                     copied = 0
+                    copied_digest = hashlib.sha256()
                     with (
                         os.fdopen(descriptor, "rb", closefd=False) as input_stream,
                         destination.open("xb") as output_stream,
@@ -1658,12 +3701,31 @@ def _protected_candidate_snapshot(  # noqa: PLR0912, PLR0915
                             if not chunk:
                                 break
                             output_stream.write(chunk)
+                            copied_digest.update(chunk)
                             copied += len(chunk)
                         if copied != expected_size or input_stream.read(1):
                             raise ReleaseArtifactError(
                                 "publisher authenticity FAILED: candidate file size changed "
                                 f"during snapshot: {relative}"
                             )
+                    if copied_digest.hexdigest() != initial_digests[relative]:
+                        raise ReleaseArtifactError(
+                            "publisher authenticity FAILED: candidate file content changed "
+                            f"during snapshot: {relative}"
+                        )
+                    after = os.fstat(descriptor)
+                    path_after = source.stat(follow_symlinks=False)
+                    if (
+                        not stat.S_ISREG(after.st_mode)
+                        or after.st_nlink != 1
+                        or _file_stat_identity(after) != expected_identity
+                        or _file_stat_identity(path_after) != expected_identity
+                        or not os.path.samestat(after, path_after)
+                    ):
+                        raise ReleaseArtifactError(
+                            "publisher authenticity FAILED: candidate file changed during "
+                            f"snapshot: {relative}"
+                        )
                     os.chmod(destination, 0o600)
                 finally:
                     os.close(descriptor)
@@ -1699,15 +3761,8 @@ def _verify_snapshot_contents(  # noqa: PLR0912
     _ensure_external_trust(package, trust)
     signed_sums_bytes = _verify_publisher_signature(package, trust, runner)
     sums = _parse_sha256sums_bytes(signed_sums_bytes)
-    expected_files = _expected_candidate_files()
     actual_files = _package_file_set(package)
-    if actual_files != expected_files:
-        missing = sorted(expected_files - actual_files)
-        extra = sorted(actual_files - expected_files)
-        raise ReleaseArtifactError(
-            f"publisher authenticity FAILED: candidate file allowlist mismatch: "
-            f"missing={missing}, extra={extra}"
-        )
+    expected_schema_version, expected_files = _select_candidate_file_set(actual_files)
     expected_hashed_files = expected_files - {"SHA256SUMS", "SHA256SUMS.sig"}
     if set(sums) != expected_hashed_files:
         missing = sorted(expected_hashed_files - set(sums))
@@ -1746,6 +3801,10 @@ def _verify_snapshot_contents(  # noqa: PLR0912
         _read_json_object_bytes(manifest_bytes, label=str(manifest_path))
     )
     _validate_manifest(manifest)
+    if manifest.schema_version != expected_schema_version:
+        raise ReleaseArtifactError(
+            "publisher authenticity FAILED: manifest schema/file-set version mismatch"
+        )
     if manifest.authenticity["key_fingerprint"] != trust.fingerprint:
         raise ReleaseArtifactError(
             "publisher authenticity FAILED: manifest fingerprint does not match approved trust"
@@ -1770,6 +3829,8 @@ def _verify_snapshot_contents(  # noqa: PLR0912
                 f"archive identity mismatch for {image.component}: "
                 f"expected {expected_identity}, got {actual_identity}"
             )
+    if manifest.qualification_toolchain is not None:
+        _verify_qualification_toolchain(package, manifest.qualification_toolchain, sums)
     if validate_compose:
         _validate_compose(package, manifest, runner)
     return manifest
@@ -1817,26 +3878,22 @@ def load_and_verify_images(
                 cwd=snapshot,
             )
         for image in manifest.images:
-            inspected = inspect_image(image.candidate_reference, runner, root=snapshot)
-            expected = (image.image_id, image.os, image.architecture)
-            actual = (inspected.image_id, inspected.os, inspected.architecture)
-            if actual != expected:
-                raise ReleaseArtifactError(
-                    f"loaded image identity mismatch for {image.component}: "
-                    f"expected {expected}, got {actual}"
-                )
-            if image.candidate_reference not in inspected.repo_tags:
-                raise ReleaseArtifactError(
-                    f"loaded image tag is missing for {image.component}: "
-                    f"{image.candidate_reference}"
-                )
+            _inspect_loaded_candidate_image(image, runner, root=snapshot)
         return manifest
 
 
-def _git_state(root: Path, runner: Runner) -> tuple[str, str]:
-    source_commit = runner.run(["git", "rev-parse", "HEAD"], cwd=root)
+def _git_head(root: Path, runner: Runner) -> str:
+    source_commit = runner.run(
+        ["git", "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"],
+        cwd=root,
+    )
     if SOURCE_COMMIT_PATTERN.fullmatch(source_commit) is None:
         raise ReleaseArtifactError("git rev-parse did not return a full lowercase commit")
+    return source_commit
+
+
+def _git_state(root: Path, runner: Runner) -> tuple[str, str]:
+    source_commit = _git_head(root, runner)
     dirty = runner.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=root)
     if dirty:
         raise ReleaseArtifactError("tracked release inputs are dirty; commit or revert them first")
@@ -1990,9 +4047,7 @@ def build_candidate(  # noqa: PLR0912, PLR0915
     if check_clean:
         source_commit, _dirty = _git_state(root, runner)
     else:
-        source_commit = runner.run(["git", "rev-parse", "HEAD"], cwd=root)
-        if SOURCE_COMMIT_PATTERN.fullmatch(source_commit) is None:
-            raise ReleaseArtifactError("git rev-parse did not return a full lowercase commit")
+        source_commit = _git_head(root, runner)
     output_root = output_root.absolute()
     if output_root.is_symlink():
         raise ReleaseArtifactError("candidate publish root must not be linked")
@@ -2000,61 +4055,6 @@ def build_candidate(  # noqa: PLR0912, PLR0915
     if final_directory.exists():
         raise ReleaseArtifactError(f"candidate ID already exists: {final_directory}")
     references = candidate_image_references(candidate_id)
-    _ensure_candidate_tags_absent(references, runner, root=root)
-    try:
-        output_root.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        raise ReleaseArtifactError(f"cannot create candidate publish root: {error}") from error
-    output_root = _validate_atomic_publish_root(output_root)
-    final_directory = output_root / candidate_id
-    if final_directory.exists():
-        raise ReleaseArtifactError(f"candidate ID already exists: {final_directory}")
-    resolved_lock_root = (
-        lock_root or Path(tempfile.gettempdir()) / "ruisheng-release-artifact-locks"
-    ).resolve()
-    try:
-        resolved_lock_root.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        raise ReleaseArtifactError(
-            f"cannot create candidate lock directory: {resolved_lock_root}: {error}"
-        ) from error
-    lock_path = resolved_lock_root / f"{candidate_id}.lock"
-    try:
-        lock_descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError as error:
-        raise ReleaseArtifactError(
-            f"candidate build already in progress or requires stale-lock cleanup: {lock_path}"
-        ) from error
-    except OSError as error:
-        raise ReleaseArtifactError(
-            f"cannot create candidate build lock: {lock_path}: {error}"
-        ) from error
-    try:
-        try:
-            os.write(lock_descriptor, f"pid={os.getpid()}\n".encode("ascii"))
-        finally:
-            os.close(lock_descriptor)
-    except BaseException as error:
-        lock_path.unlink(missing_ok=True)
-        if isinstance(error, OSError):
-            raise ReleaseArtifactError(
-                f"cannot initialize candidate build lock: {lock_path}: {error}"
-            ) from error
-        raise
-    try:
-        if final_directory.exists():
-            raise ReleaseArtifactError(f"candidate ID already exists: {final_directory}")
-        _ensure_candidate_tags_absent(references, runner, root=root)
-    except BaseException:
-        lock_path.unlink(missing_ok=True)
-        raise
-    try:
-        temporary_directory = Path(
-            tempfile.mkdtemp(prefix=f".{candidate_id}.tmp-", dir=final_directory.parent)
-        )
-    except BaseException:
-        lock_path.unlink(missing_ok=True)
-        raise
     compose_env = {
         "TARGET_PLATFORM": target_platform,
         **{IMAGE_ENV_KEYS[name]: reference for name, reference in references.items()},
@@ -2066,9 +4066,40 @@ def build_candidate(  # noqa: PLR0912, PLR0915
         "gw": f"docker-build://ruisheng-gw/Dockerfile@{source_commit}",
         "web": f"docker-build://ruisheng-web/Dockerfile@{source_commit}",
     }
+    if lock_root is None:
+        resolved_lock_root = system_candidate_tag_lock_root()
+    else:
+        resolved_lock_root = lock_root.absolute()
+        try:
+            resolved_lock_root.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise ReleaseArtifactError(
+                f"cannot create candidate lock directory: {resolved_lock_root}: {error}"
+            ) from error
+        resolved_lock_root = _validate_atomic_publish_root(resolved_lock_root)
+
+    pending_lock = candidate_tag_operation_lock(resolved_lock_root, candidate_id)
+    pending_lock.__enter__()
+    temporary_directory: Path | None = None
+    candidate_tags_owned = False
     published = False
     try:
+        if final_directory.exists():
+            raise ReleaseArtifactError(f"candidate ID already exists: {final_directory}")
+        _ensure_candidate_tags_absent(references, runner, root=root)
+        try:
+            output_root.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise ReleaseArtifactError(f"cannot create candidate publish root: {error}") from error
+        output_root = _validate_atomic_publish_root(output_root)
+        final_directory = output_root / candidate_id
+        if final_directory.exists():
+            raise ReleaseArtifactError(f"candidate ID already exists: {final_directory}")
+        temporary_directory = Path(
+            tempfile.mkdtemp(prefix=f".{candidate_id}.tmp-", dir=final_directory.parent)
+        )
         (temporary_directory / "images").mkdir()
+        candidate_tags_owned = True
         for component, source in (("postgres", postgres_source), ("redis", redis_source)):
             if pull_base_images:
                 runner.run(
@@ -2144,6 +4175,12 @@ def build_candidate(  # noqa: PLR0912, PLR0915
 
         replacements = {key: compose_env[key] for key in compose_env}
         _copy_candidate_files(root, temporary_directory, replacements)
+        qualification_toolchain = _write_qualification_toolchain(
+            root,
+            temporary_directory,
+            source_commit=source_commit,
+            runner=runner,
+        )
         alembic_head = _alembic_head(root, runner)
         images = tuple(partial_images)
         manifest = CandidateManifest(
@@ -2161,6 +4198,7 @@ def build_candidate(  # noqa: PLR0912, PLR0915
                 target_architecture=target_architecture,
                 alembic_head=alembic_head,
                 images=images,
+                qualification_toolchain=qualification_toolchain,
             ),
             tools=_tool_versions(root, runner),
             authenticity={
@@ -2174,6 +4212,7 @@ def build_candidate(  # noqa: PLR0912, PLR0915
                 "signature_file": SIGNATURE_FILE,
             },
             images=images,
+            qualification_toolchain=qualification_toolchain,
         )
         _write_manifests(temporary_directory, manifest)
         hashed_files = HASHED_FIXED_FILES | {image.archive for image in images}
@@ -2194,19 +4233,23 @@ def build_candidate(  # noqa: PLR0912, PLR0915
         published = True
         return final_directory
     except BaseException as error:
-        shutil.rmtree(temporary_directory, ignore_errors=True)
-        cleanup_errors = _remove_candidate_tags(references, runner, root=root)
+        if temporary_directory is not None:
+            shutil.rmtree(temporary_directory, ignore_errors=True)
+        cleanup_errors = (
+            _remove_candidate_tags(references, runner, root=root) if candidate_tags_owned else []
+        )
         if cleanup_errors:
             error.add_note("candidate tag cleanup failed: " + "; ".join(cleanup_errors))
         raise
     finally:
         active_error = sys.exception()
         try:
-            lock_path.unlink(missing_ok=True)
-        except OSError as lock_error:
+            pending_lock.__exit__(*sys.exc_info())
+        except BaseException as lock_error:
             if active_error is not None:
                 active_error.add_note(
-                    f"candidate build lock cleanup failed: {lock_path}: {lock_error}"
+                    "candidate tag operation lock release failed: "
+                    f"{resolved_lock_root}: {lock_error}"
                 )
             else:
                 rollback_errors: list[str] = []
@@ -2219,7 +4262,8 @@ def build_candidate(  # noqa: PLR0912, PLR0915
                         )
                     rollback_errors.extend(_remove_candidate_tags(references, runner, root=root))
                 release_error = ReleaseArtifactError(
-                    f"candidate build lock cleanup failed: {lock_path}: {lock_error}"
+                    "candidate tag operation lock release failed: "
+                    f"{resolved_lock_root}: {lock_error}"
                 )
                 if rollback_errors:
                     release_error.add_note("; ".join(rollback_errors))
@@ -2269,7 +4313,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 trust_directory=args.trust_directory,
             )
             print(f"Candidate created: {destination}")
-        else:
+        elif args.command == "verify":
             if os.name == "nt":
                 raise ReleaseArtifactError(
                     "Windows verification must use the ACL-validating external "

@@ -8,6 +8,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$MaxReleaseJsonBytes = 4MB
+$MaxDockerArchiveMembers = 32768
+$MaxDockerArchiveMemberBytes = 8GB
+$MaxDockerArchiveTotalBytes = 32GB
+$MaxDockerDescriptorReferences = 32768
+$MaxDockerMetadataBytes = 64MB
 function Fail([string]$Message) {
     throw "[verify] $Message"
 }
@@ -165,8 +171,91 @@ function New-ProtectedSnapshotRoot([string]$Prefix) {
     return $Snapshot
 }
 
+if (-not ("RuishengCandidateSnapshotNativeMethods" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class RuishengCandidateSnapshotNativeMethods
+{
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NativeFileTime
+    {
+        public UInt32 Low;
+        public UInt32 High;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ByHandleFileInformation
+    {
+        public UInt32 FileAttributes;
+        public NativeFileTime CreationTime;
+        public NativeFileTime LastAccessTime;
+        public NativeFileTime LastWriteTime;
+        public UInt32 VolumeSerialNumber;
+        public UInt32 FileSizeHigh;
+        public UInt32 FileSizeLow;
+        public UInt32 NumberOfLinks;
+        public UInt32 FileIndexHigh;
+        public UInt32 FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetFileInformationByHandle(
+        SafeFileHandle handle,
+        out ByHandleFileInformation information
+    );
+}
+'@
+}
+
+function Join-FileIdentityUInt32([UInt32]$High, [UInt32]$Low) {
+    return ([UInt64]$High * 4294967296L) + [UInt64]$Low
+}
+
+function Get-OpenFileIdentity([IO.FileStream]$Stream, [string]$Relative) {
+    $Information = [RuishengCandidateSnapshotNativeMethods+ByHandleFileInformation]::new()
+    if (-not [RuishengCandidateSnapshotNativeMethods]::GetFileInformationByHandle(
+        $Stream.SafeFileHandle, [ref]$Information
+    )) {
+        $Code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        Fail "publisher authenticity FAILED: cannot identify open candidate file (${Relative}): Win32 error $Code"
+    }
+    return [pscustomobject]@{
+        VolumeSerialNumber = [UInt32]$Information.VolumeSerialNumber
+        FileIndex = Join-FileIdentityUInt32 $Information.FileIndexHigh $Information.FileIndexLow
+        NumberOfLinks = [UInt32]$Information.NumberOfLinks
+        Length = Join-FileIdentityUInt32 $Information.FileSizeHigh $Information.FileSizeLow
+        CreationTime = Join-FileIdentityUInt32 `
+            $Information.CreationTime.High $Information.CreationTime.Low
+        LastWriteTime = Join-FileIdentityUInt32 `
+            $Information.LastWriteTime.High $Information.LastWriteTime.Low
+        FileAttributes = [UInt32]$Information.FileAttributes
+    }
+}
+
+function Test-SameOpenFileIdentity([object]$Left, [object]$Right) {
+    foreach ($Name in @(
+        "VolumeSerialNumber", "FileIndex", "NumberOfLinks", "Length",
+        "CreationTime", "LastWriteTime", "FileAttributes"
+    )) {
+        if ($Left.$Name -ne $Right.$Name) { return $false }
+    }
+    return $true
+}
+
+function Assert-CandidatePathIsRegular([string]$Path, [string]$Relative) {
+    $Item = Get-Item -Force -LiteralPath $Path -ErrorAction Stop
+    if ($Item.PSIsContainer -or
+        ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail "publisher authenticity FAILED: candidate file changed or linked: $Relative"
+    }
+}
+
 $Components = @("postgres", "redis", "api", "gw", "web")
-$FixedFiles = @(
+$FixedFilesV2 = @(
     ".env.prod.example",
     "MANIFEST.json",
     "MANIFEST.md",
@@ -191,12 +280,16 @@ $FixedFiles = @(
     "verify-candidate.ps1",
     "verify-candidate.sh"
 )
-$SnapshotExpectedFiles = [System.Collections.Generic.HashSet[string]]::new(
-    [string[]]$FixedFiles, [System.StringComparer]::Ordinal
+$SnapshotExpectedV2 = [System.Collections.Generic.HashSet[string]]::new(
+    [string[]]$FixedFilesV2, [System.StringComparer]::Ordinal
 )
 foreach ($Component in $Components) {
-    [void]$SnapshotExpectedFiles.Add("images/$Component.tar.gz")
+    [void]$SnapshotExpectedV2.Add("images/$Component.tar.gz")
 }
+$SnapshotExpectedV3 = [System.Collections.Generic.HashSet[string]]::new(
+    [string[]]@($SnapshotExpectedV2), [System.StringComparer]::Ordinal
+)
+[void]$SnapshotExpectedV3.Add("qualification-toolchain.tar.gz")
 
 $PackageItem = Get-Item -Force -LiteralPath $PackagePath -ErrorAction Stop
 if (-not $PackageItem.PSIsContainer -or
@@ -221,6 +314,7 @@ try {
     Remove-Item Env:DOCKER_CLI_PLUGIN_EXTRA_DIRS -ErrorAction SilentlyContinue
     Remove-Item Env:DOCKER_HOST -ErrorAction SilentlyContinue
     Remove-Item Env:DOCKER_CONTEXT -ErrorAction SilentlyContinue
+    Remove-Item Env:XDG_CONFIG_HOME -ErrorAction SilentlyContinue
 
     $SnapshotActualFiles = [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::Ordinal
@@ -239,26 +333,37 @@ try {
             [void]$SnapshotActualFiles.Add($Relative)
         }
     }
-    $SnapshotMissing = @($SnapshotExpectedFiles | Where-Object {
-        -not $SnapshotActualFiles.Contains($_)
-    })
-    $SnapshotExtra = @($SnapshotActualFiles | Where-Object {
-        -not $SnapshotExpectedFiles.Contains($_)
-    })
-    if ($SnapshotMissing.Count -ne 0 -or $SnapshotExtra.Count -ne 0) {
-        Fail "publisher authenticity FAILED: candidate file allowlist mismatch: missing=$($SnapshotMissing -join ','), extra=$($SnapshotExtra -join ',')"
+    $SnapshotMatchesV2 = $SnapshotActualFiles.SetEquals($SnapshotExpectedV2)
+    $SnapshotMatchesV3 = $SnapshotActualFiles.SetEquals($SnapshotExpectedV3)
+    if ($SnapshotMatchesV2 -eq $SnapshotMatchesV3) {
+        Fail "publisher authenticity FAILED: candidate file allowlist mismatch: does not match complete v2 or v3"
     }
-    $SourceLengths = @{}
+    $ExpectedSchemaVersion = if ($SnapshotMatchesV3) { 3 } else { 2 }
+    $SnapshotExpectedFiles = if ($SnapshotMatchesV3) { $SnapshotExpectedV3 } else { $SnapshotExpectedV2 }
+    $FixedFiles = if ($SnapshotMatchesV3) {
+        @($FixedFilesV2) + @("qualification-toolchain.tar.gz")
+    } else { $FixedFilesV2 }
+    $SourceIdentities = @{}
     [Int64]$SnapshotBytes = 0
     foreach ($Relative in $SnapshotExpectedFiles) {
         $SourcePath = Join-Path $SourcePackageRoot $Relative
-        $SourceItem = Get-Item -Force -LiteralPath $SourcePath -ErrorAction Stop
-        if ($SourceItem.PSIsContainer -or
-            ($SourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            Fail "publisher authenticity FAILED: candidate file changed or linked: $Relative"
+        Assert-CandidatePathIsRegular $SourcePath $Relative
+        $IdentityStream = $null
+        try {
+            $IdentityStream = [IO.File]::Open(
+                $SourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
+            )
+            $SourceIdentity = Get-OpenFileIdentity $IdentityStream $Relative
+            Assert-CandidatePathIsRegular $SourcePath $Relative
+            if ($SourceIdentity.NumberOfLinks -ne 1 -or
+                $IdentityStream.Length -ne $SourceIdentity.Length) {
+                Fail "publisher authenticity FAILED: candidate file is not a unique regular file: $Relative"
+            }
+            $SourceIdentities[$Relative] = $SourceIdentity
+            $SnapshotBytes += [Int64]$SourceIdentity.Length
+        } finally {
+            if ($null -ne $IdentityStream) { $IdentityStream.Dispose() }
         }
-        $SourceLengths[$Relative] = [Int64]$SourceItem.Length
-        $SnapshotBytes += [Int64]$SourceItem.Length
     }
     [Int64]$SnapshotReserve = [Math]::Max(64MB, [Int64]($SnapshotBytes / 10))
     $SnapshotDrive = (Get-Item -LiteralPath $SnapshotRoot -ErrorAction Stop).PSDrive
@@ -268,21 +373,22 @@ try {
     foreach ($Relative in $SnapshotExpectedFiles) {
         $SourcePath = Join-Path $SourcePackageRoot $Relative
         $DestinationPath = Join-Path $SnapshotRoot $Relative
-        $SourceItem = Get-Item -Force -LiteralPath $SourcePath -ErrorAction Stop
-        if ($SourceItem.PSIsContainer -or
-            ($SourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            Fail "publisher authenticity FAILED: candidate file changed or linked: $Relative"
-        }
+        Assert-CandidatePathIsRegular $SourcePath $Relative
         $InputStream = $null
         $OutputStream = $null
         try {
             $InputStream = [IO.File]::Open(
-                $SourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read
+                $SourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
             )
-            [Int64]$ExpectedLength = $SourceLengths[$Relative]
-            if ($InputStream.Length -ne $ExpectedLength) {
+            $ExpectedIdentity = $SourceIdentities[$Relative]
+            $OpenedIdentity = Get-OpenFileIdentity $InputStream $Relative
+            Assert-CandidatePathIsRegular $SourcePath $Relative
+            if (-not (Test-SameOpenFileIdentity $OpenedIdentity $ExpectedIdentity) -or
+                $OpenedIdentity.NumberOfLinks -ne 1 -or
+                $InputStream.Length -ne $OpenedIdentity.Length) {
                 Fail "publisher authenticity FAILED: candidate file changed before snapshot: $Relative"
             }
+            [Int64]$ExpectedLength = $ExpectedIdentity.Length
             $OutputStream = [IO.File]::Open(
                 $DestinationPath,
                 [IO.FileMode]::CreateNew,
@@ -301,9 +407,28 @@ try {
             if ($Copied -ne $ExpectedLength -or $InputStream.ReadByte() -ne -1) {
                 Fail "publisher authenticity FAILED: candidate file size changed during snapshot: $Relative"
             }
+            $AfterIdentity = Get-OpenFileIdentity $InputStream $Relative
+            Assert-CandidatePathIsRegular $SourcePath $Relative
+            if (-not (Test-SameOpenFileIdentity $AfterIdentity $ExpectedIdentity)) {
+                Fail "publisher authenticity FAILED: candidate file changed during snapshot: $Relative"
+            }
         } finally {
             if ($null -ne $OutputStream) { $OutputStream.Dispose() }
             if ($null -ne $InputStream) { $InputStream.Dispose() }
+        }
+        $PathStream = $null
+        try {
+            Assert-CandidatePathIsRegular $SourcePath $Relative
+            $PathStream = [IO.File]::Open(
+                $SourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
+            )
+            $PathIdentity = Get-OpenFileIdentity $PathStream $Relative
+            Assert-CandidatePathIsRegular $SourcePath $Relative
+            if (-not (Test-SameOpenFileIdentity $PathIdentity $SourceIdentities[$Relative])) {
+                Fail "publisher authenticity FAILED: candidate file path changed during snapshot: $Relative"
+            }
+        } finally {
+            if ($null -ne $PathStream) { $PathStream.Dispose() }
         }
     }
     $PackageRoot = $SnapshotRoot
@@ -482,7 +607,11 @@ if (-not $AuthenticatedSums.ContainsKey("MANIFEST.json")) {
     Fail "publisher authenticity FAILED: MANIFEST.json is absent from SHA256SUMS"
 }
 $ManifestPath = Join-Path $PackageRoot "MANIFEST.json"
-$ManifestBytes = [IO.File]::ReadAllBytes($ManifestPath)
+if ((Get-Item -LiteralPath $ManifestPath -Force).Length -gt $MaxReleaseJsonBytes) {
+    Fail "MANIFEST.json exceeds the 4 MiB JSON byte limit"
+}
+try { $ManifestBytes = [IO.File]::ReadAllBytes($ManifestPath) }
+catch [OutOfMemoryException] { Fail "MANIFEST.json exceeds available memory" }
 $ManifestHasher = [Security.Cryptography.SHA256]::Create()
 try {
     $ManifestDigest = ([BitConverter]::ToString(
@@ -492,6 +621,35 @@ try {
 if ($ManifestDigest -cne $AuthenticatedSums["MANIFEST.json"]) {
     Fail "publisher authenticity FAILED: SHA-256 mismatch for MANIFEST.json"
 }
+function Assert-NoDuplicateJsonKeys([byte[]]$Bytes, [string]$Label) {
+    $Reader = $null
+    try {
+        $Reader = [Runtime.Serialization.Json.JsonReaderWriterFactory]::CreateJsonReader(
+            $Bytes, [Xml.XmlDictionaryReaderQuotas]::Max
+        )
+        $Document = [Xml.XmlDocument]::new()
+        $Document.Load($Reader)
+    } catch {
+        Fail "$Label is invalid JSON"
+    } finally {
+        if ($null -ne $Reader) { $Reader.Dispose() }
+    }
+    $Pending = [Collections.Generic.Stack[Xml.XmlElement]]::new()
+    $Pending.Push($Document.DocumentElement)
+    while ($Pending.Count -ne 0) {
+        $Node = $Pending.Pop()
+        $Names = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::Ordinal
+        )
+        foreach ($Child in @($Node.ChildNodes | Where-Object { $_ -is [Xml.XmlElement] })) {
+            if ($Node.GetAttribute("type") -ceq "object" -and -not $Names.Add($Child.LocalName)) {
+                Fail "$Label contains a duplicate object key"
+            }
+            $Pending.Push($Child)
+        }
+    }
+}
+Assert-NoDuplicateJsonKeys $ManifestBytes "authenticated MANIFEST.json"
 try {
     $Manifest = [Text.UTF8Encoding]::new($false, $true).GetString($ManifestBytes) |
         ConvertFrom-Json
@@ -504,7 +662,9 @@ $ExpectedAuthenticity = @{
     key_fingerprint = $DerivedFingerprint; signed_object = "SHA256SUMS"
     signature_file = "SHA256SUMS.sig"
 }
-if ($Manifest.schema_version -ne 2 -or
+if ($Manifest.schema_version -is [bool] -or
+    ($Manifest.schema_version -isnot [int] -and $Manifest.schema_version -isnot [long]) -or
+    $Manifest.schema_version -ne $ExpectedSchemaVersion -or
     @($Manifest.authenticity.PSObject.Properties).Count -ne $ExpectedAuthenticity.Count -or
     @($ExpectedAuthenticity.Keys | Where-Object {
         $Manifest.authenticity.PSObject.Properties.Name -cnotcontains $_ -or
@@ -530,7 +690,293 @@ function Get-Sha256Bytes([byte[]]$Value) {
     }
 }
 
-function Read-TarEntries([string]$ArchivePath, [string[]]$WantedNames) {
+function Test-ZeroUstarRange(
+    [byte[]]$Bytes, [int]$Offset, [int]$Length
+) {
+    for ($Index = $Offset; $Index -lt $Offset + $Length; $Index++) {
+        if ($Bytes[$Index] -ne 0) { return $false }
+    }
+    return $true
+}
+
+function Test-UstarAsciiField(
+    [byte[]]$Header, [int]$Offset, [int]$Length, [string]$Expected
+) {
+    [byte[]]$ExpectedBytes = [Text.Encoding]::ASCII.GetBytes($Expected)
+    if ($ExpectedBytes.Length -ne $Length) { return $false }
+    for ($Index = 0; $Index -lt $Length; $Index++) {
+        if ($Header[$Offset + $Index] -ne $ExpectedBytes[$Index]) { return $false }
+    }
+    return $true
+}
+
+function Read-UstarBlock(
+    [IO.Stream]$Stream, [byte[]]$Buffer, [bool]$AllowEnd
+) {
+    [int]$Offset = 0
+    while ($Offset -lt $Buffer.Length) {
+        [int]$Read = $Stream.Read($Buffer, $Offset, $Buffer.Length - $Offset)
+        if ($Read -eq 0) {
+            if ($AllowEnd -and $Offset -eq 0) { return 0 }
+            Fail "qualification toolchain archive is truncated"
+        }
+        $Offset += $Read
+    }
+    return $Offset
+}
+
+function Read-CanonicalUstarBytes(
+    [IO.Stream]$Stream, [Int64]$Length, [bool]$RequireZero
+) {
+    [byte[]]$Buffer = [byte[]]::new(8192)
+    [Int64]$Remaining = $Length
+    while ($Remaining -gt 0) {
+        [int]$ChunkLength = [int][Math]::Min([Int64]$Buffer.Length, $Remaining)
+        [int]$Offset = 0
+        while ($Offset -lt $ChunkLength) {
+            [int]$Read = $Stream.Read($Buffer, $Offset, $ChunkLength - $Offset)
+            if ($Read -eq 0) { Fail "qualification toolchain archive is truncated" }
+            $Offset += $Read
+        }
+        if ($RequireZero -and -not (Test-ZeroUstarRange $Buffer 0 $ChunkLength)) {
+            Fail "qualification toolchain archive contains non-zero member padding"
+        }
+        $Remaining -= $ChunkLength
+    }
+}
+
+function Get-CanonicalUstarOctal(
+    [byte[]]$Header,
+    [int]$Offset,
+    [int]$Digits,
+    [Int64]$Maximum,
+    [string]$Label
+) {
+    if ($Header[$Offset + $Digits] -ne 0) {
+        Fail "qualification toolchain archive has a noncanonical $Label field"
+    }
+    [Int64]$Value = 0
+    for ($Index = 0; $Index -lt $Digits; $Index++) {
+        [int]$Digit = [int]$Header[$Offset + $Index] - 48
+        if ($Digit -lt 0 -or $Digit -gt 7 -or
+            $Value -gt [Math]::Floor(($Maximum - $Digit) / 8)) {
+            Fail "qualification toolchain archive has an invalid $Label field"
+        }
+        $Value = ($Value * 8) + $Digit
+    }
+    return $Value
+}
+
+function Assert-SingleQualificationGzipMember(
+    [string]$ArchivePath, [Int64]$MaximumExpandedBytes
+) {
+    if (-not ("Ruisheng.Qualification.SingleByteReadStream" -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+
+namespace Ruisheng.Qualification {
+    public sealed class SingleByteReadStream : Stream {
+        private readonly Stream inner;
+        public SingleByteReadStream(Stream value) {
+            if (value == null) { throw new ArgumentNullException("value"); }
+            inner = value;
+        }
+        public override bool CanRead { get { return true; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return false; } }
+        public override long Length { get { throw new NotSupportedException(); } }
+        public override long Position {
+            get { throw new NotSupportedException(); }
+            set { throw new NotSupportedException(); }
+        }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) {
+            return inner.Read(buffer, offset, Math.Min(count, 1));
+        }
+        public override int ReadByte() { return inner.ReadByte(); }
+        public override long Seek(long offset, SeekOrigin origin) {
+            throw new NotSupportedException();
+        }
+        public override void SetLength(long value) { throw new NotSupportedException(); }
+        public override void Write(byte[] buffer, int offset, int count) {
+            throw new NotSupportedException();
+        }
+    }
+}
+'@
+    }
+    $Archive = $null
+    $Throttle = $null
+    $Deflate = $null
+    try {
+        $Archive = [IO.File]::OpenRead($ArchivePath)
+        $Archive.Position = 10
+        $Throttle = [Ruisheng.Qualification.SingleByteReadStream]::new($Archive)
+        $Deflate = [IO.Compression.DeflateStream]::new(
+            $Throttle, [IO.Compression.CompressionMode]::Decompress, $true
+        )
+        [byte[]]$Buffer = [byte[]]::new(65536)
+        [Int64]$ExpandedBytes = 0
+        while (($Read = $Deflate.Read($Buffer, 0, $Buffer.Length)) -ne 0) {
+            if ($ExpandedBytes -gt $MaximumExpandedBytes - $Read) {
+                Fail "qualification toolchain expanded archive exceeds its byte budget"
+            }
+            $ExpandedBytes += $Read
+        }
+        $Deflate.Dispose()
+        $Deflate = $null
+        [byte[]]$Footer = [byte[]]::new(8)
+        [int]$FooterOffset = 0
+        while ($FooterOffset -lt $Footer.Length) {
+            [int]$Read = $Archive.Read($Footer, $FooterOffset, $Footer.Length - $FooterOffset)
+            if ($Read -eq 0) { Fail "qualification toolchain gzip member is truncated" }
+            $FooterOffset += $Read
+        }
+        if ($Archive.Position -ne $Archive.Length) {
+            Fail "qualification toolchain archive must contain exactly one gzip member"
+        }
+    } finally {
+        if ($null -ne $Deflate) { $Deflate.Dispose() }
+        if ($null -ne $Throttle) { $Throttle.Dispose() }
+        if ($null -ne $Archive) { $Archive.Dispose() }
+    }
+}
+
+function Assert-CanonicalQualificationUstarArchive(
+    [string]$ArchivePath,
+    [string[]]$ExpectedMembers,
+    [hashtable]$MaximumBytesByName
+) {
+    [byte[]]$Header = [byte[]]::new(512)
+    [Int64]$MaximumTarBytes = 21 * 512
+    foreach ($ExpectedMember in $ExpectedMembers) {
+        if (-not $MaximumBytesByName.ContainsKey($ExpectedMember)) {
+            Fail "qualification toolchain archive preflight contract is invalid"
+        }
+        [Int64]$MaximumMemberBytes = [Int64]$MaximumBytesByName[$ExpectedMember]
+        $MaximumTarBytes += 512 + (
+            [Int64][Math]::Floor(($MaximumMemberBytes + 511) / 512) * 512
+        )
+    }
+    [Int64]$MaximumGzipBytes = $MaximumTarBytes + (
+        [Int64][Math]::Floor($MaximumTarBytes / 100)
+    ) + 64KB
+    $ArchiveMetadata = Get-Item -LiteralPath $ArchivePath -Force -ErrorAction Stop
+    if ([Int64]$ArchiveMetadata.Length -gt $MaximumGzipBytes) {
+        Fail "qualification toolchain gzip archive exceeds its byte budget"
+    }
+    $ArchiveFile = $null
+    $Gzip = $null
+    try {
+        $ArchiveFile = [IO.File]::OpenRead($ArchivePath)
+        [byte[]]$GzipHeader = [byte[]]::new(10)
+        [int]$GzipHeaderRead = $ArchiveFile.Read($GzipHeader, 0, $GzipHeader.Length)
+        [byte[]]$ExpectedGzipHeader = @(
+            0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff
+        )
+        if ($GzipHeaderRead -ne $GzipHeader.Length -or
+            -not [Linq.Enumerable]::SequenceEqual($GzipHeader, $ExpectedGzipHeader)) {
+            Fail "qualification toolchain gzip header is not canonical"
+        }
+        $ArchiveFile.Dispose()
+        $ArchiveFile = $null
+        Assert-SingleQualificationGzipMember $ArchivePath $MaximumTarBytes
+        $ArchiveFile = [IO.File]::OpenRead($ArchivePath)
+        $Gzip = [IO.Compression.GZipStream]::new(
+            $ArchiveFile, [IO.Compression.CompressionMode]::Decompress, $false
+        )
+        [Int64]$ConsumedBlocks = 0
+        foreach ($ExpectedMember in $ExpectedMembers) {
+            if (-not $MaximumBytesByName.ContainsKey($ExpectedMember) -or
+                $ExpectedMember.Length -gt 100) {
+                Fail "qualification toolchain archive preflight contract is invalid"
+            }
+            [void](Read-UstarBlock $Gzip $Header $false)
+            [byte[]]$ExpectedName = [Text.Encoding]::ASCII.GetBytes($ExpectedMember)
+            for ($Index = 0; $Index -lt $ExpectedName.Length; $Index++) {
+                if ($Header[$Index] -ne $ExpectedName[$Index]) {
+                    Fail "qualification toolchain archive member allowlist mismatch"
+                }
+            }
+            if (-not (Test-ZeroUstarRange (
+                    $Header
+                ) $ExpectedName.Length (100 - $ExpectedName.Length)) -or
+                -not (Test-UstarAsciiField $Header 100 8 "0000644`0") -or
+                -not (Test-UstarAsciiField $Header 108 8 "0000000`0") -or
+                -not (Test-UstarAsciiField $Header 116 8 "0000000`0") -or
+                -not (Test-UstarAsciiField $Header 136 12 "00000000000`0") -or
+                $Header[156] -ne 48 -or
+                -not (Test-ZeroUstarRange $Header 157 100) -or
+                -not (Test-UstarAsciiField $Header 257 6 "ustar`0") -or
+                -not (Test-UstarAsciiField $Header 263 2 "00") -or
+                -not (Test-ZeroUstarRange $Header 265 235) -or
+                -not (Test-ZeroUstarRange $Header 500 12)) {
+                Fail "qualification toolchain archive contains a noncanonical USTAR header"
+            }
+
+            [Int64]$MemberLimit = [Int64]$MaximumBytesByName[$ExpectedMember]
+            [Int64]$MemberLength = Get-CanonicalUstarOctal (
+                $Header
+            ) 124 11 $MemberLimit "size"
+            [Int64]$StoredChecksum = Get-CanonicalUstarOctal (
+                $Header
+            ) 148 6 262143 "checksum"
+            if ($Header[155] -ne 32) {
+                Fail "qualification toolchain archive has a noncanonical checksum field"
+            }
+            [Int64]$ComputedChecksum = 0
+            for ($Index = 0; $Index -lt $Header.Length; $Index++) {
+                $ComputedChecksum += if ($Index -ge 148 -and $Index -lt 156) {
+                    32
+                } else { $Header[$Index] }
+            }
+            if ($StoredChecksum -ne $ComputedChecksum) {
+                Fail "qualification toolchain archive header checksum mismatch"
+            }
+
+            Read-CanonicalUstarBytes $Gzip $MemberLength $false
+            [Int64]$PaddingLength = (512 - ($MemberLength % 512)) % 512
+            Read-CanonicalUstarBytes $Gzip $PaddingLength $true
+            $ConsumedBlocks += 1 + [Int64][Math]::Floor(($MemberLength + 511) / 512)
+        }
+
+        [int]$ExpectedTailZeroBlocks = 2 + (
+            (20 - (($ConsumedBlocks + 2) % 20)) % 20
+        )
+        if ($ExpectedTailZeroBlocks -lt 2 -or $ExpectedTailZeroBlocks -gt 21) {
+            Fail "qualification toolchain archive trailer budget is invalid"
+        }
+        for ($Index = 0; $Index -lt $ExpectedTailZeroBlocks; $Index++) {
+            [void](Read-UstarBlock $Gzip $Header $false)
+            if (-not (Test-ZeroUstarRange $Header 0 $Header.Length)) {
+                Fail "qualification toolchain archive has invalid trailing blocks"
+            }
+        }
+        if ((Read-UstarBlock $Gzip $Header $true) -ne 0) {
+            Fail "qualification toolchain archive has excessive trailing blocks"
+        }
+    } catch {
+        if ($_.Exception.Message -like "*qualification toolchain archive*") { throw }
+        Fail "invalid qualification toolchain archive: $($_.Exception.Message)"
+    } finally {
+        if ($null -ne $Gzip) { $Gzip.Dispose() }
+        if ($null -ne $ArchiveFile) { $ArchiveFile.Dispose() }
+    }
+}
+
+function Read-TarEntries(
+    [string]$ArchivePath,
+    [string[]]$WantedNames,
+    [hashtable]$MaximumBytesByName = @{},
+    [switch]$CollectSha256Metadata
+) {
+    [Int64]$MaxJsonBytes = 4MB
+    [int]$MaxDescriptorReferences = 32768
+    [Int64]$MaxMetadataBytes = 64MB
+    [int]$MaxDockerArchiveMembers = 32768
+    [Int64]$MaxDockerArchiveMemberBytes = 8GB
+    [Int64]$MaxDockerArchiveTotalBytes = 32GB
     if (-not ("System.Formats.Tar.TarReader" -as [type])) {
         Fail "PowerShell 7.3 or newer is required for pre-load archive validation"
     }
@@ -539,6 +985,13 @@ function Read-TarEntries([string]$ArchivePath, [string[]]$WantedNames) {
     )
     $Names = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $Values = @{}
+    $MetadataBlobs = @{}
+    $OversizedMetadata = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    [Int64]$MetadataBytes = 0
+    [int]$MemberCount = 0
+    [Int64]$ExpandedBytes = 0
     $File = $null
     $Gzip = $null
     $Reader = $null
@@ -549,6 +1002,13 @@ function Read-TarEntries([string]$ArchivePath, [string[]]$WantedNames) {
         )
         $Reader = [System.Formats.Tar.TarReader]::new($Gzip, $false)
         while ($null -ne ($Entry = $Reader.GetNextEntry($false))) {
+            $MemberCount++
+            if ($MemberCount -gt $MaxDockerArchiveMembers) { Fail "Archive has too many members: $ArchivePath" }
+            if ($Entry.Length -lt 0 -or $Entry.Length -gt $MaxDockerArchiveMemberBytes) {
+                Fail "Archive member exceeds the byte budget: $ArchivePath"
+            }
+            $ExpandedBytes += [Int64]$Entry.Length
+            if ($ExpandedBytes -gt $MaxDockerArchiveTotalBytes) { Fail "Archive exceeds the total byte budget: $ArchivePath" }
             $Name = [string]$Entry.Name
             Test-SafeRelativePath $Name.TrimEnd("/")
             if (-not $Names.Add($Name)) {
@@ -557,8 +1017,25 @@ function Read-TarEntries([string]$ArchivePath, [string[]]$WantedNames) {
             if ($Entry.EntryType.ToString() -in @("SymbolicLink", "HardLink")) {
                 Fail "Archive contains link member: $ArchivePath`:$Name"
             }
-            if ($Wanted.Contains($Name)) {
-                if ($Entry.Length -gt 16MB) {
+            $CollectMetadata = $CollectSha256Metadata -and
+                $Name -cmatch '^blobs/sha256/[0-9a-f]{64}$'
+            if ($CollectMetadata -and $Entry.Length -gt $MaxJsonBytes) {
+                [void]$OversizedMetadata.Add($Name)
+                $CollectMetadata = $false
+            }
+            if ($CollectMetadata) {
+                $MetadataBytes += [Int64]$Entry.Length
+                if ($MetadataBytes -gt $MaxMetadataBytes -or
+                    $MetadataBlobs.Count -ge $MaxDescriptorReferences) {
+                    Fail "Archive metadata exceeds the descriptor budget: $ArchivePath"
+                }
+            }
+            if ($Wanted.Contains($Name) -or $CollectMetadata) {
+                [Int64]$WantedLimit = 64MB
+                if ($MaximumBytesByName.ContainsKey($Name)) {
+                    $WantedLimit = [Int64]$MaximumBytesByName[$Name]
+                }
+                if ($Entry.Length -gt $WantedLimit) {
                     Fail "Archive metadata member is too large: $ArchivePath`:$Name"
                 }
                 if ($null -eq $Entry.DataStream) {
@@ -566,8 +1043,11 @@ function Read-TarEntries([string]$ArchivePath, [string[]]$WantedNames) {
                 }
                 $Buffer = [IO.MemoryStream]::new()
                 try {
-                    $Entry.DataStream.CopyTo($Buffer)
-                    $Values[$Name] = $Buffer.ToArray()
+                    try { $Entry.DataStream.CopyTo($Buffer) }
+                    catch [OutOfMemoryException] { Fail "Archive metadata exceeds available memory" }
+                    [byte[]]$Captured = $Buffer.ToArray()
+                    if ($Wanted.Contains($Name)) { $Values[$Name] = $Captured }
+                    if ($CollectMetadata) { $MetadataBlobs[$Name] = $Captured }
                 } finally {
                     $Buffer.Dispose()
                 }
@@ -580,26 +1060,39 @@ function Read-TarEntries([string]$ArchivePath, [string[]]$WantedNames) {
         if ($null -ne $Gzip) { $Gzip.Dispose() }
         if ($null -ne $File) { $File.Dispose() }
     }
-    return [PSCustomObject]@{ Names = $Names; Values = $Values }
+    return [PSCustomObject]@{
+        Names = $Names
+        Values = $Values
+        MetadataBlobs = $MetadataBlobs
+        OversizedMetadata = $OversizedMetadata
+    }
 }
 
 function Read-ArchiveSha256Blob(
+    [object]$ArchiveRecord,
+    [hashtable]$ReferenceBudget,
     [string]$ArchivePath,
     [object]$DigestValue,
     [string]$Label,
     [bool]$AllowMissing = $false
 ) {
+    $ReferenceBudget.Count = [int]$ReferenceBudget.Count + 1
+    if ($ReferenceBudget.Count -gt 32768) {
+        Fail "Archive descriptor reference budget exceeded: $ArchivePath"
+    }
     $Digest = [string]$DigestValue
     if ($Digest -notmatch '^sha256:[0-9a-f]{64}$') {
         Fail "Archive $Label digest is invalid: $ArchivePath"
     }
     $BlobName = "blobs/sha256/$($Digest.Substring(7))"
-    $Record = Read-TarEntries $ArchivePath @($BlobName)
-    if (-not $Record.Values.ContainsKey($BlobName)) {
+    if ($ArchiveRecord.OversizedMetadata.Contains($BlobName)) {
+        Fail "Archive $Label exceeds the JSON byte limit: $ArchivePath"
+    }
+    if (-not $ArchiveRecord.MetadataBlobs.ContainsKey($BlobName)) {
         if ($AllowMissing) { return $null }
         Fail "Archive $Label blob is missing: $ArchivePath`:$BlobName"
     }
-    [byte[]]$Bytes = $Record.Values[$BlobName]
+    [byte[]]$Bytes = $ArchiveRecord.MetadataBlobs[$BlobName]
     if ("sha256:$(Get-Sha256Bytes $Bytes)" -cne $Digest) {
         Fail "Archive $Label digest mismatch: $ArchivePath"
     }
@@ -657,6 +1150,8 @@ function Test-SlsaProvenanceStatement(
 }
 
 function Resolve-MainManifestDigest(
+    [object]$ArchiveRecord,
+    [hashtable]$ReferenceBudget,
     [string]$ArchivePath,
     [string]$DescriptorDigest,
     [object]$DescriptorValue,
@@ -681,7 +1176,8 @@ function Resolve-MainManifestDigest(
         }
         $NestedDigest = [string]$NestedDescriptor.digest
         [byte[]]$NestedBytes = Read-ArchiveSha256Blob `
-            $ArchivePath $NestedDigest "nested descriptor" $true
+            $ArchiveRecord $ReferenceBudget $ArchivePath `
+            $NestedDigest "nested descriptor" $true
         if ($null -eq $NestedBytes) {
             # Docker 29 can retain source index entries while exporting only
             # the manifest blob for the selected local platform.
@@ -699,7 +1195,8 @@ function Resolve-MainManifestDigest(
         }
         if ($NestedConfig.digest -cne $ConfigDigest) {
             [byte[]]$NestedConfigBytes = Read-ArchiveSha256Blob `
-                $ArchivePath $NestedConfig.digest "nested config"
+                $ArchiveRecord $ReferenceBudget $ArchivePath `
+                $NestedConfig.digest "nested config"
             $NestedConfigValue = ConvertFrom-ArchiveJsonObject `
                 $NestedConfigBytes $ArchivePath "nested config"
             if ($NestedConfigValue.os -isnot [string] -or
@@ -728,6 +1225,8 @@ function Resolve-MainManifestDigest(
 }
 
 function Test-ProvenanceAttachment(
+    [object]$ArchiveRecord,
+    [hashtable]$ReferenceBudget,
     [string]$ArchivePath,
     [object]$Descriptor,
     [object]$DescriptorValue,
@@ -768,7 +1267,8 @@ function Test-ProvenanceAttachment(
         Fail "Archive provenance config is invalid: $ArchivePath"
     }
     [byte[]]$ProvenanceConfigBytes = Read-ArchiveSha256Blob `
-        $ArchivePath $ConfigDescriptor.digest "provenance config"
+        $ArchiveRecord $ReferenceBudget $ArchivePath `
+        $ConfigDescriptor.digest "provenance config"
     $ProvenanceConfig = ConvertFrom-ArchiveJsonObject `
         $ProvenanceConfigBytes $ArchivePath "provenance config"
     if ($ProvenanceConfig.os -isnot [string] -or
@@ -794,7 +1294,8 @@ function Test-ProvenanceAttachment(
             Fail "Archive provenance layer is invalid: $ArchivePath"
         }
         [byte[]]$LayerBytes = Read-ArchiveSha256Blob `
-            $ArchivePath $Layer.digest "provenance layer"
+            $ArchiveRecord $ReferenceBudget $ArchivePath `
+            $Layer.digest "provenance layer"
         $Statement = ConvertFrom-ArchiveJsonObject `
             $LayerBytes $ArchivePath "provenance layer"
         Test-SlsaProvenanceStatement $Statement $ArchivePath $MainManifestDigest
@@ -802,7 +1303,11 @@ function Test-ProvenanceAttachment(
 }
 
 function Get-DockerArchiveIdentity([string]$ArchivePath, [string]$ExpectedReference) {
-    $Headers = Read-TarEntries $ArchivePath @("manifest.json", "index.json")
+    $Headers = Read-TarEntries $ArchivePath @("manifest.json", "index.json") @{
+        "manifest.json" = 4MB
+        "index.json" = 4MB
+    } -CollectSha256Metadata
+    $ReferenceBudget = @{ Count = 0 }
     if (-not $Headers.Values.ContainsKey("manifest.json")) {
         Fail "Archive is missing manifest.json: $ArchivePath"
     }
@@ -823,7 +1328,9 @@ function Get-DockerArchiveIdentity([string]$ArchivePath, [string]$ExpectedRefere
     }
     $ConfigName = [string]$ManifestEntries[0].Config
     Test-SafeRelativePath $ConfigName
-    $ConfigRecord = Read-TarEntries $ArchivePath @($ConfigName)
+    $ConfigRecord = Read-TarEntries $ArchivePath @($ConfigName) @{
+        $ConfigName = 4MB
+    }
     if (-not $ConfigRecord.Values.ContainsKey($ConfigName)) {
         Fail "Archive config is missing: $ArchivePath`:$ConfigName"
     }
@@ -847,6 +1354,9 @@ function Get-DockerArchiveIdentity([string]$ArchivePath, [string]$ExpectedRefere
         if ($Descriptors -isnot [object[]] -or $Descriptors.Count -eq 0) {
             Fail "Archive index must contain image descriptors: $ArchivePath"
         }
+        if ($Descriptors.Count -gt 32768) {
+            Fail "Archive descriptor reference budget exceeded: $ArchivePath"
+        }
         $LoadedDescriptors = @()
         foreach ($Descriptor in $Descriptors) {
             if ($Descriptor -isnot [System.Management.Automation.PSCustomObject]) {
@@ -854,11 +1364,12 @@ function Get-DockerArchiveIdentity([string]$ArchivePath, [string]$ExpectedRefere
             }
             $DescriptorDigest = [string]$Descriptor.digest
             [byte[]]$DescriptorBytes = Read-ArchiveSha256Blob `
-                $ArchivePath $DescriptorDigest "descriptor"
+                $Headers $ReferenceBudget $ArchivePath $DescriptorDigest "descriptor"
             $DescriptorValue = ConvertFrom-ArchiveJsonObject `
                 $DescriptorBytes $ArchivePath "descriptor"
             $Resolved = Resolve-MainManifestDigest `
-                $ArchivePath $DescriptorDigest $DescriptorValue $ConfigDigest $Config
+                $Headers $ReferenceBudget $ArchivePath `
+                $DescriptorDigest $DescriptorValue $ConfigDigest $Config
             $LoadedDescriptors += [PSCustomObject]@{
                 Descriptor = $Descriptor
                 Digest = $DescriptorDigest
@@ -875,7 +1386,8 @@ function Get-DockerArchiveIdentity([string]$ArchivePath, [string]$ExpectedRefere
         foreach ($Loaded in $LoadedDescriptors) {
             if ($null -eq $Loaded.Resolved) {
                 Test-ProvenanceAttachment `
-                    $ArchivePath $Loaded.Descriptor $Loaded.Value $MainManifestDigest
+                    $Headers $ReferenceBudget $ArchivePath `
+                    $Loaded.Descriptor $Loaded.Value $MainManifestDigest
             }
         }
     }
@@ -886,10 +1398,271 @@ function Get-DockerArchiveIdentity([string]$ArchivePath, [string]$ExpectedRefere
     }
 }
 
-if ($Manifest.candidate_id -notmatch '^[a-z0-9][a-z0-9._-]{0,62}$') {
+function Assert-ExactProperties([object]$Value, [string[]]$ExpectedNames, [string]$Label) {
+    if ($null -eq $Value) { Fail "$Label is missing" }
+    $Names = @($Value.PSObject.Properties.Name)
+    if ($Names.Count -ne $ExpectedNames.Count -or
+        @($ExpectedNames | Where-Object { $Names -cnotcontains $_ }).Count -ne 0) {
+        Fail "$Label keys mismatch"
+    }
+}
+
+function ConvertTo-PythonCanonicalJson([object]$Value) {
+    if ($null -eq $Value) { return "null" }
+    if ($Value -is [bool]) { return $(if ($Value) { "true" } else { "false" }) }
+    if ($Value -is [string]) {
+        $Builder = [Text.StringBuilder]::new()
+        [void]$Builder.Append('"')
+        foreach ($Character in $Value.ToCharArray()) {
+            $Code = [int][char]$Character
+            switch ($Code) {
+                8 { [void]$Builder.Append('\b'); continue }
+                9 { [void]$Builder.Append('\t'); continue }
+                10 { [void]$Builder.Append('\n'); continue }
+                12 { [void]$Builder.Append('\f'); continue }
+                13 { [void]$Builder.Append('\r'); continue }
+                34 { [void]$Builder.Append('\"'); continue }
+                92 { [void]$Builder.Append('\\'); continue }
+            }
+            if ($Code -lt 32 -or $Code -gt 126) {
+                [void]$Builder.Append(('\u{0:x4}' -f $Code))
+            } else { [void]$Builder.Append($Character) }
+        }
+        [void]$Builder.Append('"')
+        return $Builder.ToString()
+    }
+    if ($Value -is [Collections.IDictionary]) {
+        $Parts = foreach ($Key in $Value.Keys) {
+            (ConvertTo-PythonCanonicalJson ([string]$Key)) + ":" +
+                (ConvertTo-PythonCanonicalJson $Value[$Key])
+        }
+        return "{" + ($Parts -join ",") + "}"
+    }
+    if ($Value -is [Collections.IEnumerable]) {
+        $Parts = foreach ($Item in $Value) { ConvertTo-PythonCanonicalJson $Item }
+        return "[" + ($Parts -join ",") + "]"
+    }
+    Fail "Manifest logical identity contains an unsupported value type"
+}
+
+function Get-ManifestLogicalIdentity([object]$Value, [int]$SchemaVersion) {
+    $Images = @($Value.images | ForEach-Object {
+        [ordered]@{
+            candidate_reference = [string]$_.candidate_reference
+            component = [string]$_.component
+            image_id = [string]$_.image_id
+            repo_digest = if ($null -eq $_.repo_digest) { $null } else { [string]$_.repo_digest }
+            source_reference = [string]$_.source_reference
+        }
+    })
+    if ($SchemaVersion -eq 3) {
+        $Toolchain = $Value.qualification_toolchain
+        $Identity = { param($InputValue) [ordered]@{
+            path = [string]$InputValue.path
+            sha256 = [string]$InputValue.sha256
+        } }
+        $Descriptor = [ordered]@{
+            format = [string]$Toolchain.format
+            path = [string]$Toolchain.path
+            producer = & $Identity $Toolchain.producer
+            receipt_producer = & $Identity $Toolchain.receipt_producer
+            schema = & $Identity $Toolchain.schema
+            semantic_validator = [string]$Toolchain.semantic_validator
+            sha256 = [string]$Toolchain.sha256
+            toolchain_manifest = & $Identity $Toolchain.toolchain_manifest
+            validator = & $Identity $Toolchain.validator
+        }
+        $LogicalValue = [ordered]@{
+            alembic_head = [string]$Value.alembic_head
+            candidate_id = [string]$Value.candidate_id
+            images = $Images
+            qualification_toolchain = $Descriptor
+            source_commit = [string]$Value.source_commit
+            target_architecture = [string]$Value.target_architecture
+            target_os = [string]$Value.target_os
+        }
+    } else {
+        $LogicalValue = [ordered]@{
+            alembic_head = [string]$Value.alembic_head
+            candidate_id = [string]$Value.candidate_id
+            images = $Images
+            source_commit = [string]$Value.source_commit
+            target_architecture = [string]$Value.target_architecture
+            target_os = [string]$Value.target_os
+        }
+    }
+    $Json = ConvertTo-PythonCanonicalJson $LogicalValue
+    return "sha256:$(Get-Sha256Bytes ([Text.Encoding]::UTF8.GetBytes($Json)))"
+}
+
+function Test-QualificationToolchain(
+    [object]$AuthenticatedManifest,
+    [hashtable]$AuthenticatedSums,
+    [string]$AuthenticatedRoot,
+    [int]$SchemaVersion
+) {
+    $BaseKeys = @(
+        "schema_version", "candidate_id", "source_commit", "generated_at", "target_os",
+        "target_architecture", "alembic_head", "logical_identity", "tools",
+        "authenticity", "images"
+    )
+    $ExpectedKeys = if ($SchemaVersion -eq 3) {
+        @($BaseKeys) + "qualification_toolchain"
+    } else { $BaseKeys }
+    Assert-ExactProperties $AuthenticatedManifest $ExpectedKeys "MANIFEST.json"
+    if ($SchemaVersion -eq 2) { return }
+
+    $Toolchain = $AuthenticatedManifest.qualification_toolchain
+    Assert-ExactProperties $Toolchain @(
+        "path", "sha256", "format", "semantic_validator", "schema", "validator",
+        "producer", "receipt_producer", "toolchain_manifest"
+    ) "qualification toolchain descriptor"
+    $ArchiveName = "qualification-toolchain.tar.gz"
+    $SemanticValidator = "ruisheng.device-point-profile-validator/v5"
+    if ($Toolchain.path -cne $ArchiveName -or $Toolchain.format -cne "tar+gzip" -or
+        $Toolchain.semantic_validator -cne $SemanticValidator -or
+        [string]$Toolchain.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $AuthenticatedSums[$ArchiveName] -cne $Toolchain.sha256) {
+        Fail "Qualification toolchain descriptor contract is invalid"
+    }
+    $InternalName = "qualification-toolchain-manifest.json"
+    $MemberNames = @(
+        "tools/validate_device_point_profile.py",
+        "schemas/point-profile/point-profile-v1.schema.json",
+        "tools/release_artifacts.py",
+        "tools/release_verification_receipt.py",
+        "pyproject.toml",
+        "uv.lock"
+    )
+    $IdentityPaths = [ordered]@{
+        schema = $MemberNames[1]
+        validator = $MemberNames[0]
+        producer = $MemberNames[2]
+        receipt_producer = $MemberNames[3]
+        toolchain_manifest = $InternalName
+    }
+    foreach ($Name in $IdentityPaths.Keys) {
+        $Identity = $Toolchain.$Name
+        Assert-ExactProperties $Identity @("path", "sha256") "qualification toolchain identity"
+        if ($Identity.path -cne $IdentityPaths[$Name] -or
+            [string]$Identity.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            Fail "Qualification toolchain identity is invalid for $($IdentityPaths[$Name])"
+        }
+    }
+
+    $ExpectedMembers = @($MemberNames) + $InternalName
+    $ArchivePath = Join-Path $AuthenticatedRoot $ArchiveName
+    $QualificationMemberLimits = @{}
+    foreach ($Name in $ExpectedMembers) { $QualificationMemberLimits[$Name] = 64MB }
+    $QualificationMemberLimits[$InternalName] = $MaxReleaseJsonBytes
+    Assert-CanonicalQualificationUstarArchive `
+        $ArchivePath $ExpectedMembers $QualificationMemberLimits
+    $Record = Read-TarEntries $ArchivePath $ExpectedMembers @{
+        $InternalName = $MaxReleaseJsonBytes
+    }
+    if ($Record.Names.Count -ne $ExpectedMembers.Count -or
+        @($ExpectedMembers | Where-Object { -not $Record.Names.Contains($_) }).Count -ne 0 -or
+        $Record.Values.Count -ne $ExpectedMembers.Count) {
+        Fail "Qualification toolchain archive member allowlist mismatch"
+    }
+    [byte[]]$InternalBytes = $Record.Values[$InternalName]
+    if ((Get-Sha256Bytes $InternalBytes) -cne $Toolchain.toolchain_manifest.sha256) {
+        Fail "Qualification toolchain manifest SHA-256 mismatch"
+    }
+    Assert-NoDuplicateJsonKeys $InternalBytes "qualification toolchain manifest"
+    try {
+        $Internal = [Text.UTF8Encoding]::new($false, $true).GetString($InternalBytes) |
+            ConvertFrom-Json
+    } catch { Fail "Qualification toolchain manifest is invalid JSON" }
+    Assert-ExactProperties $Internal @(
+        "artifact_type", "members", "schema_version", "semantic_validator"
+    ) "qualification toolchain manifest"
+    if ($Internal.artifact_type -cne "ruisheng.qualification-toolchain" -or
+        $Internal.schema_version -is [bool] -or
+        ($Internal.schema_version -isnot [int] -and
+            $Internal.schema_version -isnot [long]) -or
+        $Internal.schema_version -ne 1 -or
+        $Internal.semantic_validator -cne $SemanticValidator -or
+        @($Internal.members).Count -ne $MemberNames.Count) {
+        Fail "Qualification toolchain manifest contract is invalid"
+    }
+    $Resolved = @{}
+    for ($Index = 0; $Index -lt $MemberNames.Count; $Index++) {
+        $Identity = $Internal.members[$Index]
+        Assert-ExactProperties $Identity @("path", "sha256") "qualification member identity"
+        $ExpectedPath = $MemberNames[$Index]
+        $Digest = Get-Sha256Bytes ([byte[]]$Record.Values[$ExpectedPath])
+        if ($Identity.path -cne $ExpectedPath -or $Identity.sha256 -cne $Digest) {
+            Fail "Qualification toolchain member SHA-256 mismatch: $ExpectedPath"
+        }
+        $Resolved[$ExpectedPath] = $Digest
+    }
+    foreach ($Name in @("schema", "validator", "producer", "receipt_producer")) {
+        if ($Toolchain.$Name.sha256 -cne $Resolved[$IdentityPaths[$Name]]) {
+            Fail "Qualification toolchain descriptor identity mismatch: $($IdentityPaths[$Name])"
+        }
+    }
+}
+
+function Assert-ManifestValueTypes([object]$Value) {
+    foreach ($Name in @(
+        "candidate_id", "source_commit", "generated_at", "target_os",
+        "target_architecture", "alembic_head", "logical_identity"
+    )) {
+        if ($Value.$Name -isnot [string]) {
+            Fail "MANIFEST.json scalar field has an invalid type: $Name"
+        }
+    }
+    if ($Value.candidate_id -cnotmatch '^[a-z0-9][a-z0-9._-]{0,62}$' -or
+        $Value.source_commit -cnotmatch '^[0-9a-f]{40}$' -or
+        $Value.target_os -cnotmatch '^[a-z0-9][a-z0-9._-]*$' -or
+        $Value.target_architecture -cnotmatch '^[a-z0-9][a-z0-9._-]*$' -or
+        [string]::IsNullOrEmpty($Value.alembic_head) -or
+        $Value.logical_identity -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        Fail "MANIFEST.json scalar field contract is invalid"
+    }
+    if ($Value.tools -isnot [PSCustomObject] -or
+        @($Value.tools.PSObject.Properties).Count -eq 0 -or
+        @($Value.tools.PSObject.Properties | Where-Object {
+            $_.Value -isnot [string] -or [string]::IsNullOrEmpty([string]$_.Value)
+        }).Count -ne 0) {
+        Fail "MANIFEST.json tools contract is invalid"
+    }
+    if ($Value.images -isnot [Array]) {
+        Fail "MANIFEST.json images must be an array"
+    }
+    $ImageKeys = @(
+        "component", "source_reference", "repo_digest", "candidate_reference", "image_id",
+        "os", "architecture", "archive", "sha256"
+    )
+    foreach ($Image in @($Value.images)) {
+        Assert-ExactProperties $Image $ImageKeys "manifest image"
+        foreach ($Name in @(
+            "component", "source_reference", "candidate_reference", "image_id", "os",
+            "architecture", "archive", "sha256"
+        )) {
+            if ($Image.$Name -isnot [string]) {
+                Fail "MANIFEST.json image field has an invalid type: $Name"
+            }
+        }
+        if ($null -ne $Image.repo_digest -and $Image.repo_digest -isnot [string]) {
+            Fail "MANIFEST.json repo_digest has an invalid type"
+        }
+        if (($null -ne $Image.repo_digest -and
+                $Image.repo_digest -cnotmatch '^[^\s@]+@sha256:[0-9a-f]{64}$') -or
+            $Image.image_id -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+            $Image.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            Fail "MANIFEST.json image identity contract is invalid"
+        }
+    }
+}
+
+Assert-ManifestValueTypes $Manifest
+if ($Manifest.candidate_id -cnotmatch '^[a-z0-9][a-z0-9._-]{0,62}$') {
     Fail "Invalid candidate ID"
 }
-if ($Manifest.schema_version -ne 2 -or $Manifest.authenticity.status -ne "SIGNED") {
+if ($Manifest.schema_version -cne $ExpectedSchemaVersion -or
+    $Manifest.authenticity.status -cne "SIGNED") {
     Fail "Manifest authenticity contract is invalid"
 }
 if (@($Manifest.images).Count -ne 5) {
@@ -906,17 +1679,17 @@ for ($Index = 0; $Index -lt $Components.Count; $Index++) {
     $Component = $Components[$Index]
     $ExpectedReference = "ruisheng-candidate/${Component}:$($Manifest.candidate_id)"
     $ExpectedArchive = "images/${Component}.tar.gz"
-    if ($Image.component -ne $Component -or $Image.candidate_reference -ne $ExpectedReference) {
+    if ($Image.component -cne $Component -or $Image.candidate_reference -cne $ExpectedReference) {
         Fail "Candidate reference mismatch for $Component"
     }
-    if ($Image.archive -ne $ExpectedArchive) {
+    if ($Image.archive -cne $ExpectedArchive) {
         Fail "Archive path mismatch for $Component"
     }
-    if ($Image.os -ne $Manifest.target_os -or
-        $Image.architecture -ne $Manifest.target_architecture) {
+    if ($Image.os -cne $Manifest.target_os -or
+        $Image.architecture -cne $Manifest.target_architecture) {
         Fail "Platform mismatch for $Component"
     }
-    if ($Image.image_id -notmatch '^sha256:[0-9a-f]{64}$') {
+    if ($Image.image_id -cnotmatch '^sha256:[0-9a-f]{64}$') {
         Fail "Invalid image ID for $Component"
     }
     if (-not $References.Add([string]$Image.candidate_reference) -or
@@ -963,6 +1736,10 @@ foreach ($Relative in $ExpectedSums) {
         Fail "publisher authenticity FAILED: SHA-256 mismatch for ${Relative}: expected $($Sums[$Relative]), got $Actual"
     }
 }
+Test-QualificationToolchain $Manifest $Sums $PackageRoot $ExpectedSchemaVersion
+if ($Manifest.logical_identity -cne (Get-ManifestLogicalIdentity $Manifest $ExpectedSchemaVersion)) {
+    Fail "Manifest logical_identity does not match its immutable inputs"
+}
 foreach ($Image in $Manifest.images) {
     if ($Sums[[string]$Image.archive] -ne $Image.sha256) {
         Fail "Manifest/SHA256SUMS mismatch for $($Image.archive)"
@@ -998,7 +1775,8 @@ try {
     Write-Host "[verify] Publisher authenticity VERIFIED; file allowlist, SHA-256, and archive identities passed."
     foreach ($Image in $Manifest.images) {
         Write-Host "[verify] Loading $($Image.component) from $($Image.archive)"
-        & $Docker image load --input (Join-Path $PackageRoot $Image.archive) | Out-Null
+        & $Docker --host npipe:////./pipe/docker_engine --config $DockerConfig `
+            image load --input (Join-Path $PackageRoot $Image.archive) | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Fail "Docker load failed for $($Image.component)"
         }
@@ -1010,7 +1788,8 @@ try {
 }
 
 foreach ($Image in $Manifest.images) {
-    $Raw = & $Docker image inspect $Image.candidate_reference --format '{{json .}}'
+    $Raw = & $Docker --host npipe:////./pipe/docker_engine --config $DockerConfig `
+        image inspect $Image.image_id --format '{{json .}}'
     if ($LASTEXITCODE -ne 0) {
         Fail "Docker inspect failed for $($Image.component)"
     }
@@ -1019,8 +1798,17 @@ foreach ($Image in $Manifest.images) {
         $Inspected.Architecture -ne $Image.architecture) {
         Fail "Loaded image identity mismatch for $($Image.component)"
     }
-    if (@($Inspected.RepoTags) -notcontains $Image.candidate_reference) {
-        Fail "Loaded candidate tag missing for $($Image.component)"
+    $ReferenceRaw = & $Docker --host npipe:////./pipe/docker_engine --config $DockerConfig `
+        image inspect $Image.candidate_reference --format '{{json .}}'
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Docker candidate reference inspect failed for $($Image.component)"
+    }
+    $ReferenceInspected = $ReferenceRaw | ConvertFrom-Json
+    if ($ReferenceInspected.Id -ne $Image.image_id -or
+        $ReferenceInspected.Os -ne $Image.os -or
+        $ReferenceInspected.Architecture -ne $Image.architecture -or
+        $Image.candidate_reference -cnotin @($ReferenceInspected.RepoTags)) {
+        Fail "Loaded candidate reference mismatch for $($Image.component)"
     }
 }
 
@@ -1028,7 +1816,8 @@ $ComposeArgs = @(
     "compose", "--env-file", $ComposeEnvPath,
     "-f", (Join-Path $PackageRoot "docker-compose.prod.yml")
 )
-$ResolvedImages = @(& $Docker @ComposeArgs config --images | Where-Object { $_ })
+$ResolvedImages = @(& $Docker --host npipe:////./pipe/docker_engine --config $DockerConfig `
+    @ComposeArgs config --images | Where-Object { $_ })
 if ($LASTEXITCODE -ne 0) {
     Fail "Docker Compose image rendering failed"
 }
@@ -1041,7 +1830,8 @@ $ApiReference = "ruisheng-candidate/api:$($Manifest.candidate_id)"
 if (@($ResolvedImages | Where-Object { $_ -eq $ApiReference }).Count -ne 2) {
     Fail "Compose migrate/api do not share exactly one API image"
 }
-$ComposeConfig = (& $Docker @ComposeArgs config --format json) | ConvertFrom-Json
+$ComposeConfig = (& $Docker --host npipe:////./pipe/docker_engine --config $DockerConfig `
+    @ComposeArgs config --format json) | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) {
     Fail "Docker Compose config rendering failed"
 }

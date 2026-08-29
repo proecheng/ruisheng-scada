@@ -364,14 +364,16 @@ def test_verifiers_preserve_integrity_before_load_and_authenticity_block() -> No
     powershell = _read(ROOT / "deploy" / "verify-candidate.ps1")
     guide = _read(ROOT / "deploy" / "setup-customer.md")
 
-    assert bash.index("SHA-256, and archive identities passed") < bash.index('"$DOCKER" image load')
+    bash_load = "image load --input"
+    powershell_load = "image load --input"
+    assert '"$DOCKER" --host "$DOCKER_ENDPOINT" --config "$DOCKER_CONFIG"' in bash
+    assert "& $Docker --host npipe:////./pipe/docker_engine --config $DockerConfig" in powershell
+    assert bash.index("SHA-256, and archive identities passed") < bash.index(bash_load)
     assert powershell.index("SHA-256, and archive identities passed") < powershell.index(
-        "& $Docker image load"
+        powershell_load
     )
-    assert bash.index("Publisher authenticity VERIFIED") < bash.index('"$DOCKER" image load')
-    assert powershell.index("Publisher authenticity VERIFIED") < powershell.index(
-        "& $Docker image load"
-    )
+    assert bash.index("Publisher authenticity VERIFIED") < bash.index(bash_load)
+    assert powershell.index("Publisher authenticity VERIFIED") < powershell.index(powershell_load)
     bootstrap_bash = _read(ROOT / "tools" / "release_trust" / "verify-publisher.sh")
     bootstrap_powershell = _read(ROOT / "tools" / "release_trust" / "verify-publisher.ps1")
     assert "docker image" not in bootstrap_bash
@@ -458,7 +460,7 @@ def test_release_verifiers_pin_trust_tools_and_authentication_order() -> None:
         'Assert-ProtectedTrustAncestors $SshKeygen "system ssh-keygen" -AllowTrustedInstaller'
     ) in powershell
     assert bash.rindex("sums_bytes = sums_path.read_bytes()") < bash.rindex(
-        "manifest = json.loads(manifest_bytes.decode"
+        "manifest = strict_json_loads(manifest_bytes.decode"
     )
     assert powershell.index("$ManifestDigest -cne $AuthenticatedSums") < powershell.index(
         "$Manifest = [Text.UTF8Encoding]"

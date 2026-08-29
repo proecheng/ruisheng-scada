@@ -56,6 +56,82 @@ def _ps_literal(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _qualification_toolchain_descriptor() -> dict[str, object]:
+    return {
+        "path": "qualification-toolchain.tar.gz",
+        "sha256": "6" * 64,
+        "format": "tar+gzip",
+        "semantic_validator": "ruisheng.device-point-profile-validator/v5",
+        "schema": {
+            "path": "schemas/point-profile/point-profile-v1.schema.json",
+            "sha256": "7" * 64,
+        },
+        "validator": {
+            "path": "tools/validate_device_point_profile.py",
+            "sha256": "8" * 64,
+        },
+        "producer": {
+            "path": "tools/release_artifacts.py",
+            "sha256": "9" * 64,
+        },
+        "receipt_producer": {
+            "path": "tools/release_verification_receipt.py",
+            "sha256": "b" * 64,
+        },
+        "toolchain_manifest": {
+            "path": "qualification-toolchain-manifest.json",
+            "sha256": "a" * 64,
+        },
+    }
+
+
+def _candidate_manifest(schema_version: int = 2) -> dict[str, object]:
+    manifest: dict[str, object] = {
+        "schema_version": schema_version,
+        "candidate_id": "candidate",
+        "source_commit": "b" * 40,
+        "generated_at": "2026-08-27T00:00:00+00:00",
+        "target_os": "linux",
+        "target_architecture": "amd64",
+        "alembic_head": "0006_alarm_event_state",
+        "logical_identity": "sha256:" + "c" * 64,
+        "tools": {
+            "docker": "29.0.0/29.0.0",
+            "docker_compose": "2.39.1",
+            "git": "git version 2.51.0.windows.1",
+            "python": "3.13.7",
+            "release_artifacts": "1",
+        },
+        "authenticity": {
+            "status": "SIGNED",
+            "scheme": "openssh-sshsig",
+            "publisher": "ruisheng-release",
+            "namespace": "ruisheng-candidate-v1",
+            "key_type": "ssh-ed25519",
+            "key_fingerprint": "SHA256:" + "A" * 43,
+            "signed_object": "SHA256SUMS",
+            "signature_file": "SHA256SUMS.sig",
+        },
+        "images": [
+            {
+                "component": service,
+                "source_reference": f"fixture/{service}:source",
+                "repo_digest": f"fixture/{service}@sha256:" + "d" * 64,
+                "candidate_reference": f"fixture/{service}:candidate",
+                "image_id": f"sha256:{str(index) * 64}",
+                "os": "linux",
+                "architecture": "amd64",
+                "archive": f"images/{service}.tar.gz",
+                "sha256": "e" * 64,
+            }
+            for index, service in enumerate(("postgres", "redis", "api", "gw", "web"), start=1)
+        ],
+    }
+    if schema_version == 3:
+        manifest["qualification_toolchain"] = _qualification_toolchain_descriptor()
+    return manifest
+
+
 def _remote_template() -> str:
     match = re.search(
         r"\$remoteTemplate = @'\r?\n(.*?)\r?\n'@", _read(MAINTENANCE_SCRIPT), re.DOTALL
@@ -115,18 +191,7 @@ def _remote_layout(tmp_path: Path) -> dict[str, Path]:
     site.mkdir()
     for name in ("docker-compose.prod.yml", "site-network.override.yml"):
         (candidate / name).write_text(f"fixture:{name}\n", encoding="utf-8")
-    manifest = {
-        "schema_version": 1,
-        "candidate_id": "candidate",
-        "images": [
-            {
-                "component": service,
-                "candidate_reference": f"fixture/{service}:candidate",
-                "image_id": f"sha256:{str(index) * 64}",
-            }
-            for index, service in enumerate(("postgres", "redis", "gw", "api", "web"), start=1)
-        ],
-    }
+    manifest = _candidate_manifest()
     (candidate / "MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
     (site / ".env.prod").write_text("SECRET_FIXTURE=never-return\n", encoding="utf-8")
     return {"candidate": candidate, "site": site, "audit": audit}
@@ -207,7 +272,7 @@ function global:docker {{
   if ($argumentList[0] -eq 'image' -and $argumentList[1] -eq 'inspect') {{
     $component = (($argumentList[-1] -split '/')[-1] -split ':')[0]
     $indexes = @{{
-      postgres = '1'; redis = '2'; gw = '3'; api = '4'; web = '5'
+      postgres = '1'; redis = '2'; api = '3'; gw = '4'; web = '5'
     }}
     $global:LASTEXITCODE = 0
     Write-Output ('sha256:' + ($indexes[$component] * 64))
@@ -751,6 +816,10 @@ def test_maintenance_idempotency_audit_and_output_are_allowlisted() -> None:
     assert "previous_hash" in script
     assert "record_hash" in script
     assert "Write-OperatorAudit" in script
+    assert script.count("Get-Content -LiteralPath $AuditPath -Encoding UTF8") == 1
+    assert "$script:AuditMaxFileBytes = 16 * 1024 * 1024" in script
+    assert "$script:AuditMaxLineBytes = 64 * 1024" in script
+    assert "$script:AuditMaxRecords = 50000" in script
     assert "New-SafeResult" in script
     assert "ConvertTo-Json -Depth 10 -Compress" in script
     assert "Config.Env" not in script
@@ -811,6 +880,118 @@ def test_maintenance_status_and_dry_run_make_no_target_writes(tmp_path: Path) ->
     assert len(dry_run_execs) == 3
     assert not (layout["site"] / ".remote-maintenance-state").exists()
     assert not layout["audit"].exists()
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "action", "dry_run"),
+    (
+        (2, "Status", False),
+        (2, "StopApp", True),
+        (3, "Status", False),
+        (3, "StopApp", True),
+    ),
+)
+def test_maintenance_preflight_accepts_exact_release_manifest_v2_and_v3(
+    tmp_path: Path, schema_version: int, action: str, dry_run: bool
+) -> None:
+    layout = _remote_layout(tmp_path)
+    manifest_path = layout["candidate"] / "MANIFEST.json"
+    manifest_path.write_text(json.dumps(_candidate_manifest(schema_version)), encoding="utf-8")
+    before = {name: _tree_digest(path) for name, path in layout.items()}
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action=action,
+        dry_run=dry_run,
+        operation_id=f"00000000-0000-4000-8000-{schema_version:012d}",
+    )
+
+    assert result["preflight"] == {"ok": True, "error_code": ""}
+    assert result["status"] == ("observed" if action == "Status" else "planned")
+    assert not any("\tstop\t" in f"\t{command}\t" for command in commands)
+    assert before == {name: _tree_digest(path) for name, path in layout.items()}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "legacy-v1",
+        "unknown-version",
+        "string-version",
+        "boolean-version",
+        "v2-with-v3-descriptor",
+        "v3-without-descriptor",
+        "v3-with-null-descriptor",
+        "v3-with-array-descriptor",
+        "v3-descriptor-missing-receipt",
+        "v3-descriptor-unknown-field",
+        "v3-descriptor-bad-validator-path",
+        "v3-descriptor-numeric-sha",
+        "v3-descriptor-uppercase-format",
+        "unknown-root-field",
+    ),
+)
+def test_maintenance_preflight_rejects_legacy_unknown_and_mixed_manifest_schemas(  # noqa: PLR0912
+    tmp_path: Path, mutation: str
+) -> None:
+    layout = _remote_layout(tmp_path)
+    manifest = _candidate_manifest(3 if mutation.startswith("v3-") else 2)
+    if mutation == "legacy-v1":
+        manifest["schema_version"] = 1
+    elif mutation == "unknown-version":
+        manifest["schema_version"] = 99
+    elif mutation == "string-version":
+        manifest["schema_version"] = "2"
+    elif mutation == "boolean-version":
+        manifest["schema_version"] = True
+    elif mutation == "v2-with-v3-descriptor":
+        manifest["qualification_toolchain"] = _qualification_toolchain_descriptor()
+    elif mutation == "v3-without-descriptor":
+        manifest.pop("qualification_toolchain")
+    elif mutation == "v3-with-null-descriptor":
+        manifest["qualification_toolchain"] = None
+    elif mutation == "v3-with-array-descriptor":
+        manifest["qualification_toolchain"] = [_qualification_toolchain_descriptor()]
+    elif mutation == "v3-descriptor-missing-receipt":
+        descriptor = manifest["qualification_toolchain"]
+        assert isinstance(descriptor, dict)
+        descriptor.pop("receipt_producer")
+    elif mutation == "v3-descriptor-unknown-field":
+        descriptor = manifest["qualification_toolchain"]
+        assert isinstance(descriptor, dict)
+        descriptor["attacker_selected"] = True
+    elif mutation == "v3-descriptor-bad-validator-path":
+        descriptor = manifest["qualification_toolchain"]
+        assert isinstance(descriptor, dict)
+        validator = descriptor["validator"]
+        assert isinstance(validator, dict)
+        validator["path"] = "tools/attacker.py"
+    elif mutation == "v3-descriptor-numeric-sha":
+        descriptor = manifest["qualification_toolchain"]
+        assert isinstance(descriptor, dict)
+        descriptor["sha256"] = 6
+    elif mutation == "v3-descriptor-uppercase-format":
+        descriptor = manifest["qualification_toolchain"]
+        assert isinstance(descriptor, dict)
+        descriptor["format"] = "TAR+GZIP"
+    elif mutation == "unknown-root-field":
+        manifest["attacker_selected"] = True
+    manifest_path = layout["candidate"] / "MANIFEST.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = {name: _tree_digest(path) for name, path in layout.items()}
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="Status",
+        operation_id="00000000-0000-4000-8000-000000000098",
+    )
+
+    assert result["status"] == "observed"
+    assert result["preflight"] == {"ok": False, "error_code": "manifest_schema_invalid"}
+    assert not any("\tstop\t" in f"\t{command}\t" for command in commands)
+    assert before == {name: _tree_digest(path) for name, path in layout.items()}
 
 
 def test_maintenance_status_rejects_manifest_image_retargeting_without_writes(
@@ -1154,6 +1335,155 @@ Write-JsonAtomic -Path $OperationPath -Value $record
     assert commands == []
     assert "SECRET_FIXTURE" not in json.dumps(result)
     assert "approved test reason" not in json.dumps(result)
+
+
+def _audit_chain_text(record_count: int) -> str:
+    previous_hash = "0" * 64
+    lines: list[str] = []
+    for index in range(record_count):
+        payload = {
+            "schema_version": 1,
+            "operation_id": f"00000000-0000-4000-8000-{index + 700:012d}",
+            "audit_id": f"10000000-0000-4000-8000-{index + 700:012d}",
+            "event": "lifecycle_completed",
+            "result": "succeeded",
+            "previous_hash": previous_hash,
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        previous_hash = hashlib.sha256(encoded).hexdigest()
+        lines.append(
+            json.dumps(
+                {**payload, "record_hash": previous_hash},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize(
+    ("scenario", "audit_text", "error_code"),
+    (
+        (
+            "$script:AuditMaxFileBytes = 128",
+            "x" * 129,
+            "audit_file_limit_exceeded",
+        ),
+        (
+            "$script:AuditMaxFileBytes = 1024; $script:AuditMaxLineBytes = 64",
+            "x" * 65,
+            "audit_line_limit_exceeded",
+        ),
+        (
+            "$script:AuditMaxRecords = 1",
+            _audit_chain_text(2),
+            "audit_record_limit_exceeded",
+        ),
+    ),
+)
+def test_target_audit_resource_budgets_fail_closed_before_lifecycle_mutation(
+    tmp_path: Path, scenario: str, audit_text: str, error_code: str
+) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+    audit_path = layout["audit"] / "remote-maintenance.jsonl"
+    audit_path.write_text(audit_text, encoding="utf-8")
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000062",
+        scenario=_restricted_scenario(scenario),
+    )
+
+    assert result["status"] == "rejected"
+    assert result["error_code"] == error_code
+    assert not any("\tstop\t" in f"\t{command}\t" for command in commands)
+    assert audit_path.read_text(encoding="utf-8") == audit_text
+
+
+def test_target_audit_cache_rejects_same_size_same_timestamp_content_drift(tmp_path: Path) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+    audit_path = layout["audit"] / "remote-maintenance.jsonl"
+    original = _audit_chain_text(1)
+    audit_path.write_text(original, encoding="utf-8")
+    marker = tmp_path / "audit-cache-rejected.txt"
+    scenario = _restricted_scenario(
+        f"""
+$originalBytes = [IO.File]::ReadAllBytes($AuditPath)
+$originalTime = (Get-Item -LiteralPath $AuditPath -Force).LastWriteTimeUtc
+[void](Get-TargetAuditSnapshot -ForceRefresh)
+$changed = [Text.Encoding]::UTF8.GetString($originalBytes).Replace(
+  '"schema_version":1', '"schema_version":2'
+)
+$utf8 = New-Object Text.UTF8Encoding($false)
+try {{
+  [IO.File]::WriteAllText($AuditPath, $changed, $utf8)
+  [IO.File]::SetLastWriteTimeUtc($AuditPath, $originalTime)
+  try {{
+    [void](Get-TargetAuditSnapshot)
+    throw 'audit_cache_accepted_changed_content'
+  }}
+  catch {{
+    if ([string]$_.Exception.Message -ne 'audit_chain_invalid') {{ throw }}
+    [IO.File]::WriteAllText({_ps_literal(marker)}, 'rejected', $utf8)
+  }}
+}}
+finally {{
+  [IO.File]::WriteAllBytes($AuditPath, $originalBytes)
+  [IO.File]::SetLastWriteTimeUtc($AuditPath, $originalTime)
+  $script:TargetAuditSnapshot = $null
+}}
+"""
+    )
+
+    result, _commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="Status",
+        operation_id="00000000-0000-4000-8000-000000000064",
+        scenario=scenario,
+    )
+
+    assert result["status"] == "observed"
+    assert marker.read_text(encoding="utf-8") == "rejected"
+    assert audit_path.read_text(encoding="utf-8") == original
+
+
+def test_operator_audit_file_budget_rejects_append_without_modifying_chain(tmp_path: Path) -> None:
+    audit = tmp_path / "operator-audit-budget"
+    _set_restricted_directory(audit, audit_mutex=True)
+    audit_path = audit / "remote-maintenance.jsonl"
+    original = "x" * 129
+    audit_path.write_text(original, encoding="utf-8")
+    function_source = _read(MAINTENANCE_SCRIPT).split("if ($Target -notmatch", 1)[0]
+    invocation = f"""
+$script:AuditMaxFileBytes = 128
+$result = [pscustomobject]@{{
+  operation_id='00000000-0000-4000-8000-000000000063';
+  audit_id='10000000-0000-4000-8000-000000000063'; status='succeeded';
+  identity=[pscustomobject]@{{user='fixture-user';computer='fixture-host'}}
+}}
+Write-OperatorAudit -Result $result -RequestedAction 'StopApp' `
+  -RequestedTarget 'fixture@100.64.0.20' -AuditDirectory {_ps_literal(audit)}
+"""
+    script_path = tmp_path / "operator-audit-budget.ps1"
+    script_path.write_text(function_source + invocation, encoding="utf-8")
+
+    completed = subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script_path],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_powershell_env(),
+    )
+
+    assert completed.returncode != 0
+    assert "operator_audit_file_limit_exceeded" in completed.stderr
+    assert audit_path.read_text(encoding="utf-8") == original
 
 
 def _assert_jsonl_hash_chain(path: Path, expected_lines: int) -> None:

@@ -13,12 +13,14 @@ class FakeSink:
         self.fail_first_n = fail_first_n
         self.flush_calls = 0
         self.written: list[list[BatchRow]] = []
+        self.flush_event = asyncio.Event()
 
     async def flush(self, rows: list[BatchRow]) -> None:
         self.flush_calls += 1
         if self.flush_calls <= self.fail_first_n:
             raise RuntimeError("fake db down")
         self.written.append(list(rows))
+        self.flush_event.set()
 
 
 async def test_size_threshold_triggers_flush() -> None:
@@ -32,7 +34,7 @@ async def test_size_threshold_triggers_flush() -> None:
                 dev_number="D", point_id=i, rt_value=float(i), org_value=float(i), recorded_at=0.0
             )
         )
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(sink.flush_event.wait(), timeout=1.0)
     assert len(sink.written) >= 1
     assert len(sink.written[0]) == 5
     writer.stop()
