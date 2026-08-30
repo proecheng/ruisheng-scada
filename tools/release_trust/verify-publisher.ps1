@@ -19,6 +19,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $MaxReleaseJsonBytes = 4MB
+$MaxFreshnessProviderBytes = 512MB
+$FreshnessProviderTimeoutMilliseconds = 30000
+$FreshnessProviderPath = "C:\ProgramData\Ruisheng\bin\trust-root-freshness-provider.exe"
+$FreshnessProviderConfigPath = `
+    "C:\ProgramData\Ruisheng\trust\point-profile-freshness-provider.json"
+$FreshnessTrustRootPath = `
+    "C:\ProgramData\Ruisheng\trust\point-profile-policy-root.json"
+$FreshnessVerifierId = "ruisheng.protected-release-publisher.windows.v1"
 # The candidate verifier must only reach the local Docker daemon, never a caller-selected endpoint.
 Remove-Item Env:DOCKER_HOST -ErrorAction SilentlyContinue
 Remove-Item Env:DOCKER_CONTEXT -ErrorAction SilentlyContinue
@@ -795,6 +803,7 @@ $Expected = if ($MatchesV3) { $ExpectedV3 } else { $ExpectedV2 }
 
 $SnapshotRoot = New-ProtectedSnapshotRoot "publisher-snapshot-"
 $QualificationExtractionRoot = $null
+$FreshnessContext = $null
 try {
     [void](New-Item -ItemType Directory -Path (Join-Path $SnapshotRoot "images"))
     $SourceIdentities = @{}
@@ -1393,6 +1402,7 @@ function Test-QualificationToolchain(
     $InternalName = "qualification-toolchain-manifest.json"
     $MemberNames = @(
         "tools/validate_device_point_profile.py",
+        "tools/trust_root_freshness.py",
         "schemas/point-profile/point-profile-v1.schema.json",
         "tools/release_artifacts.py",
         "tools/release_verification_receipt.py",
@@ -1400,10 +1410,10 @@ function Test-QualificationToolchain(
         "uv.lock"
     )
     $IdentityPaths = [ordered]@{
-        schema = $MemberNames[1]
+        schema = $MemberNames[2]
         validator = $MemberNames[0]
-        producer = $MemberNames[2]
-        receipt_producer = $MemberNames[3]
+        producer = $MemberNames[3]
+        receipt_producer = $MemberNames[4]
         toolchain_manifest = $InternalName
     }
     foreach ($Name in $IdentityPaths.Keys) {
@@ -1567,6 +1577,7 @@ function Write-AuthenticatedQualificationToolchain(
 ) {
     $ExpectedMembers = @(
         "tools/validate_device_point_profile.py",
+        "tools/trust_root_freshness.py",
         "schemas/point-profile/point-profile-v1.schema.json",
         "tools/release_artifacts.py",
         "tools/release_verification_receipt.py",
@@ -2099,7 +2110,10 @@ function Assert-ProtectedQualificationRuntimeUnchanged([object]$Runtime) {
 }
 
 function Get-QualificationInvocation(
-    [string]$Mode, [object]$AuthenticatedManifest, [string]$AuthenticatedPackageRoot
+    [string]$Mode,
+    [object]$AuthenticatedManifest,
+    [string]$AuthenticatedPackageRoot,
+    [object]$FreshnessContext = $null
 ) {
     $Entrypoint = ""
     [string[]]$Arguments = @()
@@ -2109,11 +2123,15 @@ function Get-QualificationInvocation(
             $Arguments = @("schema")
         }
         "ValidatorProfile" {
-            $Entrypoint = "tools/validate_device_point_profile.py"
+            if ($null -eq $FreshnessContext) {
+                Fail "ValidatorProfile freshness context is missing"
+            }
+            $Entrypoint = "tools/trust_root_freshness.py"
             $Arguments = @(
-                "validate", [IO.Path]::GetFullPath($QualificationProfilePath),
-                "--root", [IO.Path]::GetFullPath($QualificationRootPath),
-                "--trust-policy", [IO.Path]::GetFullPath($QualificationTrustPolicyPath)
+                "qualify"
+            ) + [string[]](Get-FreshnessBoundArguments `
+                $AuthenticatedManifest $FreshnessContext) + @(
+                "--evidence-root", [IO.Path]::GetFullPath($QualificationRootPath)
             )
         }
         "ValidatorLegacy" {
@@ -2138,6 +2156,38 @@ function Get-QualificationInvocation(
         default { Fail "unsupported qualification mode" }
     }
     return [pscustomobject]@{ Entrypoint = $Entrypoint; Arguments = $Arguments }
+}
+
+function Get-FreshnessBoundArguments(
+    [object]$AuthenticatedManifest, [object]$FreshnessContext
+) {
+    return @(
+        $FreshnessContext.ProfileSnapshot.Path,
+        "--trust-policy", $FreshnessContext.PolicySnapshot.Path,
+        "--trust-root-snapshot", $FreshnessContext.TrustRootSnapshot.Path,
+        "--provider-config-snapshot", $FreshnessContext.ConfigSnapshot.Path,
+        "--attestation", $FreshnessContext.Attestation.Path,
+        "--challenge", $FreshnessContext.Challenge,
+        "--requested-at", $FreshnessContext.RequestedAt,
+        "--candidate-logical-identity", [string]$AuthenticatedManifest.logical_identity,
+        "--expected-trust-root-snapshot-sha256",
+        "sha256:$($FreshnessContext.TrustRootSnapshot.ExpectedSha256)",
+        "--expected-provider-config-snapshot-sha256",
+        "sha256:$($FreshnessContext.ConfigSnapshot.ExpectedSha256)",
+        "--expected-attestation-sha256",
+        "sha256:$($FreshnessContext.Attestation.ExpectedSha256)"
+    )
+}
+
+function Get-FreshnessPreflightInvocation(
+    [object]$AuthenticatedManifest, [object]$FreshnessContext
+) {
+    if ($null -eq $FreshnessContext) { Fail "freshness preflight context is missing" }
+    return [pscustomobject]@{
+        Entrypoint = "tools/trust_root_freshness.py"
+        Arguments = @("preflight") + [string[]](Get-FreshnessBoundArguments `
+            $AuthenticatedManifest $FreshnessContext)
+    }
 }
 
 # BEGIN qualification process containment helpers
@@ -2803,11 +2853,332 @@ function Invoke-GatedQualificationProcess(
 }
 # END qualification process containment helpers
 
+function Open-LockedFreshnessFile(
+    [string]$Path,
+    [string]$Label,
+    [Int64]$MaximumBytes,
+    [switch]$RequireProtected
+) {
+    if ($RequireProtected) {
+        Assert-ProtectedAcl $Path $Label -AllowTrustedInstaller
+        Assert-ProtectedAncestors $Path $Label -AllowTrustedInstaller
+    }
+    $Stream = $null
+    try {
+        $Item = Get-Item -Force -LiteralPath $Path -ErrorAction Stop
+        if ($Item.PSIsContainer -or
+            ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Fail "$Label is missing, linked, or not a file"
+        }
+        $Stream = [IO.File]::Open(
+            $Item.FullName,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read
+        )
+        $Identity = Get-OpenFileIdentity $Stream $Item.FullName $Label
+        if ($Identity.NumberOfLinks -ne 1) { Fail "$Label has multiple hard links" }
+        if ($Identity.Length -lt 0 -or $Identity.Length -gt $MaximumBytes) {
+            Fail "$Label exceeds its byte limit"
+        }
+        $Digest = Get-LockedFileSha256 $Stream
+        $Identity.Sha256 = $Digest
+        $Result = [pscustomobject]@{
+            Path = $Item.FullName
+            Label = $Label
+            Stream = $Stream
+            Identity = $Identity
+            ExpectedSha256 = $Digest
+            MaximumBytes = $MaximumBytes
+            Protected = [bool]$RequireProtected
+        }
+        $Stream = $null
+        return $Result
+    } finally {
+        if ($null -ne $Stream) { $Stream.Dispose() }
+    }
+}
+
+function Copy-LockedFreshnessSnapshot(
+    [object]$Source,
+    [string]$DestinationPath,
+    [string]$Relative,
+    [Collections.Generic.List[object]]$Locks
+) {
+    Copy-CandidateFileToSnapshot `
+        $Source.Path $DestinationPath $Relative $Source.Identity
+    $Snapshot = Open-LockedFreshnessFile `
+        $DestinationPath "$($Source.Label) snapshot" $Source.MaximumBytes
+    if ($Snapshot.ExpectedSha256 -cne $Source.ExpectedSha256) {
+        $Snapshot.Stream.Dispose()
+        Fail "$($Source.Label) snapshot content mismatch"
+    }
+    $Locks.Add($Snapshot)
+    return $Snapshot
+}
+
+function Assert-FreshnessLocksUnchanged([object]$Context) {
+    foreach ($Lock in $Context.Locks) {
+        $After = Get-OpenFileIdentity $Lock.Stream $Lock.Path $Lock.Label
+        Assert-SameFileIdentity $Lock.Identity $After "$($Lock.Label) during freshness validation"
+        if ((Get-LockedFileSha256 $Lock.Stream) -cne $Lock.ExpectedSha256) {
+            Fail "$($Lock.Label) content changed during freshness validation"
+        }
+        if ($Lock.Protected) {
+            Assert-ProtectedAcl $Lock.Path $Lock.Label -AllowTrustedInstaller
+            Assert-ProtectedAncestors $Lock.Path $Lock.Label -AllowTrustedInstaller
+        }
+    }
+}
+
+function Close-FreshnessLocks([object]$Context) {
+    if ($null -eq $Context) { return }
+    foreach ($Lock in @($Context.Locks)) {
+        if ($null -ne $Lock.Stream) { $Lock.Stream.Dispose() }
+    }
+    $Context.Locks.Clear()
+}
+
+function New-FreshnessChallenge() {
+    $Bytes = [byte[]]::new(32)
+    [Security.Cryptography.RandomNumberGenerator]::Fill($Bytes)
+    return [Convert]::ToBase64String($Bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
+}
+
+function Get-CanonicalUtcTimestamp(
+    [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow
+) {
+    [Int64]$Microseconds = [Math]::Floor(
+        [decimal]($Now.Ticks % [TimeSpan]::TicksPerSecond) / 10
+    )
+    $Prefix = $Now.ToString("yyyy-MM-dd'T'HH:mm:ss", [Globalization.CultureInfo]::InvariantCulture)
+    if ($Microseconds -eq 0) { return "${Prefix}+00:00" }
+    return "${Prefix}.$($Microseconds.ToString('D6'))+00:00"
+}
+
+function Invoke-FixedFreshnessProvider([string[]]$Arguments) {
+    $ProviderBootstrap = @'
+$ErrorActionPreference = "Stop"
+$GateName = $env:RUISHENG_QUALIFICATION_GATE
+$CompletionNames = @(0..3 | ForEach-Object {
+    [Environment]::GetEnvironmentVariable("RUISHENG_QUALIFICATION_COMPLETE_$_")
+})
+$HoldName = $env:RUISHENG_QUALIFICATION_HOLD
+if ([string]::IsNullOrWhiteSpace($GateName) -or
+    @($CompletionNames | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -ne 0 -or
+    [string]::IsNullOrWhiteSpace($HoldName)) {
+    exit 1
+}
+$Gate = [Threading.EventWaitHandle]::OpenExisting($GateName)
+try {
+    if (-not $Gate.WaitOne(120000)) { exit 1 }
+} finally { $Gate.Dispose() }
+$Provider = $args[0]
+[string[]]$ProviderArguments = @($args | Select-Object -Skip 1)
+$ExitCode = 1
+try {
+    & $Provider @ProviderArguments *> $null
+    if ($LASTEXITCODE -in @(0, 2, 3)) { $ExitCode = [int]$LASTEXITCODE }
+} catch { $ExitCode = 1 }
+$Completion = [Threading.EventWaitHandle]::OpenExisting($CompletionNames[$ExitCode])
+$Hold = [Threading.EventWaitHandle]::OpenExisting($HoldName)
+try {
+    if (-not $Completion.Set()) { exit 1 }
+    [void]$Hold.WaitOne()
+} finally {
+    $Completion.Dispose()
+    $Hold.Dispose()
+}
+exit $ExitCode
+'@
+    try {
+        $PowerShellPath = [Environment]::ProcessPath
+        if ([string]::IsNullOrWhiteSpace($PowerShellPath)) {
+            return 2
+        }
+        Assert-ProtectedAcl $PowerShellPath "publisher PowerShell runtime" -AllowTrustedInstaller
+        Assert-ProtectedAncestors $PowerShellPath `
+            "publisher PowerShell runtime" -AllowTrustedInstaller
+        $Start = [Diagnostics.ProcessStartInfo]::new()
+        $Start.FileName = $PowerShellPath
+        $Start.WorkingDirectory = [IO.Path]::GetDirectoryName($Arguments[-1])
+        $Start.UseShellExecute = $false
+        $Start.RedirectStandardOutput = $true
+        $Start.RedirectStandardError = $true
+        foreach ($Argument in @(
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", $ProviderBootstrap,
+            $FreshnessProviderPath
+        ) + $Arguments) {
+            [void]$Start.ArgumentList.Add($Argument)
+        }
+        $Start.Environment.Clear()
+        $SystemDirectory = [Environment]::SystemDirectory
+        $WindowsDirectory = [IO.Directory]::GetParent($SystemDirectory).FullName
+        $Start.Environment["COMSPEC"] = Join-Path $SystemDirectory "cmd.exe"
+        $Start.Environment["PATH"] = $SystemDirectory
+        $Start.Environment["PATHEXT"] = ".COM;.EXE;.BAT;.CMD"
+        $Start.Environment["SYSTEMROOT"] = $WindowsDirectory
+        $Start.Environment["WINDIR"] = $WindowsDirectory
+        $Result = Invoke-GatedQualificationProcess `
+            $Start $FreshnessProviderTimeoutMilliseconds
+        if ($Result.ExitCode -in @(0, 2, 3)) { return [int]$Result.ExitCode }
+        return 2
+    } catch {
+        return 2
+    }
+}
+
+function New-PublisherFreshnessContext(
+    [object]$AuthenticatedManifest, [string]$FreshnessRoot
+) {
+    $Locks = [Collections.Generic.List[object]]::new()
+    $Context = [pscustomobject]@{ Locks = $Locks }
+    if (-not (Test-Path -LiteralPath $FreshnessProviderPath -PathType Leaf)) {
+        return [pscustomobject]@{ ExitCode = 2; Context = $Context }
+    }
+    if (-not (Test-Path -LiteralPath $FreshnessProviderConfigPath -PathType Leaf)) {
+        return [pscustomobject]@{ ExitCode = 2; Context = $Context }
+    }
+    if (-not (Test-Path -LiteralPath $FreshnessTrustRootPath -PathType Leaf)) {
+        return [pscustomobject]@{ ExitCode = 3; Context = $Context }
+    }
+    try {
+        [void](New-Item -ItemType Directory -Path $FreshnessRoot)
+        Set-ProtectedSnapshotAcl $FreshnessRoot
+        Assert-ProtectedAcl $FreshnessRoot "freshness snapshot directory"
+        Assert-ProtectedAncestors $FreshnessRoot `
+            "freshness snapshot directory" -AllowTrustedInstaller
+
+        try {
+            $Provider = Open-LockedFreshnessFile `
+                $FreshnessProviderPath "fixed freshness provider" `
+                $MaxFreshnessProviderBytes -RequireProtected
+        } catch {
+            return [pscustomobject]@{ ExitCode = 2; Context = $Context }
+        }
+        $Locks.Add($Provider)
+        $Verifier = Open-LockedFreshnessFile `
+            $PSCommandPath "protected publisher verifier" 64MB -RequireProtected
+        $Locks.Add($Verifier)
+        $TrustRoot = Open-LockedFreshnessFile `
+            $FreshnessTrustRootPath "fixed point-profile trust root" `
+            $MaxReleaseJsonBytes -RequireProtected
+        $Locks.Add($TrustRoot)
+        $Config = Open-LockedFreshnessFile `
+            $FreshnessProviderConfigPath "fixed freshness provider config" `
+            $MaxReleaseJsonBytes -RequireProtected
+        $Locks.Add($Config)
+        $Profile = Open-LockedFreshnessFile `
+            ([IO.Path]::GetFullPath($QualificationProfilePath)) `
+            "qualification profile" $MaxReleaseJsonBytes
+        $Locks.Add($Profile)
+        $Policy = Open-LockedFreshnessFile `
+            ([IO.Path]::GetFullPath($QualificationTrustPolicyPath)) `
+            "qualification trust policy" $MaxReleaseJsonBytes
+        $Locks.Add($Policy)
+
+        $TrustRootSnapshot = Copy-LockedFreshnessSnapshot `
+            $TrustRoot (Join-Path $FreshnessRoot "trust-root.json") `
+            "freshness/trust-root.json" $Locks
+        $ConfigSnapshot = Copy-LockedFreshnessSnapshot `
+            $Config (Join-Path $FreshnessRoot "provider-config.json") `
+            "freshness/provider-config.json" $Locks
+        $ProfileSnapshot = Copy-LockedFreshnessSnapshot `
+            $Profile (Join-Path $FreshnessRoot "profile.json") `
+            "freshness/profile.json" $Locks
+        $PolicySnapshot = Copy-LockedFreshnessSnapshot `
+            $Policy (Join-Path $FreshnessRoot "trust-policy.json") `
+            "freshness/trust-policy.json" $Locks
+
+        $ProfileBytes = Read-LockedFileBytes `
+            $ProfileSnapshot.Stream $MaxReleaseJsonBytes "qualification profile snapshot"
+        Assert-NoDuplicateJsonKeys $ProfileBytes "qualification profile snapshot"
+        $ProfileValue = [Text.UTF8Encoding]::new($false, $true).GetString(
+            $ProfileBytes
+        ) | ConvertFrom-Json
+        if ($ProfileValue.PSObject.Properties.Name -cnotcontains "profile_id" -or
+            $ProfileValue.profile_id -isnot [string] -or
+            $ProfileValue.PSObject.Properties.Name -cnotcontains "payload_sha256" -or
+            $ProfileValue.payload_sha256 -isnot [string]) {
+            Fail "qualification profile binding is invalid"
+        }
+
+        $Challenge = New-FreshnessChallenge
+        if ($Challenge.Length -ne 43 -or $Challenge.Contains("=")) {
+            Fail "freshness challenge generation failed"
+        }
+        $RequestedAt = Get-CanonicalUtcTimestamp
+        $AttestationPath = Join-Path $FreshnessRoot "attestation.json"
+        [string[]]$ProviderArguments = @(
+            "attest",
+            "--config", $ConfigSnapshot.Path,
+            "--trust-root", $TrustRootSnapshot.Path,
+            "--trust-policy", $PolicySnapshot.Path,
+            "--profile", $ProfileSnapshot.Path,
+            "--candidate-logical-identity", [string]$AuthenticatedManifest.logical_identity,
+            "--verifier-id", $FreshnessVerifierId,
+            "--verifier-tool-sha256", "sha256:$($Verifier.ExpectedSha256)",
+            "--challenge", $Challenge,
+            "--requested-at", $RequestedAt,
+            "--output", $AttestationPath
+        )
+        Assert-FreshnessLocksUnchanged $Context
+        $ProviderExitCode = Invoke-FixedFreshnessProvider $ProviderArguments
+        if ($ProviderExitCode -ne 0) {
+            return [pscustomobject]@{
+                ExitCode = $(if ($ProviderExitCode -eq 3) { 3 } else { 2 })
+                Context = $Context
+            }
+        }
+        $Attestation = Open-LockedFreshnessFile `
+            $AttestationPath "freshness attestation" $MaxReleaseJsonBytes
+        $Locks.Add($Attestation)
+        $AttestationBytes = Read-LockedFileBytes `
+            $Attestation.Stream $MaxReleaseJsonBytes "freshness attestation"
+        Assert-NoDuplicateJsonKeys $AttestationBytes "freshness attestation"
+        $AttestationValue = [Text.UTF8Encoding]::new($false, $true).GetString(
+            $AttestationBytes
+        ) | ConvertFrom-Json
+        if ($null -eq $AttestationValue.request -or
+            $AttestationValue.request.challenge -cne $Challenge -or
+            $AttestationValue.request.candidate_logical_identity -cne `
+                [string]$AuthenticatedManifest.logical_identity -or
+            $AttestationValue.request.profile_id -cne [string]$ProfileValue.profile_id -or
+            $AttestationValue.request.payload_sha256 -cne `
+                [string]$ProfileValue.payload_sha256 -or
+            $AttestationValue.request.verifier_id -cne $FreshnessVerifierId -or
+            $AttestationValue.request.verifier_tool_sha256 -cne `
+                "sha256:$($Verifier.ExpectedSha256)") {
+            Fail "freshness attestation request binding is invalid"
+        }
+        $Context | Add-Member -NotePropertyName Provider -NotePropertyValue $Provider
+        $Context | Add-Member -NotePropertyName Verifier -NotePropertyValue $Verifier
+        $Context | Add-Member -NotePropertyName TrustRootSnapshot `
+            -NotePropertyValue $TrustRootSnapshot
+        $Context | Add-Member -NotePropertyName ConfigSnapshot `
+            -NotePropertyValue $ConfigSnapshot
+        $Context | Add-Member -NotePropertyName ProfileSnapshot `
+            -NotePropertyValue $ProfileSnapshot
+        $Context | Add-Member -NotePropertyName PolicySnapshot `
+            -NotePropertyValue $PolicySnapshot
+        $Context | Add-Member -NotePropertyName Attestation -NotePropertyValue $Attestation
+        $Context | Add-Member -NotePropertyName Challenge -NotePropertyValue $Challenge
+        $Context | Add-Member -NotePropertyName RequestedAt -NotePropertyValue $RequestedAt
+        return [pscustomobject]@{ ExitCode = 0; Context = $Context }
+    } catch {
+        return [pscustomobject]@{ ExitCode = 3; Context = $Context }
+    }
+}
+
 function Invoke-AuthenticatedQualification(
-    [string]$ExtractionRoot, [hashtable]$AuthenticatedContents, [object]$Invocation
+    [string]$ExtractionRoot,
+    [hashtable]$AuthenticatedContents,
+    [object]$Invocation,
+    [object]$FreshnessContext = $null
 ) {
     $ExpectedMembers = @(
         "tools/validate_device_point_profile.py",
+        "tools/trust_root_freshness.py",
         "schemas/point-profile/point-profile-v1.schema.json",
         "tools/release_artifacts.py",
         "tools/release_verification_receipt.py",
@@ -2939,6 +3310,7 @@ root_path = pathlib.Path(root).resolve(strict=True)
 script_path = pathlib.Path(script).resolve(strict=True)
 allowed = {
     (root_path / "tools" / "validate_device_point_profile.py").resolve(strict=True),
+    (root_path / "tools" / "trust_root_freshness.py").resolve(strict=True),
     (root_path / "tools" / "release_verification_receipt.py").resolve(strict=True),
 }
 if script_path not in allowed or root_path not in script_path.parents:
@@ -3013,6 +3385,9 @@ raise SystemExit(exit_code)
                 "extracted qualification member $($Lock.Relative) during execution"
             )
         }
+        if ($null -ne $FreshnessContext) {
+            Assert-FreshnessLocksUnchanged $FreshnessContext
+        }
         return [pscustomobject]@{
             ExitCode = $ProcessResult.ExitCode
             StandardOutput = $ProcessResult.StandardOutput
@@ -3043,10 +3418,45 @@ if ($QualificationMode -ne "None") {
     }
     $QualificationExtractionRoot = New-ProtectedSnapshotRoot "qualification-extracted-"
     Write-AuthenticatedQualificationToolchain $QualificationContents $QualificationExtractionRoot
-    $Invocation = Get-QualificationInvocation $QualificationMode $Manifest $PackageRoot
+    if ($QualificationMode -eq "ValidatorProfile") {
+        $FreshnessResult = New-PublisherFreshnessContext `
+            $Manifest (Join-Path $QualificationExtractionRoot "freshness")
+        $FreshnessContext = $FreshnessResult.Context
+        if ($FreshnessResult.ExitCode -ne 0) {
+            exit $FreshnessResult.ExitCode
+        }
+        $PreflightInvocation = Get-FreshnessPreflightInvocation `
+            $Manifest $FreshnessContext
+        $PreflightResult = Invoke-AuthenticatedQualification (
+            $QualificationExtractionRoot
+        ) $QualificationContents $PreflightInvocation $FreshnessContext
+        try {
+            $PreflightReport = $PreflightResult.StandardOutput | ConvertFrom-Json
+        } catch {
+            exit 3
+        }
+        $ExpectedDecision = switch ($PreflightResult.ExitCode) {
+            0 { "EXACT" }
+            2 { "BLOCKED" }
+            3 { "INVALID" }
+            default { "" }
+        }
+        if (@($PreflightReport.PSObject.Properties).Count -ne 2 -or
+            $PreflightReport.PSObject.Properties.Name -cnotcontains "decision" -or
+            $PreflightReport.PSObject.Properties.Name -cnotcontains "reason_code" -or
+            $PreflightReport.decision -cne $ExpectedDecision) {
+            exit 3
+        }
+        if ($PreflightResult.ExitCode -ne 0) {
+            exit $PreflightResult.ExitCode
+        }
+        Assert-FreshnessLocksUnchanged $FreshnessContext
+    }
+    $Invocation = Get-QualificationInvocation `
+        $QualificationMode $Manifest $PackageRoot $FreshnessContext
     $QualificationResult = Invoke-AuthenticatedQualification (
         $QualificationExtractionRoot
-    ) $QualificationContents $Invocation
+    ) $QualificationContents $Invocation $FreshnessContext
     if (-not [string]::IsNullOrEmpty($QualificationResult.StandardOutput)) {
         [Console]::Out.Write($QualificationResult.StandardOutput)
     }
@@ -3068,6 +3478,7 @@ if ($InstallSerialTools) {
 }
 exit $CandidateExitCode
 } finally {
+    Close-FreshnessLocks $FreshnessContext
     if ($null -ne $QualificationExtractionRoot -and
         (Test-Path -LiteralPath $QualificationExtractionRoot)) {
         try {

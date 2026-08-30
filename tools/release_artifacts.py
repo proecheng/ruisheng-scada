@@ -87,6 +87,7 @@ QUALIFICATION_TOOLCHAIN_FORMAT = "tar+gzip"
 QUALIFICATION_TOOLCHAIN_MANIFEST = "qualification-toolchain-manifest.json"
 QUALIFICATION_TOOLCHAIN_MEMBERS = (
     "tools/validate_device_point_profile.py",
+    "tools/trust_root_freshness.py",
     "schemas/point-profile/point-profile-v1.schema.json",
     "tools/release_artifacts.py",
     "tools/release_verification_receipt.py",

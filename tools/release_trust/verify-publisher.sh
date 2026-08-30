@@ -241,12 +241,15 @@ BASH="/bin/bash"
   "$QUALIFICATION_VERIFIER_KEY_ID" <<'PY'
 import atexit
 import base64
+import ctypes
+from datetime import datetime, timezone
 import gzip
 import hashlib
 import json
 import os
 import pathlib
 import re
+import secrets
 import signal
 import shutil
 import stat
@@ -255,6 +258,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import zlib
 
 MAX_RELEASE_JSON_BYTES = 4 * 1024 * 1024
@@ -275,8 +279,20 @@ QUALIFICATION_RECEIPT_AGENT_SOCKET = pathlib.Path(
 QUALIFICATION_RUNTIME_MANIFEST = "qualification-runtime-manifest.json"
 QUALIFICATION_RUNTIME_PYTHON = "bin/python3.11"
 QUALIFICATION_RUNTIME_DEPENDENCIES = "lib/python3.11/site-packages"
+FRESHNESS_PROVIDER = pathlib.Path(
+    "/usr/local/libexec/ruisheng/trust-root-freshness-provider"
+)
+FRESHNESS_PROVIDER_CONFIG = pathlib.Path(
+    "/etc/ruisheng/trust/point-profile-freshness-provider.json"
+)
+FRESHNESS_TRUST_ROOT = pathlib.Path(
+    "/etc/ruisheng/trust/point-profile-policy-root.json"
+)
+FRESHNESS_PROVIDER_TIMEOUT_SECONDS = 30
+FRESHNESS_VERIFIER_ID = "ruisheng.protected-release-publisher.posix.v1"
 QUALIFICATION_MEMBER_NAMES = (
     "tools/validate_device_point_profile.py",
+    "tools/trust_root_freshness.py",
     "schemas/point-profile/point-profile-v1.schema.json",
     "tools/release_artifacts.py",
     "tools/release_verification_receipt.py",
@@ -919,10 +935,10 @@ def validate_qualification_toolchain(manifest):
     ):
         fail("qualification toolchain descriptor contract is invalid")
     identity_paths = {
-        "schema": QUALIFICATION_MEMBER_NAMES[1],
+        "schema": QUALIFICATION_MEMBER_NAMES[2],
         "validator": QUALIFICATION_MEMBER_NAMES[0],
-        "producer": QUALIFICATION_MEMBER_NAMES[2],
-        "receipt_producer": QUALIFICATION_MEMBER_NAMES[3],
+        "producer": QUALIFICATION_MEMBER_NAMES[3],
+        "receipt_producer": QUALIFICATION_MEMBER_NAMES[4],
         "toolchain_manifest": QUALIFICATION_TOOLCHAIN_MANIFEST,
     }
     for name, path in identity_paths.items():
@@ -1356,7 +1372,7 @@ def absolute_qualification_argument(value, label):
     except (OSError, ValueError) as error:
         fail("{} is invalid: {}".format(label, error))
 
-def qualification_invocation(manifest, extraction):
+def qualification_invocation(manifest, extraction, freshness=None):
     if qualification_mode == "ValidatorSchema":
         return (
             extraction / "tools/validate_device_point_profile.py",
@@ -1364,20 +1380,14 @@ def qualification_invocation(manifest, extraction):
             {0, 2, 3},
         )
     if qualification_mode == "ValidatorProfile":
+        if freshness is None:
+            fail("ValidatorProfile freshness context is missing")
         return (
-            extraction / "tools/validate_device_point_profile.py",
-            [
-                "validate",
-                absolute_qualification_argument(
-                    qualification_profile_path, "qualification profile path"
-                ),
-                "--root",
+            extraction / "tools/trust_root_freshness.py",
+            ["qualify", *_freshness_qualification_arguments(manifest, freshness),
+                "--evidence-root",
                 absolute_qualification_argument(
                     qualification_root_path, "qualification root path"
-                ),
-                "--trust-policy",
-                absolute_qualification_argument(
-                    qualification_trust_policy_path, "qualification trust-policy path"
                 ),
             ],
             {0, 2, 3},
@@ -1421,6 +1431,466 @@ def qualification_invocation(manifest, extraction):
             {0},
         )
     fail("unsupported qualification mode")
+
+def _freshness_qualification_arguments(manifest, freshness):
+    return [
+        str(freshness["profile_snapshot"]),
+        "--trust-policy", str(freshness["policy_snapshot"]),
+        "--trust-root-snapshot", str(freshness["trust_root_snapshot"]),
+        "--provider-config-snapshot", str(freshness["config_snapshot"]),
+        "--attestation", str(freshness["attestation_snapshot"]),
+        "--challenge", freshness["challenge"],
+        "--requested-at", freshness["requested_at"],
+        "--candidate-logical-identity", manifest["logical_identity"],
+        "--expected-trust-root-snapshot-sha256",
+        freshness["trust_root_snapshot_sha256"],
+        "--expected-provider-config-snapshot-sha256",
+        freshness["config_snapshot_sha256"],
+        "--expected-attestation-sha256", freshness["attestation_sha256"],
+    ]
+
+def freshness_preflight_invocation(manifest, extraction, freshness):
+    return (
+        extraction / "tools/trust_root_freshness.py",
+        ["preflight", *_freshness_qualification_arguments(manifest, freshness)],
+    )
+
+def _read_locked_file(descriptor, maximum_bytes, label):
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise ValueError(label + " is not a unique regular file")
+    if metadata.st_size < 0 or metadata.st_size > maximum_bytes:
+        raise ValueError(label + " exceeds its byte limit")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    contents = bytearray()
+    while len(contents) <= maximum_bytes:
+        chunk = os.read(descriptor, min(1024 * 1024, maximum_bytes + 1 - len(contents)))
+        if not chunk:
+            break
+        contents.extend(chunk)
+    if len(contents) != metadata.st_size or len(contents) > maximum_bytes:
+        raise ValueError(label + " changed or exceeds its byte limit")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return bytes(contents), metadata
+
+def _open_freshness_regular(path, label, maximum_bytes):
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size < 0
+            or metadata.st_size > maximum_bytes
+        ):
+            raise ValueError(label + " is not a unique bounded regular file")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+def _lock_snapshot_source(
+    source, destination, label, locks, maximum_bytes, executable_snapshot=False
+):
+    source_descriptor = _open_freshness_regular(source, label, maximum_bytes)
+    try:
+        contents, source_metadata = _read_locked_file(
+            source_descriptor, maximum_bytes, label
+        )
+        source_path_metadata = source.stat(follow_symlinks=False)
+        if (
+            file_identity(source_path_metadata) != file_identity(source_metadata)
+            or not os.path.samestat(source_path_metadata, source_metadata)
+        ):
+            raise ValueError(label + " changed before snapshot")
+        destination_descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            written = 0
+            while written < len(contents):
+                written += os.write(destination_descriptor, contents[written:])
+            os.fsync(destination_descriptor)
+        finally:
+            os.close(destination_descriptor)
+        if executable_snapshot:
+            destination.chmod(0o500)
+        snapshot_descriptor = _open_freshness_regular(
+            destination, label + " snapshot", maximum_bytes
+        )
+        snapshot_contents, snapshot_metadata = _read_locked_file(
+            snapshot_descriptor, maximum_bytes, label + " snapshot"
+        )
+        if snapshot_contents != contents:
+            os.close(snapshot_descriptor)
+            raise ValueError(label + " snapshot content mismatch")
+        locks.extend((
+            {
+                "descriptor": source_descriptor,
+                "path": source,
+                "identity": file_identity(source_metadata),
+                "sha256": hashlib.sha256(contents).hexdigest(),
+                "maximum_bytes": maximum_bytes,
+                "label": label,
+            },
+            {
+                "descriptor": snapshot_descriptor,
+                "path": destination,
+                "identity": file_identity(snapshot_metadata),
+                "sha256": hashlib.sha256(snapshot_contents).hexdigest(),
+                "maximum_bytes": maximum_bytes,
+                "label": label + " snapshot",
+            },
+        ))
+        source_descriptor = None
+        return contents
+    finally:
+        if source_descriptor is not None:
+            os.close(source_descriptor)
+
+def _lock_existing_output(path, label, locks, maximum_bytes):
+    descriptor = _open_freshness_regular(path, label, maximum_bytes)
+    try:
+        contents, metadata = _read_locked_file(descriptor, maximum_bytes, label)
+        path_metadata = path.stat(follow_symlinks=False)
+        if (
+            file_identity(path_metadata) != file_identity(metadata)
+            or not os.path.samestat(path_metadata, metadata)
+        ):
+            raise ValueError(label + " path identity mismatch")
+        locks.append({
+            "descriptor": descriptor,
+            "path": path,
+            "identity": file_identity(metadata),
+            "sha256": hashlib.sha256(contents).hexdigest(),
+            "maximum_bytes": maximum_bytes,
+            "label": label,
+        })
+        descriptor = None
+        return contents
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+def _validate_freshness_locks(locks):
+    for lock in locks:
+        contents, metadata = _read_locked_file(
+            lock["descriptor"], lock["maximum_bytes"], lock["label"]
+        )
+        path_metadata = lock["path"].stat(follow_symlinks=False)
+        if (
+            file_identity(metadata) != lock["identity"]
+            or file_identity(path_metadata) != lock["identity"]
+            or not os.path.samestat(metadata, path_metadata)
+            or hashlib.sha256(contents).hexdigest() != lock["sha256"]
+        ):
+            fail(lock["label"] + " identity or content changed during freshness validation")
+
+def _close_freshness_locks(locks):
+    for lock in reversed(locks):
+        try:
+            os.close(lock["descriptor"])
+        except OSError:
+            pass
+    locks.clear()
+
+def _linux_process_starttime(contents):
+    _prefix, separator, suffix = contents.rpartition(")")
+    if not separator:
+        return None
+    fields = suffix.split()
+    try:
+        return int(fields[19]) if len(fields) > 19 else None
+    except ValueError:
+        return None
+
+def _linux_process_identity(pid):
+    try:
+        contents = (pathlib.Path("/proc") / str(pid) / "stat").read_text(
+            encoding="ascii"
+        )
+        return _linux_process_starttime(contents)
+    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        return None
+
+def _linux_direct_children(pid):
+    children = set()
+    task_root = pathlib.Path("/proc") / str(pid) / "task"
+    try:
+        tasks = tuple(task_root.iterdir())
+    except OSError:
+        return children
+    for task in tasks:
+        try:
+            values = (task / "children").read_text(encoding="ascii").split()
+            children.update(int(value) for value in values)
+        except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError):
+            continue
+    return children
+
+def _capture_linux_descendants(roots):
+    pending = list(roots)
+    captured = {}
+    while pending:
+        parent = pending.pop()
+        for pid in _linux_direct_children(parent):
+            if pid in captured:
+                continue
+            identity = _linux_process_identity(pid)
+            if identity is not None:
+                captured[pid] = identity
+                pending.append(pid)
+    return captured
+
+def _terminate_and_reap_linux_descendants(
+    root_pid, root_identity, initial_descendants, baseline_children, timeout_seconds=30
+):
+    deadline = time.monotonic() + timeout_seconds
+    known = {root_pid: root_identity, **initial_descendants}
+    while True:
+        known.update(_capture_linux_descendants(tuple(known)))
+        for pid in _linux_direct_children(os.getpid()) - baseline_children:
+            identity = _linux_process_identity(pid)
+            if identity is not None:
+                known[pid] = identity
+        alive = {
+            pid: identity
+            for pid, identity in known.items()
+            if _linux_process_identity(pid) == identity
+        }
+        if not alive:
+            break
+        for pid in alive:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        while True:
+            try:
+                reaped, _status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if reaped <= 0:
+                break
+        if time.monotonic() >= deadline:
+            raise TimeoutError("freshness provider descendants could not be reaped")
+        time.sleep(0.01)
+
+def _enable_linux_child_subreaper():
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "cannot enable freshness provider child subreaper")
+
+def _run_freshness_provider(provider_snapshot, arguments):
+    outcome = None
+    timed_out = False
+    root_identity = None
+    baseline_children = set()
+    try:
+        _enable_linux_child_subreaper()
+        baseline_children = _linux_direct_children(os.getpid())
+        outcome = subprocess.Popen(
+            [str(provider_snapshot), *arguments],
+            cwd=run_root,
+            env={"PATH": "/usr/bin:/bin", "LANG": "C", "HOME": "/root"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        root_identity = _linux_process_identity(outcome.pid)
+        if root_identity is None:
+            return 2
+        try:
+            outcome.wait(timeout=FRESHNESS_PROVIDER_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    except (OSError, subprocess.SubprocessError):
+        return 2
+    finally:
+        if outcome is not None:
+            initial_descendants = _capture_linux_descendants((outcome.pid,))
+            try:
+                os.killpg(outcome.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                try:
+                    outcome.kill()
+                except OSError:
+                    pass
+            try:
+                _terminate_and_reap_linux_descendants(
+                    outcome.pid,
+                    root_identity,
+                    initial_descendants,
+                    baseline_children,
+                    timeout_seconds=30,
+                )
+                outcome.wait(timeout=30)
+            except (subprocess.TimeoutExpired, TimeoutError):
+                return 2
+    if timed_out:
+        return 2
+    if outcome.returncode in (0, 2, 3):
+        return outcome.returncode
+    return 2
+
+def prepare_freshness_context(manifest):
+    locks = []
+    context = {"locks": locks}
+    if not FRESHNESS_PROVIDER.exists() or FRESHNESS_PROVIDER.is_symlink():
+        return 2, context
+    if not FRESHNESS_PROVIDER_CONFIG.exists() or FRESHNESS_PROVIDER_CONFIG.is_symlink():
+        return 2, context
+    if not FRESHNESS_TRUST_ROOT.exists() or FRESHNESS_TRUST_ROOT.is_symlink():
+        return 3, context
+    try:
+        freshness_root = run_root / "freshness"
+        freshness_root.mkdir(mode=0o700)
+        trust_root_snapshot = freshness_root / "trust-root.json"
+        config_snapshot = freshness_root / "provider-config.json"
+        policy_snapshot = freshness_root / "trust-policy.json"
+        profile_snapshot = freshness_root / "profile.json"
+        attestation_snapshot = freshness_root / "attestation.json"
+        provider_snapshot = freshness_root / "provider"
+        verifier_snapshot = freshness_root / "verify-publisher.sh"
+        try:
+            protected_with_ancestors(FRESHNESS_PROVIDER, "fixed freshness provider")
+            _lock_snapshot_source(
+                FRESHNESS_PROVIDER,
+                provider_snapshot,
+                "fixed freshness provider",
+                locks,
+                512 * 1024 * 1024,
+                executable_snapshot=True,
+            )
+        except (OSError, ValueError, SystemExit):
+            return 2, context
+        protected_with_ancestors(FRESHNESS_PROVIDER_CONFIG, "fixed freshness provider config")
+        protected_with_ancestors(FRESHNESS_TRUST_ROOT, "fixed point-profile trust root")
+        verifier_contents = _lock_snapshot_source(
+            verifier_input,
+            verifier_snapshot,
+            "protected publisher verifier",
+            locks,
+            64 * 1024 * 1024,
+        )
+        trust_root_contents = _lock_snapshot_source(
+            FRESHNESS_TRUST_ROOT,
+            trust_root_snapshot,
+            "fixed point-profile trust root",
+            locks,
+            MAX_RELEASE_JSON_BYTES,
+        )
+        config_contents = _lock_snapshot_source(
+            FRESHNESS_PROVIDER_CONFIG,
+            config_snapshot,
+            "fixed freshness provider config",
+            locks,
+            MAX_RELEASE_JSON_BYTES,
+        )
+        profile_contents = _lock_snapshot_source(
+            pathlib.Path(absolute_qualification_argument(
+                qualification_profile_path, "qualification profile path"
+            )),
+            profile_snapshot,
+            "qualification profile",
+            locks,
+            MAX_RELEASE_JSON_BYTES,
+        )
+        _lock_snapshot_source(
+            pathlib.Path(absolute_qualification_argument(
+                qualification_trust_policy_path, "qualification trust-policy path"
+            )),
+            policy_snapshot,
+            "qualification trust policy",
+            locks,
+            MAX_RELEASE_JSON_BYTES,
+        )
+        profile = strict_json_loads(profile_contents.decode("utf-8"))
+        if not isinstance(profile, dict):
+            raise ValueError("qualification profile is not a JSON object")
+        profile_id = profile.get("profile_id")
+        payload_sha256 = profile.get("payload_sha256")
+        if not isinstance(profile_id, str) or not isinstance(payload_sha256, str):
+            raise ValueError("qualification profile binding is invalid")
+        challenge = secrets.token_urlsafe(32)
+        if len(challenge) != 43 or "=" in challenge:
+            raise ValueError("freshness challenge generation failed")
+        requested_at = datetime.now(timezone.utc).isoformat()
+        verifier_tool_sha256 = "sha256:" + hashlib.sha256(verifier_contents).hexdigest()
+        arguments = [
+            "attest",
+            "--config", str(config_snapshot),
+            "--trust-root", str(trust_root_snapshot),
+            "--trust-policy", str(policy_snapshot),
+            "--profile", str(profile_snapshot),
+            "--candidate-logical-identity", manifest["logical_identity"],
+            "--verifier-id", FRESHNESS_VERIFIER_ID,
+            "--verifier-tool-sha256", verifier_tool_sha256,
+            "--challenge", challenge,
+            "--requested-at", requested_at,
+            "--output", str(attestation_snapshot),
+        ]
+        _validate_freshness_locks(locks)
+        provider_exit_code = _run_freshness_provider(provider_snapshot, arguments)
+        if provider_exit_code != 0:
+            return provider_exit_code, context
+        attestation_contents = _lock_existing_output(
+            attestation_snapshot,
+            "freshness attestation",
+            locks,
+            MAX_RELEASE_JSON_BYTES,
+        )
+        attestation = strict_json_loads(attestation_contents.decode("utf-8"))
+        request = attestation.get("request") if isinstance(attestation, dict) else None
+        if (
+            not isinstance(request, dict)
+            or request.get("challenge") != challenge
+            or request.get("candidate_logical_identity") != manifest["logical_identity"]
+            or request.get("profile_id") != profile_id
+            or request.get("payload_sha256") != payload_sha256
+            or request.get("verifier_id") != FRESHNESS_VERIFIER_ID
+            or request.get("verifier_tool_sha256") != verifier_tool_sha256
+        ):
+            raise ValueError("freshness attestation request binding is invalid")
+        context.update({
+            "trust_root_snapshot": trust_root_snapshot,
+            "trust_root_snapshot_sha256": (
+                "sha256:" + hashlib.sha256(trust_root_contents).hexdigest()
+            ),
+            "config_snapshot": config_snapshot,
+            "config_snapshot_sha256": (
+                "sha256:" + hashlib.sha256(config_contents).hexdigest()
+            ),
+            "policy_snapshot": policy_snapshot,
+            "profile_snapshot": profile_snapshot,
+            "attestation_snapshot": attestation_snapshot,
+            "attestation_sha256": (
+                "sha256:" + hashlib.sha256(attestation_contents).hexdigest()
+            ),
+            "challenge": challenge,
+            "requested_at": requested_at,
+            "verifier_tool_sha256": verifier_tool_sha256,
+        })
+        return 0, context
+    except (
+        OSError,
+        UnicodeDecodeError,
+        ValueError,
+        RecursionError,
+        MemoryError,
+        SystemExit,
+    ):
+        return 3, context
 
 QUALIFICATION_BOOTSTRAP = r'''
 import os
@@ -1470,6 +1940,7 @@ root_path = pathlib.Path(root).resolve(strict=True)
 script_path = pathlib.Path(script).resolve(strict=True)
 allowed = {
     (root_path / "tools" / "validate_device_point_profile.py").resolve(strict=True),
+    (root_path / "tools" / "trust_root_freshness.py").resolve(strict=True),
     (root_path / "tools" / "release_verification_receipt.py").resolve(strict=True),
 }
 if script_path not in allowed or root_path not in script_path.parents:
@@ -1487,7 +1958,12 @@ def execute_authenticated_qualification(manifest, identities):
     authenticated_uv_lock_sha256 = identities["uv.lock"]
     runtime_before = validate_posix_qualification_runtime(authenticated_uv_lock_sha256)
     runtime_root, runtime_python, dependency_root = runtime_before[:3]
-    entrypoint, arguments, allowed_exit_codes = qualification_invocation(manifest, extraction)
+    freshness = None
+    if qualification_mode == "ValidatorProfile":
+        freshness_exit_code, freshness = prepare_freshness_context(manifest)
+        if freshness_exit_code != 0:
+            _close_freshness_locks(freshness["locks"])
+            return freshness_exit_code
     temporary_root = run_root / "qualification-tmp"
     temporary_root.mkdir(mode=0o700)
     environment = {
@@ -1513,6 +1989,75 @@ def execute_authenticated_qualification(manifest, identities):
         if not stat.S_ISSOCK(agent_metadata.st_mode):
             fail("fixed receipt signing agent path is not a socket")
         environment["SSH_AUTH_SOCK"] = str(QUALIFICATION_RECEIPT_AGENT_SOCKET)
+    if freshness is not None:
+        preflight_entrypoint, preflight_arguments = freshness_preflight_invocation(
+            manifest, extraction, freshness
+        )
+        preflight, preflight_stdout, _preflight_stderr = _run_authenticated_qualification_process(
+            runtime_root,
+            runtime_python,
+            dependency_root,
+            extraction,
+            preflight_entrypoint,
+            preflight_arguments,
+            environment,
+            120,
+            capture_output=True,
+        )
+        _validate_freshness_locks(freshness["locks"])
+        try:
+            preflight_report = strict_json_loads(preflight_stdout.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError, MemoryError):
+            preflight_report = None
+        expected_preflight_decision = {0: "EXACT", 2: "BLOCKED", 3: "INVALID"}.get(preflight)
+        if (
+            not isinstance(preflight_report, dict)
+            or set(preflight_report) != {"decision", "reason_code"}
+            or preflight_report.get("decision") != expected_preflight_decision
+        ):
+            _close_freshness_locks(freshness["locks"])
+            return 3
+        if preflight != 0:
+            _close_freshness_locks(freshness["locks"])
+            return preflight if preflight in (2, 3) else 3
+    entrypoint, arguments, allowed_exit_codes = qualification_invocation(
+        manifest, extraction, freshness
+    )
+    outcome_returncode, _stdout, _stderr = _run_authenticated_qualification_process(
+        runtime_root,
+        runtime_python,
+        dependency_root,
+        extraction,
+        entrypoint,
+        arguments,
+        environment,
+        900,
+        capture_output=False,
+    )
+    runtime_after = validate_posix_qualification_runtime(authenticated_uv_lock_sha256)
+    if runtime_after != runtime_before:
+        fail("qualification runtime identity changed during execution")
+    extracted_after = validate_extracted_qualification(extraction, identities)
+    if extracted_after != extracted_before:
+        fail("extracted qualification toolchain changed during execution")
+    if freshness is not None:
+        _validate_freshness_locks(freshness["locks"])
+        _close_freshness_locks(freshness["locks"])
+    if outcome_returncode not in allowed_exit_codes:
+        fail("qualification command failed ({})".format(outcome_returncode))
+    return outcome_returncode
+
+def _run_authenticated_qualification_process(
+    runtime_root,
+    runtime_python,
+    dependency_root,
+    extraction,
+    entrypoint,
+    arguments,
+    environment,
+    timeout_seconds,
+    capture_output,
+):
     outcome = None
     timed_out = False
     try:
@@ -1535,10 +2080,12 @@ def execute_authenticated_qualification(manifest, identities):
             ],
             cwd=extraction,
             env=environment,
+            stdout=subprocess.PIPE if capture_output else None,
+            stderr=subprocess.PIPE if capture_output else None,
             start_new_session=True,
         )
         try:
-            outcome.wait(timeout=900)
+            outcome.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
     except (OSError, subprocess.SubprocessError) as error:
@@ -1567,15 +2114,8 @@ def execute_authenticated_qualification(manifest, identities):
                 )
     if timed_out:
         fail("authenticated qualification tool timed out")
-    runtime_after = validate_posix_qualification_runtime(authenticated_uv_lock_sha256)
-    if runtime_after != runtime_before:
-        fail("qualification runtime identity changed during execution")
-    extracted_after = validate_extracted_qualification(extraction, identities)
-    if extracted_after != extracted_before:
-        fail("extracted qualification toolchain changed during execution")
-    if outcome.returncode not in allowed_exit_codes:
-        fail("qualification command failed ({})".format(outcome.returncode))
-    return outcome.returncode
+    stdout, stderr = outcome.communicate()
+    return outcome.returncode, stdout or b"", stderr or b""
 
 def expected_logical_identity(manifest):
     value = {

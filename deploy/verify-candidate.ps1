@@ -1528,6 +1528,7 @@ function Test-QualificationToolchain(
     $InternalName = "qualification-toolchain-manifest.json"
     $MemberNames = @(
         "tools/validate_device_point_profile.py",
+        "tools/trust_root_freshness.py",
         "schemas/point-profile/point-profile-v1.schema.json",
         "tools/release_artifacts.py",
         "tools/release_verification_receipt.py",
@@ -1535,10 +1536,10 @@ function Test-QualificationToolchain(
         "uv.lock"
     )
     $IdentityPaths = [ordered]@{
-        schema = $MemberNames[1]
+        schema = $MemberNames[2]
         validator = $MemberNames[0]
-        producer = $MemberNames[2]
-        receipt_producer = $MemberNames[3]
+        producer = $MemberNames[3]
+        receipt_producer = $MemberNames[4]
         toolchain_manifest = $InternalName
     }
     foreach ($Name in $IdentityPaths.Keys) {

@@ -6,7 +6,9 @@ import ctypes
 import hashlib
 import json
 import os
+import sys
 import tomllib
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -16,6 +18,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import ValidationError
 
+import tools.trust_root_freshness as freshness_module
 import tools.validate_device_point_profile as validator_module
 from tools.validate_device_point_profile import (
     ARTIFACT_TYPE,
@@ -1455,9 +1458,769 @@ def test_public_api_cannot_accept_or_establish_root_authority(tmp_path: Path) ->
         trust_root=cast(Any, root.model_dump(mode="json")),
     )
     assert missing.decision == "BLOCKED"
-    assert "TRUST_ROOT_MISSING" in _codes(missing)
+    assert "FRESHNESS_CONTEXT_REQUIRED" in _codes(missing)
     assert injected.decision == "INVALID"
     assert _codes(injected) == {"TRUST_ROOT_INVALID"}
+
+
+@dataclass(frozen=True)
+class _FreshnessQualificationContext:
+    candidate_logical_identity: str
+    challenge: str
+    requested_at: str
+    trust_root_snapshot: Path
+    trust_root_snapshot_sha256: str
+    provider_config_snapshot: Path
+    attestation_snapshot: Path
+    attestation_snapshot_sha256: str
+
+
+def _freshness_authentication_kwargs(
+    profile_path: Path,
+    policy_path: Path,
+    context: _FreshnessQualificationContext,
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    return {
+        "profile_path": profile_path,
+        "policy_path": policy_path,
+        "trust_root_path": context.trust_root_snapshot,
+        "provider_config_path": context.provider_config_snapshot,
+        "attestation_path": context.attestation_snapshot,
+        "challenge": context.challenge,
+        "requested_at": context.requested_at,
+        "candidate_logical_identity": context.candidate_logical_identity,
+        "expected_trust_root_snapshot_sha256": context.trust_root_snapshot_sha256,
+        "expected_provider_config_snapshot_sha256": "sha256:"
+        + hashlib.sha256(context.provider_config_snapshot.read_bytes()).hexdigest(),
+        "expected_attestation_sha256": "sha256:"
+        + hashlib.sha256(context.attestation_snapshot.read_bytes()).hexdigest(),
+        "now": now,
+    }
+
+
+def _qualify_profile_with_freshness(
+    profile_path: Path,
+    *,
+    root: Path,
+    trust_policy_path: Path,
+    freshness: _FreshnessQualificationContext,
+    now: datetime | None = None,
+    completion_now: datetime | None = None,
+) -> Any:
+    return freshness_module.qualify_freshness(
+        evidence_root=root,
+        profile_path=profile_path,
+        policy_path=trust_policy_path,
+        trust_root_path=freshness.trust_root_snapshot,
+        provider_config_path=freshness.provider_config_snapshot,
+        attestation_path=freshness.attestation_snapshot,
+        challenge=freshness.challenge,
+        requested_at=freshness.requested_at,
+        candidate_logical_identity=freshness.candidate_logical_identity,
+        expected_trust_root_snapshot_sha256=freshness.trust_root_snapshot_sha256,
+        expected_provider_config_snapshot_sha256="sha256:"
+        + hashlib.sha256(freshness.provider_config_snapshot.read_bytes()).hexdigest(),
+        expected_attestation_sha256=(
+            "sha256:" + hashlib.sha256(freshness.attestation_snapshot.read_bytes()).hexdigest()
+            if freshness.attestation_snapshot.exists()
+            else freshness.attestation_snapshot_sha256
+        ),
+        now=now,
+        completion_now=completion_now or now,
+    )
+
+
+def _publisher_freshness_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    attestation_state_update: dict[str, Any] | None = None,
+    monotonic_state_id: str = "site-a-root-policy-high-water",
+    monotonic_counter: int = 42,
+) -> tuple[Path, Path, _FreshnessQualificationContext]:
+    policy, trust_root, _keys = _trust_contract()
+    profile_value = _minimal_profile(tmp_path, policy=policy, trust_root=trust_root)
+    profile = DevicePointProfile.model_validate(profile_value)
+    profile_path = tmp_path / "profile.json"
+    policy_path = tmp_path / "policy.json"
+    root_snapshot = tmp_path / "publisher-root-snapshot.json"
+    config_snapshot = tmp_path / "freshness-config.json"
+    fixed_config = tmp_path / "fixed-freshness-config.json"
+    attestation_snapshot = tmp_path / "freshness-attestation.json"
+    for path, value in (
+        (profile_path, profile.model_dump(mode="json")),
+        (policy_path, policy.model_dump(mode="json")),
+        (root_snapshot, trust_root.model_dump(mode="json")),
+    ):
+        path.write_text(
+            json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    witness_key = Ed25519PrivateKey.generate()
+    config = freshness_module.FreshnessProviderConfig.model_validate(
+        {
+            "schema_version": 1,
+            "artifact_type": "ruisheng.trust-root-freshness-provider-config",
+            "site_id": "site-a",
+            "provider_id": "site-a-independent-witness",
+            "witness_key_id": "freshness-key-1",
+            "witness_public_key": _public_key(witness_key),
+            "verifier_id": "ruisheng.verify-publisher.test-v1",
+            "verifier_tool_sha256": SHA_ONE,
+            "monotonic_state_id": "site-a-root-policy-high-water",
+            "minimum_monotonic_counter": 42,
+            "maximum_clock_skew_seconds": 60,
+            "maximum_attestation_lifetime_seconds": 300,
+        }
+    )
+    config_snapshot.write_text(
+        json.dumps(config.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    fixed_config.write_bytes(config_snapshot.read_bytes())
+    monkeypatch.setattr(
+        validator_module,
+        "FIXED_FRESHNESS_PROVIDER_CONFIG_PATH",
+        fixed_config,
+    )
+
+    def read_protected_config(path: Path, *, maximum_bytes: int) -> bytes:
+        assert path == fixed_config
+        return validator_module._read_explicit_file_once(path, maximum_bytes=maximum_bytes)
+
+    monkeypatch.setattr(
+        validator_module,
+        "_read_fixed_trust_root_once",
+        read_protected_config,
+    )
+    state_value: dict[str, Any] = {
+        "root_id": trust_root.root_id,
+        "root_version": trust_root.root_version,
+        "root_revocation_sequence": trust_root.revocation_sequence,
+        "root_sha256": trust_root_sha256(trust_root),
+        "policy_id": policy.policy_id,
+        "policy_version": policy.policy_version,
+        "policy_revocation_sequence": policy.revocation_sequence,
+        "policy_sha256": trust_policy_sha256(policy),
+    }
+    request = freshness_module.FreshnessRequest.model_validate(
+        {
+            "schema_version": 1,
+            "artifact_type": "ruisheng.trust-root-freshness-request",
+            "site_id": config.site_id,
+            "challenge": "A" * 43,
+            "requested_at": NOW.isoformat(),
+            "candidate_logical_identity": SHA_ONE,
+            "root_snapshot_sha256": "sha256:"
+            + hashlib.sha256(root_snapshot.read_bytes()).hexdigest(),
+            "provider_config_sha256": "sha256:"
+            + hashlib.sha256(config_snapshot.read_bytes()).hexdigest(),
+            "profile_id": profile.profile_id,
+            "profile_sha256": validator_module._canonical_sha256(profile.model_dump(mode="json")),
+            "payload_sha256": profile.payload_sha256,
+            "canonical_gate_sha256": canonical_gate_sha256(profile),
+            "semantic_validator": profile.semantic_validator,
+            "validator_source_sha256": profile.validator_source_sha256,
+            "verifier_id": "ruisheng.verify-publisher.test-v1",
+            "verifier_tool_sha256": SHA_ONE,
+            "state": state_value,
+        }
+    )
+    high_water = dict(state_value)
+    high_water.update(attestation_state_update or {})
+    attestation: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": "ruisheng.trust-root-freshness-attestation",
+        "provider_id": config.provider_id,
+        "witness_key_id": config.witness_key_id,
+        "request": request.model_dump(mode="json"),
+        "high_water": high_water,
+        "monotonic_state_id": monotonic_state_id,
+        "monotonic_counter": monotonic_counter,
+        "observed_at": NOW.isoformat(),
+        "expires_at": (NOW + timedelta(minutes=5)).isoformat(),
+        "signature": _dummy_signature(config.witness_key_id),
+    }
+    attestation["signature"] = _signature(
+        config.witness_key_id,
+        witness_key,
+        freshness_module.freshness_attestation_signature_message(attestation),
+    )
+    attestation_snapshot.write_text(
+        json.dumps(attestation, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    context = _FreshnessQualificationContext(
+        candidate_logical_identity=SHA_ONE,
+        challenge="A" * 43,
+        requested_at=NOW.isoformat(),
+        trust_root_snapshot=root_snapshot,
+        trust_root_snapshot_sha256="sha256:"
+        + hashlib.sha256(root_snapshot.read_bytes()).hexdigest(),
+        provider_config_snapshot=config_snapshot,
+        attestation_snapshot=attestation_snapshot,
+        attestation_snapshot_sha256="sha256:"
+        + hashlib.sha256(attestation_snapshot.read_bytes()).hexdigest(),
+    )
+    return profile_path, policy_path, context
+
+
+def test_publisher_freshness_context_allows_existing_gate_only_after_exact_attestation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+    )
+
+    assert report.decision == "BLOCKED"
+    assert not any(code.startswith("FRESHNESS_") for code in _codes(report))
+    assert "IDENTITY_UNRESOLVED" in _codes(report)
+
+
+def test_missing_publisher_attestation_blocks_before_evidence_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+    context.attestation_snapshot.unlink()
+
+    monkeypatch.setattr(
+        validator_module,
+        "_check_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("freshness failure must precede evidence I/O")
+        ),
+    )
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+    )
+
+    assert report.decision == "BLOCKED"
+    assert _codes(report) == {"FRESHNESS_ATTESTATION_MISSING"}
+
+
+def test_unavailable_publisher_provider_blocks_before_evidence_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+    validator_module.FIXED_FRESHNESS_PROVIDER_CONFIG_PATH.unlink()
+    monkeypatch.setattr(
+        validator_module,
+        "_check_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("freshness failure must precede evidence I/O")
+        ),
+    )
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+    )
+
+    assert report.decision == "BLOCKED"
+    assert _codes(report) == {"FRESHNESS_PROVIDER_CONFIG_MISSING"}
+
+
+def test_caller_supplied_freshness_config_and_key_cannot_establish_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+    attacker_key = Ed25519PrivateKey.generate()
+    trusted_config_path = validator_module.FIXED_FRESHNESS_PROVIDER_CONFIG_PATH
+    attacker_config_path = tmp_path / "caller-provider-config.json"
+    attacker_config = json.loads(trusted_config_path.read_text(encoding="utf-8"))
+    attacker_config["witness_public_key"] = _public_key(attacker_key)
+    attacker_config_path.write_text(json.dumps(attacker_config), encoding="utf-8")
+    attestation = json.loads(context.attestation_snapshot.read_text(encoding="utf-8"))
+    attestation["signature"] = _signature(
+        attestation["witness_key_id"],
+        attacker_key,
+        freshness_module.freshness_attestation_signature_message(attestation),
+    )
+    context.attestation_snapshot.write_text(json.dumps(attestation), encoding="utf-8")
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+    )
+
+    assert attacker_config_path.exists()
+    assert report.decision == "INVALID"
+    assert _codes(report) == {"FRESHNESS_SIGNATURE_INVALID"}
+
+
+def test_hidden_publisher_cli_rejects_caller_freshness_config_parameter() -> None:
+    parser = validator_module._build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "validate-publisher",
+                "profile.json",
+                "--root",
+                "evidence",
+                "--trust-policy",
+                "policy.json",
+                "--publisher-trust-root-snapshot",
+                "root.json",
+                "--publisher-trust-root-snapshot-sha256",
+                SHA_ONE,
+                "--publisher-freshness-attestation",
+                "attestation.json",
+                "--publisher-freshness-challenge",
+                "A" * 43,
+                "--publisher-freshness-requested-at",
+                NOW.isoformat(),
+                "--publisher-candidate-logical-identity",
+                SHA_ONE,
+                "--publisher-verifier-id",
+                "ruisheng.verify-publisher.test-v1",
+                "--publisher-verifier-tool-sha256",
+                SHA_ONE,
+            ]
+        )
+
+
+def test_publisher_attestation_rollback_is_invalid_before_evidence_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(
+        tmp_path,
+        monkeypatch,
+        attestation_state_update={"root_version": 4, "root_sha256": SHA_ZERO},
+    )
+    monkeypatch.setattr(
+        validator_module,
+        "_check_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("freshness failure must precede evidence I/O")
+        ),
+    )
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+    )
+
+    assert report.decision == "INVALID"
+    assert _codes(report) == {"FRESHNESS_ROOT_VERSION_ROLLBACK"}
+
+
+@pytest.mark.parametrize(
+    ("high_water_update", "expected_decision", "expected_code"),
+    (
+        ({"root_sha256": SHA_ZERO}, "INVALID", "FRESHNESS_ROOT_HASH_CONFLICT"),
+        ({"root_id": "other-root"}, "INVALID", "FRESHNESS_ROOT_ID_SWITCH"),
+        ({"root_version": 2}, "BLOCKED", "FRESHNESS_LOCAL_STATE_AHEAD"),
+        ({"policy_sha256": SHA_ZERO}, "INVALID", "FRESHNESS_POLICY_HASH_CONFLICT"),
+        ({"policy_id": "other-policy"}, "INVALID", "FRESHNESS_POLICY_ID_SWITCH"),
+        ({"policy_version": 1}, "BLOCKED", "FRESHNESS_LOCAL_STATE_AHEAD"),
+    ),
+)
+def test_publisher_freshness_state_mismatch_fails_before_evidence_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    high_water_update: dict[str, Any],
+    expected_decision: str,
+    expected_code: str,
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(
+        tmp_path,
+        monkeypatch,
+        attestation_state_update=high_water_update,
+    )
+    monkeypatch.setattr(
+        validator_module,
+        "_check_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("freshness failure must precede evidence I/O")
+        ),
+    )
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+    )
+
+    assert report.decision == expected_decision
+    assert _codes(report) == {expected_code}
+
+
+def test_publisher_freshness_replay_and_clock_rollback_are_invalid_before_evidence_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        validator_module,
+        "_check_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("freshness failure must precede evidence I/O")
+        ),
+    )
+
+    replay = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=replace(context, challenge="Q" * 43),
+        now=NOW,
+    )
+    rolled_back_clock = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW - timedelta(minutes=10),
+    )
+
+    assert replay.decision == "INVALID"
+    assert _codes(replay) == {"FRESHNESS_REQUEST_MISMATCH"}
+    assert rolled_back_clock.decision == "INVALID"
+    assert _codes(rolled_back_clock) == {"FRESHNESS_CLOCK_SKEW"}
+
+
+def test_publisher_freshness_counter_rollback_is_invalid_before_evidence_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(
+        tmp_path,
+        monkeypatch,
+        monotonic_counter=41,
+    )
+    monkeypatch.setattr(
+        validator_module,
+        "_check_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("freshness failure must precede evidence I/O")
+        ),
+    )
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+    )
+
+    assert report.decision == "INVALID"
+    assert _codes(report) == {"FRESHNESS_MONOTONIC_COUNTER_ROLLBACK"}
+
+
+def test_publisher_context_binds_the_root_snapshot_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+    changed = json.loads(context.trust_root_snapshot.read_text(encoding="utf-8"))
+    changed["root_version"] += 1
+    context.trust_root_snapshot.write_text(json.dumps(changed), encoding="utf-8")
+    monkeypatch.setattr(
+        validator_module,
+        "_check_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("freshness failure must precede evidence I/O")
+        ),
+    )
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+    )
+
+    assert report.decision == "INVALID"
+    assert _codes(report) == {"FRESHNESS_TRUST_ROOT_SNAPSHOT_MISMATCH"}
+
+
+def test_root_reserialization_cannot_reuse_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+    value = json.loads(context.trust_root_snapshot.read_text(encoding="utf-8"))
+    context.trust_root_snapshot.write_text(json.dumps(value, indent=2), encoding="utf-8")
+    changed_context = replace(
+        context,
+        trust_root_snapshot_sha256="sha256:"
+        + hashlib.sha256(context.trust_root_snapshot.read_bytes()).hexdigest(),
+    )
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=changed_context,
+        now=NOW,
+    )
+
+    assert report.decision == "INVALID"
+    assert _codes(report) == {"FRESHNESS_REQUEST_MISMATCH"}
+
+
+def test_provider_config_reserialization_cannot_reuse_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+    config_path = validator_module.FIXED_FRESHNESS_PROVIDER_CONFIG_PATH
+    value = json.loads(config_path.read_text(encoding="utf-8"))
+    config_path.write_text(json.dumps(value, indent=2), encoding="utf-8")
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+    )
+
+    assert report.decision == "INVALID"
+    assert _codes(report) == {"FRESHNESS_PROVIDER_CONFIG_SNAPSHOT_MISMATCH"}
+
+
+def test_attestation_expiry_during_validator_execution_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+        completion_now=NOW + timedelta(minutes=5),
+    )
+
+    assert report.decision == "INVALID"
+    assert _codes(report) == {"FRESHNESS_ATTESTATION_EXPIRED"}
+
+
+def test_attestation_completion_clock_rollback_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+        completion_now=NOW - timedelta(seconds=1),
+    )
+
+    assert report.decision == "INVALID"
+    assert _codes(report) == {"FRESHNESS_CLOCK_ROLLBACK"}
+
+
+def test_attestation_monotonic_deadline_survives_wall_clock_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+    readings = iter((100.0, 401.0))
+    monkeypatch.setattr(freshness_module.time, "monotonic", lambda: next(readings))
+
+    report = _qualify_profile_with_freshness(
+        profile_path,
+        root=tmp_path,
+        trust_policy_path=policy_path,
+        freshness=context,
+        now=NOW,
+        completion_now=NOW,
+    )
+
+    assert report.decision == "INVALID"
+    assert _codes(report) == {"FRESHNESS_ATTESTATION_EXPIRED"}
+
+
+def test_freshness_preflight_exact_does_not_read_business_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        validator_module,
+        "_check_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("freshness preflight must not read business artifacts")
+        ),
+    )
+
+    report = freshness_module.preflight_freshness(
+        **_freshness_authentication_kwargs(profile_path, policy_path, context, now=NOW)
+    )
+
+    assert report.decision == "EXACT"
+
+
+@pytest.mark.parametrize(
+    ("invalid_signature", "high_water_update", "decision", "reason"),
+    (
+        (True, None, "INVALID", "FRESHNESS_SIGNATURE_INVALID"),
+        (False, {"root_version": 2}, "BLOCKED", "FRESHNESS_LOCAL_STATE_AHEAD"),
+    ),
+)
+def test_freshness_preflight_fails_closed_without_business_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_signature: bool,
+    high_water_update: dict[str, Any] | None,
+    decision: str,
+    reason: str,
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(
+        tmp_path,
+        monkeypatch,
+        attestation_state_update=high_water_update,
+    )
+    if invalid_signature:
+        attestation = json.loads(context.attestation_snapshot.read_text(encoding="utf-8"))
+        attestation["signature"]["value"] = base64.b64encode(b"0" * 64).decode()
+        context.attestation_snapshot.write_text(json.dumps(attestation), encoding="utf-8")
+    monkeypatch.setattr(
+        validator_module,
+        "_check_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("freshness preflight must not read business artifacts")
+        ),
+    )
+
+    report = freshness_module.preflight_freshness(
+        **_freshness_authentication_kwargs(profile_path, policy_path, context, now=NOW)
+    )
+
+    assert report.decision == decision
+    assert report.reason_code == reason
+
+
+@pytest.mark.parametrize(
+    ("digest_argument", "reason_code"),
+    (
+        (
+            "expected_trust_root_snapshot_sha256",
+            "FRESHNESS_TRUST_ROOT_SNAPSHOT_MISMATCH",
+        ),
+        (
+            "expected_provider_config_snapshot_sha256",
+            "FRESHNESS_PROVIDER_CONFIG_SNAPSHOT_MISMATCH",
+        ),
+        ("expected_attestation_sha256", "FRESHNESS_ATTESTATION_SNAPSHOT_MISMATCH"),
+    ),
+)
+def test_freshness_preflight_rejects_expected_raw_digest_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    digest_argument: str,
+    reason_code: str,
+) -> None:
+    profile_path, policy_path, context = _publisher_freshness_fixture(tmp_path, monkeypatch)
+    inputs = _freshness_authentication_kwargs(profile_path, policy_path, context, now=NOW)
+    inputs[digest_argument] = SHA_ZERO
+
+    report = freshness_module.preflight_freshness(**inputs)
+
+    assert report.decision == "INVALID"
+    assert report.reason_code == reason_code
+
+
+def test_public_validator_api_cannot_accept_freshness_or_provider_parameters(
+    tmp_path: Path,
+) -> None:
+    profile = _minimal_profile(tmp_path)
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+
+    with pytest.raises(TypeError):
+        validate_profile_data(  # type: ignore[call-arg]
+            profile,
+            root=tmp_path,
+            freshness_context=object(),
+        )
+    with pytest.raises(TypeError):
+        validate_profile_file(  # type: ignore[call-arg]
+            profile_path,
+            root=tmp_path,
+            freshness_context=object(),
+        )
+
+
+def test_public_validator_stops_before_business_artifact_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, trust_root, _keys = _trust_contract()
+    profile = _minimal_profile(tmp_path, policy=policy, trust_root=trust_root)
+    monkeypatch.setattr(
+        validator_module,
+        "_check_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("public validation must stop before business artifact I/O")
+        ),
+    )
+
+    report = validate_profile_data(profile, root=tmp_path, now=NOW, trust_policy=policy)
+
+    assert report.decision == "BLOCKED"
+    assert _codes(report) == {"FRESHNESS_CONTEXT_REQUIRED"}
+
+
+def test_public_validator_cli_cannot_bypass_publisher_freshness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile_path = tmp_path / "profile.json"
+    policy_path = tmp_path / "policy.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "validate_device_point_profile.py",
+            "validate",
+            str(profile_path),
+            "--root",
+            str(tmp_path),
+            "--trust-policy",
+            str(policy_path),
+        ],
+    )
+    monkeypatch.setattr(
+        validator_module,
+        "_check_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("public CLI must stop before business evidence I/O")
+        ),
+    )
+
+    exit_code = validator_module.main()
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert report["decision"] == "BLOCKED"
+    assert report["reasons"] == [{"code": "FRESHNESS_CONTEXT_REQUIRED", "path": "/freshness"}]
 
 
 def test_authorized_policy_is_checked_for_hash_time_and_revocation(tmp_path: Path) -> None:
@@ -4963,7 +5726,8 @@ def test_runtime_reports_require_check_specific_closed_assertions(check_id: str)
 
 
 def test_deep_artifact_returns_invalid_instead_of_recursion_escape(tmp_path: Path) -> None:
-    profile = _minimal_profile(tmp_path)
+    policy, trust_root, _keys = _trust_contract()
+    profile = _minimal_profile(tmp_path, policy=policy, trust_root=trust_root)
     nested = ("[" * 2000 + "0" + "]" * 2000).encode()
     binding = _write_bytes(tmp_path, "evidence/deep.json", nested)
     profile["evidence_bindings"] = [
@@ -4977,7 +5741,9 @@ def test_deep_artifact_returns_invalid_instead_of_recursion_escape(tmp_path: Pat
     ]
     profile["profile_payload"]["points"][0]["evidence_refs"] = ["DEEP"]
     profile["payload_sha256"] = canonical_payload_sha256(profile["profile_payload"])
-    report = validate_profile_data(profile, root=tmp_path, now=NOW)
+    report = _validate_profile_data_with_trusted_context(
+        profile, root=tmp_path, now=NOW, trust_policy=policy, trust_root=trust_root
+    )
     assert report.decision == "INVALID"
     assert "EVIDENCE_ARTIFACT_INVALID" in _codes(report)
 
@@ -4987,7 +5753,8 @@ def test_nonfinite_evidence_and_reference_return_invalid(
     tmp_path: Path,
     role: str,
 ) -> None:
-    profile = _minimal_profile(tmp_path)
+    policy, trust_root, _keys = _trust_contract()
+    profile = _minimal_profile(tmp_path, policy=policy, trust_root=trust_root)
     binding = _write_bytes(tmp_path, f"evidence/{role}.json", b'{"value":1e400}')
     profile["evidence_bindings"] = [
         {
@@ -5001,29 +5768,37 @@ def test_nonfinite_evidence_and_reference_return_invalid(
     profile["profile_payload"]["points"][0]["evidence_refs"] = ["NONFINITE"]
     profile["payload_sha256"] = canonical_payload_sha256(profile["profile_payload"])
 
-    report = validate_profile_data(profile, root=tmp_path, now=NOW)
+    report = _validate_profile_data_with_trusted_context(
+        profile, root=tmp_path, now=NOW, trust_policy=policy, trust_root=trust_root
+    )
 
     assert report.decision == "INVALID"
     assert "EVIDENCE_ARTIFACT_INVALID" in _codes(report)
 
 
 def test_nonfinite_approval_returns_invalid(tmp_path: Path) -> None:
-    profile = _minimal_profile(tmp_path)
+    policy, trust_root, _keys = _trust_contract()
+    profile = _minimal_profile(tmp_path, policy=policy, trust_root=trust_root)
     binding = _write_bytes(tmp_path, "approval/nonfinite.json", b'{"value":1e400}')
     profile["approval_binding"] = {"subject_gate_sha256": SHA_ZERO, **binding}
 
-    report = validate_profile_data(profile, root=tmp_path, now=NOW)
+    report = _validate_profile_data_with_trusted_context(
+        profile, root=tmp_path, now=NOW, trust_policy=policy, trust_root=trust_root
+    )
 
     assert report.decision == "INVALID"
     assert "APPROVAL_ARTIFACT_INVALID" in _codes(report)
 
 
 def test_nonfinite_runtime_returns_invalid(tmp_path: Path) -> None:
-    profile = _minimal_profile(tmp_path)
+    policy, trust_root, _keys = _trust_contract()
+    profile = _minimal_profile(tmp_path, policy=policy, trust_root=trust_root)
     binding = _write_bytes(tmp_path, "runtime/nonfinite.json", b'{"value":1e400}')
     profile["runtime_evidence"] = [{"check_id": "STRICT_VALUE_TYPE_VALIDATION", **binding}]
 
-    report = validate_profile_data(profile, root=tmp_path, now=NOW)
+    report = _validate_profile_data_with_trusted_context(
+        profile, root=tmp_path, now=NOW, trust_policy=policy, trust_root=trust_root
+    )
 
     assert report.decision == "INVALID"
     assert "RUNTIME_ARTIFACT_INVALID" in _codes(report)
@@ -5306,7 +6081,7 @@ def test_legacy_mapping_remains_read_only_and_blocked() -> None:
     report = validate_legacy_evidence_file(LEGACY, root=ROOT, now=NOW)
     after = (LEGACY.stat().st_size, LEGACY.stat().st_mtime_ns)
     assert report.decision == "BLOCKED"
-    assert {"TRUST_POLICY_MISSING", "TRUST_ROOT_MISSING"}.issubset(_codes(report))
+    assert _codes(report) == {"FRESHNESS_CONTEXT_REQUIRED"}
     assert before == after
     candidate = candidate_profile_from_legacy_evidence(
         json.loads(LEGACY.read_text(encoding="utf-8")),

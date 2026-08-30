@@ -10,3 +10,4 @@
 - 在本次 Docker 29 候选兼容修复后，单独加固 OCI 归档资源边界：校验 descriptor `size` 与 media/schema 元数据，并限制描述符、layer 和元数据 blob 的数量及体积，避免加载前校验遭受内存或 CPU 拒绝服务。
 - 修复生产首次启动的 PostgreSQL 健康竞态：TimescaleDB 初始化服务会短暂通过 `pg_isready`，随后为调优重启，导致 `migrate` 可能在窗口内因 `ConnectionRefusedError` 失败；需加固正式 readiness/迁移重试契约并补新卷启动回归测试。
 - 为生产 GW 串口访问增加跨进程协调排他锁：当前串口打开路径未建立主机级所有权协议，后续需统一 GW、维护探测器及其他串口工具的锁语义、崩溃恢复和竞争回归测试。
+- 加固 POSIX authenticated qualification 的完整后代收容：当前基线仅终止原进程组，后代调用 `setsid` 后可逃逸；需像 freshness provider 一样启用 child subreaper、按 `/proc` 进程身份追踪并有界终止/回收，增加重命名 `comm`、脱离 session、正常/异常/超时全出口回归。

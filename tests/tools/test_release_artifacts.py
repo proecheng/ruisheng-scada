@@ -863,12 +863,36 @@ $QualificationOutputDirectory = $env:RS_OUTPUT_PATH
 $QualificationSigningIdentity = $env:RS_SIGNING_IDENTITY
 $QualificationVerifierId = 'protected-release-verifier'
 $QualificationVerifierKeyId = 'release-receipt-key'
+$FreshnessVerifierId = 'ruisheng.protected-release-publisher.windows.v1'
 $manifest = [pscustomobject]@{
+    logical_identity = ('sha256:' + ('b' * 64))
     qualification_toolchain = [pscustomobject]@{
         receipt_producer = [pscustomobject]@{ sha256 = ('a' * 64) }
     }
 }
-Get-QualificationInvocation $env:RS_MODE $manifest $env:RS_PACKAGE_PATH |
+$freshness = $null
+if ($env:RS_MODE -ceq 'ValidatorProfile') {
+    $freshness = [pscustomobject]@{
+        TrustRootSnapshot = [pscustomobject]@{
+            Path = $env:RS_TRUST_ROOT_SNAPSHOT
+            ExpectedSha256 = ('c' * 64)
+        }
+        ProfileSnapshot = [pscustomobject]@{ Path = $env:RS_PROFILE_SNAPSHOT }
+        PolicySnapshot = [pscustomobject]@{ Path = $env:RS_POLICY_SNAPSHOT }
+        ConfigSnapshot = [pscustomobject]@{
+            Path = $env:RS_CONFIG_SNAPSHOT
+            ExpectedSha256 = ('f' * 64)
+        }
+        Attestation = [pscustomobject]@{
+            Path = $env:RS_ATTESTATION_SNAPSHOT
+            ExpectedSha256 = ('9' * 64)
+        }
+        Challenge = ('d' * 43)
+        RequestedAt = '2026-08-30T00:00:00+00:00'
+        Verifier = [pscustomobject]@{ ExpectedSha256 = ('e' * 64) }
+    }
+}
+Get-QualificationInvocation $env:RS_MODE $manifest $env:RS_PACKAGE_PATH $freshness |
     ConvertTo-Json -Compress
 """
     environment = os.environ.copy()
@@ -883,6 +907,144 @@ Get-QualificationInvocation $env:RS_MODE $manifest $env:RS_PACKAGE_PATH |
             "RS_OUTPUT_PATH": str(tmp_path / "receipts"),
             "RS_SIGNING_IDENTITY": str(tmp_path / "release-receipt.pub"),
             "RS_PACKAGE_PATH": str(tmp_path / "candidate"),
+            "RS_TRUST_ROOT_SNAPSHOT": str(tmp_path / "freshness" / "trust-root.json"),
+            "RS_PROFILE_SNAPSHOT": str(tmp_path / "freshness" / "profile.json"),
+            "RS_POLICY_SNAPSHOT": str(tmp_path / "freshness" / "trust-policy.json"),
+            "RS_CONFIG_SNAPSHOT": str(tmp_path / "freshness" / "provider-config.json"),
+            "RS_ATTESTATION_SNAPSHOT": str(tmp_path / "freshness" / "attestation.json"),
+        }
+    )
+    return subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+
+def _run_powershell_freshness_context_failure(
+    tmp_path: Path, failure: str
+) -> subprocess.CompletedProcess[str]:
+    provider = tmp_path / "provider.ps1"
+    config = tmp_path / "provider-config.json"
+    trust_root = tmp_path / "trust-root.json"
+    config.write_text("{}", encoding="ascii")
+    trust_root.write_text("{}", encoding="ascii")
+    if failure == "untrusted":
+        provider.write_text("exit 0", encoding="ascii")
+    command = r"""
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$start = $source.IndexOf('function New-PublisherFreshnessContext')
+$end = $source.IndexOf('function Invoke-AuthenticatedQualification', $start)
+if ($start -lt 0 -or $end -lt 0) { throw 'Freshness context function not found' }
+function Fail([string]$Message) { throw $Message }
+function Set-ProtectedSnapshotAcl([string]$Path) {}
+function Assert-ProtectedAcl(
+    [string]$Path, [string]$Label, [switch]$AllowTrustedInstaller
+) {}
+function Assert-ProtectedAncestors(
+    [string]$Path, [string]$Label, [switch]$AllowTrustedInstaller
+) {}
+function Open-LockedFreshnessFile(
+    [string]$Path, [string]$Label, [long]$MaximumBytes, [switch]$RequireProtected
+) {
+    if ($Label -ceq 'fixed freshness provider') { throw 'provider is untrusted' }
+    throw 'unexpected freshness open'
+}
+. ([scriptblock]::Create($source.Substring($start, $end - $start)))
+$FreshnessProviderPath = $env:RS_PROVIDER
+$FreshnessProviderConfigPath = $env:RS_CONFIG
+$FreshnessTrustRootPath = $env:RS_TRUST_ROOT
+$MaxFreshnessProviderBytes = 1MB
+$MaxReleaseJsonBytes = 4MB
+$result = New-PublisherFreshnessContext `
+    ([pscustomobject]@{ logical_identity = ('sha256:' + ('a' * 64)) }) `
+    $env:RS_FRESHNESS_ROOT
+[Console]::Out.Write([string]$result.ExitCode)
+"""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RS_VERIFY_SCRIPT": str(ROOT / "tools" / "release_trust" / "verify-publisher.ps1"),
+            "RS_PROVIDER": str(provider),
+            "RS_CONFIG": str(config),
+            "RS_TRUST_ROOT": str(trust_root),
+            "RS_FRESHNESS_ROOT": str(tmp_path / "freshness"),
+        }
+    )
+    return subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+
+def _run_powershell_freshness_dispatch(
+    tmp_path: Path, *, context_exit: int, preflight_exit: int
+) -> subprocess.CompletedProcess[str]:
+    command = r"""
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$start = $source.IndexOf('    if ($QualificationMode -eq "ValidatorProfile") {')
+$end = $source.IndexOf('$CandidateVerifier = Join-Path', $start)
+if ($start -lt 0 -or $end -lt 0) { throw 'ValidatorProfile dispatch block not found' }
+$block = $source.Substring($start, $end - $start)
+$lastClose = $block.LastIndexOf('}')
+if ($lastClose -lt 0) { throw 'ValidatorProfile dispatch close not found' }
+$block = $block.Remove($lastClose, 1)
+function New-PublisherFreshnessContext([object]$Manifest, [string]$Root) {
+    return [pscustomobject]@{
+        ExitCode = [int]$env:RS_CONTEXT_EXIT
+        Context = [pscustomobject]@{ Locks = @() }
+    }
+}
+function Get-FreshnessPreflightInvocation([object]$Manifest, [object]$Context) {
+    return [pscustomobject]@{ Entrypoint = 'preflight'; Arguments = @() }
+}
+function Get-QualificationInvocation {
+    Add-Content -LiteralPath $env:RS_MARKER -Value 'qualification'
+    return [pscustomobject]@{ Entrypoint = 'qualify'; Arguments = @() }
+}
+function Invoke-AuthenticatedQualification {
+    Add-Content -LiteralPath $env:RS_MARKER -Value 'process'
+    $decision = switch ([int]$env:RS_PREFLIGHT_EXIT) {
+        0 { 'EXACT' }
+        2 { 'BLOCKED' }
+        3 { 'INVALID' }
+    }
+    return [pscustomobject]@{
+        ExitCode = [int]$env:RS_PREFLIGHT_EXIT
+        StandardOutput = ('{"decision":"' + $decision + '","reason_code":"TEST"}')
+        StandardError = ''
+    }
+}
+function Assert-FreshnessLocksUnchanged([object]$Context) {}
+$QualificationMode = 'ValidatorProfile'
+$QualificationExtractionRoot = $env:RS_EXTRACTION
+$Manifest = [pscustomobject]@{}
+$QualificationContents = @{}
+$PackageRoot = $env:RS_PACKAGE
+$FreshnessContext = $null
+. ([scriptblock]::Create($block))
+"""
+    marker = tmp_path / "qualification-calls.txt"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RS_VERIFY_SCRIPT": str(ROOT / "tools" / "release_trust" / "verify-publisher.ps1"),
+            "RS_CONTEXT_EXIT": str(context_exit),
+            "RS_PREFLIGHT_EXIT": str(preflight_exit),
+            "RS_MARKER": str(marker),
+            "RS_EXTRACTION": str(tmp_path / "extraction"),
+            "RS_PACKAGE": str(tmp_path / "package"),
         }
     )
     return subprocess.run(
@@ -2743,6 +2905,7 @@ function Fail([string]$Message) { throw $Message }
 . ([scriptblock]::Create($source.Substring($start, $end - $start)))
 [string[]]$expected = @(
     'tools/validate_device_point_profile.py',
+    'tools/trust_root_freshness.py',
     'schemas/point-profile/point-profile-v1.schema.json',
     'tools/release_artifacts.py',
     'tools/release_verification_receipt.py',
@@ -3688,6 +3851,11 @@ def test_posix_publisher_qualification_bootstrap_is_closed_and_compilable() -> N
     for mode in ("ValidatorSchema", "ValidatorProfile", "ValidatorLegacy", "Receipt"):
         assert mode in script
     assert "qualification-launcher.py" not in script
+    assert '"--publisher-freshness-config"' not in script
+    assert (
+        'pathlib.Path(\n    "/etc/ruisheng/trust/point-profile-freshness-provider.json"\n)'
+        in script
+    )
     assert 'pathlib.Path("/opt/ruisheng/qualification-runtime")' in script
     assert 'pathlib.Path(\n    "/run/ruisheng/receipt-signing-agent.sock"\n)' in script
     assert '"PYTHONDONTWRITEBYTECODE": "1"' in script
@@ -3719,7 +3887,7 @@ def test_posix_publisher_qualification_bootstrap_binds_resource_and_timeout_guar
     assert "validate_single_qualification_gzip_member(raw_archive)" in script
     assert "zlib.error," in script
 
-    process_wait = script.index("outcome.wait(timeout=900)")
+    process_wait = script.index("outcome.wait(timeout=timeout_seconds)")
     cleanup_finally = script.index("finally:", process_wait)
     group_termination = script.index("os.killpg(outcome.pid, signal.SIGKILL)", cleanup_finally)
     bounded_reap = script.index("outcome.wait(timeout=30)", group_termination)
@@ -3731,6 +3899,368 @@ def test_posix_publisher_qualification_bootstrap_binds_resource_and_timeout_guar
     budget_check = script.index("if len(directories) >= MAX_QUALIFICATION_RUNTIME_DIRECTORIES:")
     directory_add = script.index("directories.add(directory)", budget_check)
     assert budget_check < directory_add
+
+
+def _posix_publisher_embedded_source() -> str:
+    script = (ROOT / "tools" / "release_trust" / "verify-publisher.sh").read_text(encoding="utf-8")
+    return script.split("<<'PY'\n", maxsplit=1)[1].partition("\nPY\n")[0]
+
+
+def _load_posix_publisher_helpers(*names: str) -> dict[str, object]:
+    import ast
+
+    source = _posix_publisher_embedded_source()
+    tree = ast.parse(source)
+    selected = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Import | ast.ImportFrom)
+        or isinstance(node, ast.FunctionDef)
+        and node.name in names
+    ]
+    namespace: dict[str, object] = {}
+    exec(
+        compile(ast.Module(body=selected, type_ignores=[]), "publisher-helpers", "exec"), namespace
+    )
+    return namespace
+
+
+def test_posix_linux_process_identity_parses_spaces_and_parentheses_in_comm() -> None:
+    helpers = _load_posix_publisher_helpers("_linux_process_starttime")
+    fields = ["S", *("0" for _ in range(18)), "987654", "0"]
+    contents = "123 (provider ) worker) " + " ".join(fields)
+
+    assert helpers["_linux_process_starttime"](contents) == 987654  # type: ignore[operator]
+
+
+@pytest.mark.parametrize("failure", ("missing", "untrusted"))
+def test_posix_freshness_provider_unavailable_or_untrusted_is_blocked(
+    tmp_path: Path, failure: str
+) -> None:
+    provider = tmp_path / "provider"
+    config = tmp_path / "provider-config.json"
+    trust_root = tmp_path / "trust-root.json"
+    config.write_text("{}", encoding="ascii")
+    trust_root.write_text("{}", encoding="ascii")
+    if failure == "untrusted":
+        provider.write_text("provider", encoding="ascii")
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    helpers = _load_posix_publisher_helpers("prepare_freshness_context")
+
+    def protected(path: Path, _label: str) -> None:
+        if path == provider:
+            raise ValueError("provider is untrusted")
+
+    helpers.update(
+        {
+            "FRESHNESS_PROVIDER": provider,
+            "FRESHNESS_PROVIDER_CONFIG": config,
+            "FRESHNESS_TRUST_ROOT": trust_root,
+            "run_root": run_root,
+            "protected_with_ancestors": protected,
+            "_run_freshness_provider": lambda *_args: (_ for _ in ()).throw(
+                AssertionError("unavailable provider must not execute")
+            ),
+        }
+    )
+
+    exit_code, _context = helpers["prepare_freshness_context"](  # type: ignore[operator]
+        {"logical_identity": "sha256:" + "a" * 64}
+    )
+
+    assert exit_code == 2
+
+
+def test_posix_freshness_snapshot_instability_fails_before_provider_execution(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider"
+    config = tmp_path / "provider-config.json"
+    trust_root = tmp_path / "trust-root.json"
+    profile = tmp_path / "profile.json"
+    policy = tmp_path / "policy.json"
+    verifier = tmp_path / "verify-publisher.sh"
+    for path in (provider, config, trust_root, profile, policy, verifier):
+        path.write_text("{}", encoding="ascii")
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    helpers = _load_posix_publisher_helpers("prepare_freshness_context")
+    provider_called = False
+
+    def lock_snapshot(
+        _source: Path,
+        _destination: Path,
+        label: str,
+        locks: list[object],
+        _maximum_bytes: int,
+        executable_snapshot: bool = False,
+    ) -> bytes:
+        del executable_snapshot
+        locks.append(label)
+        if label == "qualification profile":
+            return json.dumps(
+                {"profile_id": "profile-a", "payload_sha256": "sha256:" + "b" * 64}
+            ).encode("ascii")
+        return b"{}"
+
+    def run_provider(*_args: object) -> int:
+        nonlocal provider_called
+        provider_called = True
+        return 0
+
+    helpers.update(
+        {
+            "FRESHNESS_PROVIDER": provider,
+            "FRESHNESS_PROVIDER_CONFIG": config,
+            "FRESHNESS_TRUST_ROOT": trust_root,
+            "FRESHNESS_VERIFIER_ID": "publisher-v1",
+            "MAX_RELEASE_JSON_BYTES": 4 * 1024 * 1024,
+            "run_root": run_root,
+            "verifier_input": verifier,
+            "qualification_profile_path": str(profile),
+            "qualification_trust_policy_path": str(policy),
+            "protected_with_ancestors": lambda *_args: None,
+            "_lock_snapshot_source": lock_snapshot,
+            "_validate_freshness_locks": lambda _locks: (_ for _ in ()).throw(
+                ValueError("snapshot changed")
+            ),
+            "_run_freshness_provider": run_provider,
+            "strict_json_loads": json.loads,
+            "absolute_qualification_argument": lambda value, _label: value,
+        }
+    )
+
+    exit_code, _context = helpers["prepare_freshness_context"](  # type: ignore[operator]
+        {"logical_identity": "sha256:" + "a" * 64}
+    )
+
+    assert exit_code == 3
+    assert not provider_called
+
+
+@pytest.mark.parametrize(
+    ("preflight_exit", "decision"),
+    ((2, "BLOCKED"), (3, "INVALID")),
+)
+def test_posix_freshness_preflight_failure_never_starts_qualification(
+    tmp_path: Path, preflight_exit: int, decision: str
+) -> None:
+    helpers = _load_posix_publisher_helpers("execute_authenticated_qualification")
+    run_root = tmp_path / "run"
+    extraction = tmp_path / "extraction"
+    run_root.mkdir()
+    extraction.mkdir()
+    process_calls: list[str] = []
+
+    def run_process(*args: object, **_kwargs: object) -> tuple[int, bytes, bytes]:
+        process_calls.append(str(args[4]))
+        report = json.dumps({"decision": decision, "reason_code": "TEST"}).encode("ascii")
+        return preflight_exit, report, b""
+
+    helpers.update(
+        {
+            "qualification_mode": "ValidatorProfile",
+            "run_root": run_root,
+            "extract_authenticated_qualification_toolchain": lambda _identities: extraction,
+            "validate_extracted_qualification": lambda *_args: (),
+            "validate_posix_qualification_runtime": lambda _digest: (
+                "runtime",
+                "python",
+                "dependencies",
+            ),
+            "prepare_freshness_context": lambda _manifest: (0, {"locks": []}),
+            "freshness_preflight_invocation": lambda *_args: ("preflight", []),
+            "_run_authenticated_qualification_process": run_process,
+            "_validate_freshness_locks": lambda _locks: None,
+            "_close_freshness_locks": lambda _locks: None,
+            "strict_json_loads": json.loads,
+            "qualification_invocation": lambda *_args: (_ for _ in ()).throw(
+                AssertionError("qualification must not be constructed")
+            ),
+        }
+    )
+
+    result = helpers["execute_authenticated_qualification"](  # type: ignore[operator]
+        {"logical_identity": "sha256:" + "a" * 64}, {"uv.lock": "a" * 64}
+    )
+
+    assert result == preflight_exit
+    assert process_calls == ["preflight"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX nonblocking special-file contract")
+def test_posix_freshness_open_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "attestation.fifo"
+    os.mkfifo(fifo)
+    helpers = _load_posix_publisher_helpers("_open_freshness_regular")
+
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="bounded regular file"):
+        helpers["_open_freshness_regular"](fifo, "freshness attestation", 1024)  # type: ignore[operator]
+
+    assert time.monotonic() - started < 1
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux provider descendant containment")
+def test_posix_freshness_provider_reaps_setsid_daemon(tmp_path: Path) -> None:
+    marker = tmp_path / "escaped.txt"
+    provider = tmp_path / "provider"
+    provider.write_text(
+        "#!/usr/bin/python3\n"
+        "import os,pathlib,time\n"
+        "if os.fork() == 0:\n"
+        " pathlib.Path('/proc/self/comm').write_text('worker ) spaced\\n'); "
+        "os.setsid(); time.sleep(0.5); pathlib.Path("
+        + repr(str(marker))
+        + ").write_text('escaped')\n"
+        "raise SystemExit(0)\n",
+        encoding="ascii",
+    )
+    provider.chmod(0o500)
+    names = (
+        "_linux_process_starttime",
+        "_linux_process_identity",
+        "_linux_direct_children",
+        "_capture_linux_descendants",
+        "_terminate_and_reap_linux_descendants",
+        "_enable_linux_child_subreaper",
+        "_run_freshness_provider",
+    )
+    helpers = _load_posix_publisher_helpers(*names)
+    helpers["run_root"] = tmp_path
+    helpers["FRESHNESS_PROVIDER_TIMEOUT_SECONDS"] = 2
+
+    result = helpers["_run_freshness_provider"](provider, [])  # type: ignore[operator]
+    time.sleep(0.75)
+
+    assert result == 0
+    assert not marker.exists()
+
+
+def test_posix_freshness_provider_uses_locked_snapshots_and_full_cleanup() -> None:
+    script = _posix_publisher_embedded_source()
+
+    assert 'getattr(os, "O_NONBLOCK", 0)' in script
+    assert (
+        '"protected publisher verifier",\n            locks,\n            64 * 1024 * 1024'
+        in script
+    )
+    assert (
+        '"fixed freshness provider",\n                locks,\n                512 * 1024 * 1024'
+        in script
+    )
+    assert "verifier_input.read_bytes()" not in script
+    assert "[str(provider_snapshot), *arguments]" in script
+    assert "_enable_linux_child_subreaper()" in script
+    assert "_capture_linux_descendants" in script
+    assert "_terminate_and_reap_linux_descendants" in script
+    stable_recheck = script.index("_validate_freshness_locks(locks)")
+    assert "provider_exit_code = _run_freshness_provider(provider_snapshot, arguments)" in script
+    provider_start = script.index(
+        "provider_exit_code = _run_freshness_provider(provider_snapshot, arguments)"
+    )
+    assert stable_recheck < provider_start
+    assert 'request.get("verifier_id") != FRESHNESS_VERIFIER_ID' in script
+    assert 'request.get("verifier_tool_sha256") != verifier_tool_sha256' in script
+    provider_failure = script.index("if provider_exit_code != 0:")
+    validator_process = script.index("outcome = subprocess.Popen(", provider_failure)
+    qualification_invocation = script.index("qualification_invocation(", provider_failure)
+    assert provider_failure < qualification_invocation < validator_process
+    assert 'extraction / "tools/trust_root_freshness.py"' in script
+    preflight_run = script.index("preflight, preflight_stdout")
+    preflight_failure = script.index("if preflight != 0:", preflight_run)
+    validator_invocation = script.index(
+        "entrypoint, arguments, allowed_exit_codes = qualification_invocation(",
+        preflight_failure,
+    )
+    assert preflight_run < preflight_failure < validator_invocation
+
+
+def test_posix_freshness_context_hashes_the_locked_provider_config() -> None:
+    script = _posix_publisher_embedded_source()
+
+    provider_lock = script.index("_lock_snapshot_source(\n                FRESHNESS_PROVIDER,")
+    config_lock = script.index(
+        "config_contents = _lock_snapshot_source(\n            FRESHNESS_PROVIDER_CONFIG,",
+        provider_lock,
+    )
+    context_digest = script.index(
+        '"config_snapshot_sha256": (\n'
+        '                "sha256:" + hashlib.sha256(config_contents).hexdigest()',
+        config_lock,
+    )
+
+    assert provider_lock < config_lock < context_digest
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+def test_windows_freshness_timestamp_never_rounds_into_next_second() -> None:
+    script = ROOT / "tools" / "release_trust" / "verify-publisher.ps1"
+    command = r"""
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$start = $source.IndexOf('function Get-CanonicalUtcTimestamp')
+$end = $source.IndexOf('function Invoke-FixedFreshnessProvider', $start)
+if ($start -lt 0 -or $end -lt 0) { throw 'timestamp helper not found' }
+. ([scriptblock]::Create($source.Substring($start, $end - $start)))
+$nearBoundary = [DateTimeOffset]::new(2026, 8, 30, 23, 59, 59, [TimeSpan]::Zero).AddTicks(9999999)
+[Console]::Out.Write((Get-CanonicalUtcTimestamp $nearBoundary))
+"""
+    environment = os.environ.copy()
+    environment["RS_VERIFY_SCRIPT"] = str(script)
+    result = subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout == "2026-08-30T23:59:59.999999+00:00"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize("failure", ("missing", "untrusted"))
+def test_windows_freshness_provider_unavailable_or_untrusted_is_blocked(
+    tmp_path: Path, failure: str
+) -> None:
+    result = _run_powershell_freshness_context_failure(tmp_path, failure)
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout == "2"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.parametrize(
+    ("context_exit", "preflight_exit", "expected_exit", "expected_process_calls"),
+    (
+        (2, 0, 2, 0),
+        (0, 2, 2, 1),
+        (0, 3, 3, 1),
+    ),
+)
+def test_windows_freshness_failure_never_starts_qualification(
+    tmp_path: Path,
+    context_exit: int,
+    preflight_exit: int,
+    expected_exit: int,
+    expected_process_calls: int,
+) -> None:
+    result = _run_powershell_freshness_dispatch(
+        tmp_path,
+        context_exit=context_exit,
+        preflight_exit=preflight_exit,
+    )
+    marker = tmp_path / "qualification-calls.txt"
+    calls = marker.read_text(encoding="utf-8").splitlines() if marker.exists() else []
+
+    assert result.returncode == expected_exit, result.stderr or result.stdout
+    assert calls == ["process"] * expected_process_calls
+    assert "qualification" not in calls
 
 
 def _find_test_bash() -> str | None:
@@ -3894,6 +4424,24 @@ def test_windows_publisher_qualification_mode_is_a_closed_external_bootstrap() -
         "verify-publisher.ps1::<qualification-bootstrap>",
         "exec",
     )
+    assert 'Entrypoint = "tools/trust_root_freshness.py"' in script
+    assert '"--provider-config-snapshot", $FreshnessContext.ConfigSnapshot.Path' in script
+    assert "$AttestationValue.request.verifier_id -cne $FreshnessVerifierId" in script
+    assert (
+        "$AttestationValue.request.verifier_tool_sha256 -cne `\n"
+        '                "sha256:$($Verifier.ExpectedSha256)"'
+    ) in script
+    freshness_recheck = script.index("Assert-FreshnessLocksUnchanged $Context")
+    provider_start = script.index("$ProviderExitCode = Invoke-FixedFreshnessProvider")
+    assert freshness_recheck < provider_start
+    dispatch = script.index('if ($QualificationMode -eq "ValidatorProfile") {', bootstrap_end)
+    preflight = script.index("$PreflightResult = Invoke-AuthenticatedQualification", dispatch)
+    preflight_exit = script.index("if ($PreflightResult.ExitCode -ne 0)", preflight)
+    validator_construct = script.index("$Invocation = Get-QualificationInvocation", preflight_exit)
+    validator_start = script.index(
+        "$QualificationResult = Invoke-AuthenticatedQualification", validator_construct
+    )
+    assert dispatch < preflight < preflight_exit < validator_construct < validator_start
     job_create = script.index("[Ruisheng.ReleaseTrust.KillOnCloseJob]::Create($JobName)")
     process_start = script.index("$Process = [Diagnostics.Process]::Start($Start)", job_create)
     job_assignment = script.index("$Job.Assign($Process.SafeHandle)", process_start)
@@ -4315,7 +4863,11 @@ def test_windows_publisher_rejects_runtime_reparse_points(tmp_path: Path) -> Non
     ("mode", "entrypoint", "argument_prefix"),
     (
         ("ValidatorSchema", "tools/validate_device_point_profile.py", ["schema"]),
-        ("ValidatorProfile", "tools/validate_device_point_profile.py", ["validate"]),
+        (
+            "ValidatorProfile",
+            "tools/trust_root_freshness.py",
+            ["qualify"],
+        ),
         (
             "ValidatorLegacy",
             "tools/validate_device_point_profile.py",
@@ -4338,6 +4890,33 @@ def test_windows_publisher_builds_only_fixed_qualification_invocations(
     arguments = invocation["Arguments"]
     if argument_prefix is not None:
         assert arguments[: len(argument_prefix)] == argument_prefix
+        if mode == "ValidatorProfile":
+            assert arguments == [
+                "qualify",
+                str(tmp_path / "freshness" / "profile.json"),
+                "--trust-policy",
+                str(tmp_path / "freshness" / "trust-policy.json"),
+                "--trust-root-snapshot",
+                str(tmp_path / "freshness" / "trust-root.json"),
+                "--provider-config-snapshot",
+                str(tmp_path / "freshness" / "provider-config.json"),
+                "--attestation",
+                str(tmp_path / "freshness" / "attestation.json"),
+                "--challenge",
+                "d" * 43,
+                "--requested-at",
+                "2026-08-30T00:00:00+00:00",
+                "--candidate-logical-identity",
+                "sha256:" + "b" * 64,
+                "--expected-trust-root-snapshot-sha256",
+                "sha256:" + "c" * 64,
+                "--expected-provider-config-snapshot-sha256",
+                "sha256:" + "f" * 64,
+                "--expected-attestation-sha256",
+                "sha256:" + "9" * 64,
+                "--evidence-root",
+                str((tmp_path / "evidence").resolve()),
+            ]
     else:
         assert arguments == [
             str((tmp_path / "candidate").resolve()),

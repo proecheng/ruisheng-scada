@@ -41,6 +41,11 @@ FIXED_POLICY_TRUST_ROOT_PATH = (
     if os.name == "nt"
     else Path("/etc/ruisheng/trust/point-profile-policy-root.json")
 )
+FIXED_FRESHNESS_PROVIDER_CONFIG_PATH = (
+    Path(r"C:\ProgramData\Ruisheng\trust\point-profile-freshness-provider.json")
+    if os.name == "nt"
+    else Path("/etc/ruisheng/trust/point-profile-freshness-provider.json")
+)
 CONTROL_CHARACTER_LIMIT = 32
 UNICODE_SURROGATE_MIN = 0xD800
 UNICODE_SURROGATE_MAX = 0xDFFF
@@ -73,6 +78,8 @@ SSH_STRING_LENGTH_BYTES = 4
 ED25519_PUBLIC_KEY_BYTES = 32
 ED25519_SIGNATURE_BYTES = 64
 MIN_SSHSIG_PAYLOAD_BYTES = 128
+
+
 FORBIDDEN_DERIVED_KEYS = frozenset(
     {"deployment_eligible", "deployable", "direct_import_allowed", "eligible", "eligibility"}
 )
@@ -6522,9 +6529,7 @@ def _validate_profile_data_with_trusted_context(  # noqa: PLR0911, PLR0912, PLR0
     )
     invalid.extend(authority_invalid)
     blocked.extend(authority_blocked)
-    if authority_invalid or (
-        authority_blocked and authority_root is not None and policy is not None
-    ):
+    if authority_invalid or authority_blocked:
         decision: Decision = "INVALID" if invalid else "BLOCKED"
         return _report(
             decision,
@@ -7094,13 +7099,21 @@ def validate_profile_data(
     trust_policy: TrustPolicy | Mapping[str, Any] | None = None,
 ) -> EligibilityReport:
     """Public library API; it cannot establish a protected policy trust root."""
-    return _validate_profile_data_with_trusted_context(
+    report = _validate_profile_data_with_trusted_context(
         value,
         root=root,
         now=now,
         trust_policy=trust_policy,
         trust_root=None,
     )
+    if any(reason.code == "TRUST_ROOT_MISSING" for reason in report.reasons):
+        return _report(
+            "BLOCKED",
+            [_reason("FRESHNESS_CONTEXT_REQUIRED", "/freshness")],
+            profile_id=report.profile_id,
+            payload_sha256=report.payload_sha256,
+        )
+    return report
 
 
 def _validate_profile_file_with_trusted_context(
@@ -7142,13 +7155,21 @@ def validate_profile_file(
     trust_policy: TrustPolicy | Mapping[str, Any] | None = None,
 ) -> EligibilityReport:
     """Validate a profile file without accepting caller-injected root authority."""
-    return _validate_profile_file_with_trusted_context(
+    report = _validate_profile_file_with_trusted_context(
         profile_path,
         root=root,
         now=now,
         trust_policy=trust_policy,
         trust_root=None,
     )
+    if any(reason.code == "TRUST_ROOT_MISSING" for reason in report.reasons):
+        return _report(
+            "BLOCKED",
+            [_reason("FRESHNESS_CONTEXT_REQUIRED", "/freshness")],
+            profile_id=report.profile_id,
+            payload_sha256=report.payload_sha256,
+        )
+    return report
 
 
 def validate_legacy_evidence_file(
@@ -7405,57 +7426,10 @@ def main() -> int:
     if args.command == "validate-legacy":
         report = validate_legacy_evidence_file(args.evidence, root=args.root)
     else:
-        authority_root: PolicyTrustRoot | None = None
-        trust_root_invalid = False
-        try:
-            authority_root = PolicyTrustRoot.model_validate(
-                _load_json_bytes(
-                    _read_fixed_trust_root_once(
-                        FIXED_POLICY_TRUST_ROOT_PATH,
-                        maximum_bytes=MAX_PROFILE_BYTES,
-                    )
-                )
-            )
-        except FileNotFoundError:
-            authority_root = None
-        except (
-            OSError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            OverflowError,
-            RecursionError,
-            TypeError,
-            ValueError,
-            ValidationError,
-        ):
-            trust_root_invalid = True
-        try:
-            policy = TrustPolicy.model_validate(
-                _load_json_bytes(
-                    _read_explicit_file_once(args.trust_policy, maximum_bytes=MAX_PROFILE_BYTES)
-                )
-            )
-        except (
-            OSError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            OverflowError,
-            RecursionError,
-            TypeError,
-            ValueError,
-            ValidationError,
-        ):
-            report = _report("INVALID", [_reason("TRUST_POLICY_INVALID", "/trust_policy")])
-        else:
-            if trust_root_invalid:
-                report = _report("INVALID", [_reason("TRUST_ROOT_INVALID", "/trust_root")])
-            else:
-                report = _validate_profile_file_with_trusted_context(
-                    args.profile,
-                    root=args.root,
-                    trust_policy=policy,
-                    trust_root=authority_root,
-                )
+        report = _report(
+            "BLOCKED",
+            [_reason("FRESHNESS_CONTEXT_REQUIRED", "/freshness")],
+        )
     print(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, sort_keys=True))
     return {"ELIGIBLE": 0, "BLOCKED": 2, "INVALID": 3}[report.decision]
 
