@@ -3,7 +3,7 @@ title: 'PR #10 Linux CI Compatibility Repair'
 type: 'bugfix'
 created: '2026-08-30'
 status: 'done'
-baseline_commit: '717928871f6b133b1e70e9d63146067b78f78386'
+baseline_commit: 'c4f0d69ad493a3c7022037069a1eb2325af54686'
 context:
   - 'docs/superpowers/specs/spec-plan-5-b08t-trust-root-freshness.md'
 ---
@@ -61,10 +61,23 @@ context:
 - Given 普通用户已登录 Web，when 诊断页请求管理 readiness，then 精确接受预期 `403` 并显示受保护状态；其他 API 4xx/5xx 继续使全功能 E2E 失败。
 - Given 全量回归完成，when 查看改动，then B-08-T 安全边界、生产配置和现场状态均未改变。
 
+### Review Findings
+
+- [x] [Review][Patch] 保留 freshness 控制流测试的跨平台 PowerShell 覆盖 [tests/tools/test_release_artifacts.py]
+- [x] [Review][Patch] 保留 qualification runtime 预算测试的跨平台 PowerShell 覆盖 [tests/tools/test_release_artifacts.py]
+- [x] [Review][Patch] 将实际调用 Windows 文件身份的 runtime 测试限制到 Windows [tests/tools/test_release_artifacts.py]
+- [x] [Review][Patch] 补齐两个直接使用仓库 MDF 的 Windows 测试前置 [tests/tools/test_extract_legacy_mdf_points.py]
+- [x] [Review][Patch] Compose 原文变量回退拒绝转义和非闭合表达式 [tests/tools/test_production_compose.py]
+- [x] [Review][Patch] 发布器安全回归改用隔离可信源，仅真实解析测试依赖现场 MDF [tests/tools/test_extract_legacy_mdf_points.py]
+- [x] [Review][Patch] Compose 变量补偿改为扫描结构化值并覆盖嵌套、转义与 `$VAR` [tests/tools/test_production_compose.py]
+- [x] [Review][Patch] Linux 在构造 Windows PowerShell 环境前按能力跳过 [tests/tools/test_remote_operations.py]
+
 ## Spec Change Log
 
 - 2026-08-30: 首次 Linux CI 运行暴露剩余平台测试隔离和 Web 诊断页授权预期问题；补充 Windows-only 跳过、定向并发改写、局部平台模拟及普通 JWT readiness `403` 回归，不放宽管理认证。
 - 2026-08-30: 对抗审查发现 readiness catch 过宽及测试边界不足；保留管理认证、普通 JWT 精确 `403`、其他 API 错误继续失败和平台局部模拟，改为区分 `403`/其他故障、限制 E2E 请求身份、锁定测试源身份并为 PowerShell 解析增加超时。
+- 2026-08-30: 第二次 Linux CI 解除 Pytest 平台污染后暴露 72 个后续失败；将现场 MDF、Windows 文件身份/远程维护测试限制到具备相应能力的环境，保留跨平台 PowerShell 解析与纯契约回归，并消除 Compose 变量枚举的版本差异。
+- 2026-08-30: 最终三路审查收窄 skip 边界；用隔离可信源保留无 MDF 环境的发布安全覆盖，以 Compose 结构化模型替代原文正则，并在远程维护测试构造 Windows 环境前显式按平台跳过。
 
 ## Design Notes
 
@@ -74,7 +87,7 @@ context:
 
 **Commands:**
 - `uv run mypy --platform linux .` 与 `uv run mypy .` -- 168 个源文件均通过。
-- `uv run pytest ruisheng-shared/tests tests/tools -q --cov=ruisheng-shared/src --cov-fail-under=90` -- 1203 passed，17 skipped，覆盖率 100%。
+- `uv run pytest ruisheng-shared/tests tests/tools -q --cov=ruisheng-shared/src --cov-fail-under=90` -- 1214 passed，17 skipped，覆盖率 100%。
 - `uv run pytest ruisheng-api/tests/integration -x`、`uv run pytest ruisheng-gw/tests/replay -v` -- 1 个 API 集成与 15 个 replay 均通过。
 - API/GW 完整单元门禁 -- 222 与 174 个测试通过，覆盖率分别为 63.92% 与 86.44%。
 - `uv run ruff check .`、`uv run ruff format --check .`、双平台 Mypy 及改动文件 pre-commit -- 全部通过；全文件 pre-commit 另发现并恢复了无关旧计划文件末尾空行清理。
@@ -84,6 +97,8 @@ context:
 - Web 后续回归 -- typecheck、ESLint、19 个 Vitest 文件共 83 个测试通过；本机真实后端 Playwright 1 passed。
 - 本机认证契约复核 -- 管理 token 请求 readiness 返回 200，普通登录 JWT 返回 403；临时 API、Compose 容器和 `8000` 监听均已清理。
 - 对抗审查修复后回归 -- 三路审查结论已处理；Python 3 passed、Web typecheck/ESLint/83 tests 和真实后端 Playwright 1 passed；API 正常退出且 Compose 无残留容器。
+- Linux 隔离最终定向回归 -- 179 passed，1 个 Windows 平台项按设计 skipped；Ruff 与 diff check 通过。
+- 最终三路审查 -- Blind/Edge findings 已修复，Acceptance Auditor 0 findings；未放宽 B-08-T、认证或现场边界。
 
 ## Full PR Review Reference
 
@@ -156,26 +171,41 @@ context:
 
 ## Suggested Review Order
 
-**Readiness 状态边界**
+**缺失现场 MDF 的安全覆盖**
 
-- 仅精确 `403` 显示受保护，其余失败明确显示不可用。
-  [`DiagView.vue:26`](../../../ruisheng-web/src/views/DiagView.vue#L26)
+- 隔离可信源让发布安全测试不依赖现场 MDF。
+  [`test_extract_legacy_mdf_points.py:104`](../../../tests/tools/test_extract_legacy_mdf_points.py#L104)
 
-**真实后端授权回归**
+- 真实 MDF fixture 缺失时只跳过内容解析。
+  [`test_extract_legacy_mdf_points.py:97`](../../../tests/tools/test_extract_legacy_mdf_points.py#L97)
 
-- 入口测试锁定同源、GET、无查询参数的 readiness 请求。
-  [`real-backend.spec.ts:3`](../../../ruisheng-web/e2e/real-backend.spec.ts#L3)
+- POSIX 匿名发布 fail-closed 始终保持覆盖。
+  [`test_extract_legacy_mdf_points.py:1134`](../../../tests/tools/test_extract_legacy_mdf_points.py#L1134)
 
-- 全功能错误收集仅豁免同一精确请求的预期 `403`。
-  [`real-backend-full.spec.ts:44`](../../../ruisheng-web/e2e/real-backend-full.spec.ts#L44)
+**Compose 版本兼容**
+
+- 小型词法器覆盖嵌套、转义与两种 Compose 变量语法。
+  [`test_production_compose.py:116`](../../../tests/tools/test_production_compose.py#L116)
+
+- 只扫描结构化 YAML 值，避免注释和键名误报。
+  [`test_production_compose.py:176`](../../../tests/tools/test_production_compose.py#L176)
+
+- CLI 变量表与结构化补偿合并，消除 Compose 版本差异。
+  [`test_production_compose.py:200`](../../../tests/tools/test_production_compose.py#L200)
 
 **跨平台测试稳定性**
 
-- Windows 专属解析门禁有平台边界和有界执行时间。
-  [`test_publisher_authenticity.py:78`](../../../tests/tools/test_publisher_authenticity.py#L78)
+- 纯 freshness 控制流在 PowerShell Core 上继续跨平台运行。
+  [`test_release_artifacts.py:4255`](../../../tests/tools/test_release_artifacts.py#L4255)
 
-- 并发改写用预捕获身份定向注入，消除路径复查竞态。
-  [`test_release_artifacts.py:2040`](../../../tests/tools/test_release_artifacts.py#L2040)
+- Windows 文件身份快照只在具备 Win32 语义时执行。
+  [`test_release_artifacts.py:4400`](../../../tests/tools/test_release_artifacts.py#L4400)
 
-- 局部 Windows 模拟保留 `os` 其余接口且不污染 Pytest。
-  [`test_release_artifacts.py:2146`](../../../tests/tools/test_release_artifacts.py#L2146)
+- 纯 runtime 预算契约不因操作系统而跳过。
+  [`test_release_artifacts.py:4641`](../../../tests/tools/test_release_artifacts.py#L4641)
+
+- 远程维护测试在 Windows 环境构造前按平台退出。
+  [`test_remote_operations.py:35`](../../../tests/tools/test_remote_operations.py#L35)
+
+- Desktop PowerShell 路径守卫仅在对应运行时执行。
+  [`test_modbus_probe.py:556`](../../../tests/tools/test_modbus_probe.py#L556)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -547,6 +549,10 @@ def test_runner_does_not_persist_raw_docker_inspection_output() -> None:
     assert "ancestor permits replacement by" in script
 
 
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("powershell.exe") is None,
+    reason="Windows Desktop PowerShell self-test is Windows-only",
+)
 def test_runner_powershell_self_test_executes_path_guards() -> None:
     result = subprocess.run(
         [

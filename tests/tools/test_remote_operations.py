@@ -33,10 +33,13 @@ def _powershell() -> str:
 
 
 def _powershell_env() -> dict[str, str]:
+    if os.name != "nt":
+        pytest.skip("Windows PowerShell environment is Windows-only")
     env = os.environ.copy()
+    user_profile = env.get("USERPROFILE") or str(Path.home())
     env["PSModulePath"] = os.pathsep.join(
         (
-            str(Path(env["USERPROFILE"]) / "Documents" / "WindowsPowerShell" / "Modules"),
+            str(Path(user_profile) / "Documents" / "WindowsPowerShell" / "Modules"),
             str(
                 Path(env.get("ProgramFiles", r"C:\Program Files")) / "WindowsPowerShell" / "Modules"
             ),

@@ -113,6 +113,76 @@ def _normalize_compose(model: dict[str, object], deployment_field: str) -> dict[
     return normalized
 
 
+def _compose_interpolation_keys(  # noqa: PLR0912 - Compose interpolation grammar
+    value: str,
+) -> set[str]:
+    keys: set[str] = set()
+    index = 0
+    while index < len(value):
+        if value[index] != "$":
+            index += 1
+            continue
+
+        dollar_start = index
+        while index < len(value) and value[index] == "$":
+            index += 1
+        if (index - dollar_start) % 2 == 0 or index >= len(value):
+            continue
+
+        if value[index] != "{":
+            match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", value[index:])
+            if match is None:
+                continue
+            keys.add(match.group(0))
+            index += len(match.group(0))
+            continue
+
+        name_match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", value[index + 1 :])
+        if name_match is None:
+            continue
+        name = name_match.group(0)
+        operator_start = index + 1 + len(name)
+        if operator_start < len(value) and value[operator_start] == "}":
+            keys.add(name)
+            index = operator_start + 1
+            continue
+
+        operator_length = 0
+        if value[operator_start : operator_start + 2] in (":-", ":+", ":?"):
+            operator_length = 2
+        elif value[operator_start : operator_start + 1] in ("-", "+", "?"):
+            operator_length = 1
+        if operator_length == 0:
+            continue
+
+        payload_start = operator_start + operator_length
+        depth = 1
+        closing = payload_start
+        while closing < len(value) and depth:
+            if value[closing] == "{":
+                depth += 1
+            elif value[closing] == "}":
+                depth -= 1
+            closing += 1
+        if depth:
+            continue
+
+        keys.add(name)
+        keys.update(_compose_interpolation_keys(value[payload_start : closing - 1]))
+        index = closing
+    return keys
+
+
+def _compose_model_variable_keys(value: object) -> set[str]:
+    if isinstance(value, str):
+        return _compose_interpolation_keys(value)
+    if isinstance(value, dict):
+        return {key for item in value.values() for key in _compose_model_variable_keys(item)}
+    if isinstance(value, list):
+        return {key for item in value for key in _compose_model_variable_keys(item)}
+    return set()
+
+
 def _parse_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for line_number, raw_line in enumerate(_read(path).splitlines(), start=1):
@@ -133,6 +203,9 @@ def _compose_variable_keys(compose_path: Path, env_path: Path) -> set[str]:
     if not lines or lines[0].split(maxsplit=1)[0] != "NAME":
         pytest.fail(f"Docker Compose returned an unexpected variables table for {compose_path}")
     keys = {line.split(maxsplit=1)[0] for line in lines[1:]}
+    keys.update(
+        _compose_model_variable_keys(_render_compose(compose_path, env_path, interpolate=False))
+    )
     # WEB_HEALTH_ACL_FILE is consumed by the site override, which is rendered
     # together with the immutable base Compose during deployment.
     if "WEB_HEALTH_ACL_FILE" in _parse_env(env_path):
@@ -215,6 +288,33 @@ def test_dotenv_parser_preserves_value_after_first_equals(tmp_path: Path) -> Non
     env_path.write_text("TOKEN=left=right  \n", encoding="utf-8")
 
     assert _parse_env(env_path) == {"TOKEN": "left=right  "}
+
+
+@pytest.mark.parametrize(
+    ("compose_source", "expected"),
+    (
+        ("value: ${PLAIN}\n", {"PLAIN"}),
+        ("value: ${DEFAULT:-fallback}\n", {"DEFAULT"}),
+        ("value: ${REQUIRED:?must be set}\n", {"REQUIRED"}),
+        ("value: ${OUTER:-${INNER:-fallback}}\n", {"OUTER", "INNER"}),
+        ("value: $UNBRACED\n", {"UNBRACED"}),
+        ("value: $${ESCAPED}\n", set()),
+        ("value: $$${REAL}\n", {"REAL"}),
+        ("value: $${OUTER:-${INNER}}\n", {"INNER"}),
+        ("value: ${UNCLOSED\n", set()),
+        ("value: ${INVALID:operator}\n", set()),
+    ),
+)
+def test_compose_source_variable_scan_requires_real_closed_expansions(
+    compose_source: str, expected: set[str]
+) -> None:
+    assert _compose_interpolation_keys(compose_source) == expected
+
+
+def test_compose_model_variable_scan_ignores_mapping_keys() -> None:
+    model = {"${KEY_ONLY}": ["${VALUE}", {"nested": "$UNBRACED"}]}
+
+    assert _compose_model_variable_keys(model) == {"VALUE", "UNBRACED"}
 
 
 @pytest.mark.parametrize(("compose_path", "env_path"), zip(COMPOSE_FILES, ENV_FILES, strict=True))

@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2088,7 +2089,7 @@ def test_protected_snapshot_rejects_same_length_concurrent_rewrite(
     with (
         pytest.raises(
             ReleaseArtifactError,
-            match="candidate file content changed during snapshot",
+            match="candidate file (?:content )?changed during snapshot",
         ),
         release_artifacts._protected_candidate_snapshot(package),
     ):
@@ -3577,6 +3578,10 @@ def test_v3_toolchain_digest_is_bound_into_logical_identity(
         verify_package(package, runner, trust_directory=_trust_for_package(package))
 
 
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("powershell.exe") is None,
+    reason="Windows Desktop PowerShell logical identity test",
+)
 def test_powershell_recomputes_the_same_v2_and_v3_logical_identity(
     tmp_path: Path, production_env: Path
 ) -> None:
@@ -4381,7 +4386,10 @@ if ($errors.Count -ne 0) {
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 file identity contract",
+)
 @pytest.mark.parametrize(
     ("mutation", "expected_error"),
     (
@@ -4615,7 +4623,10 @@ def test_windows_publisher_accepts_32768_total_runtime_files() -> None:
     assert result.stdout == "ACCEPTED"
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    shutil.which("pwsh") is None,
+    reason="PowerShell 7 is unavailable",
+)
 @pytest.mark.parametrize(
     ("action", "expected_error"),
     (
@@ -4636,7 +4647,10 @@ def test_windows_publisher_rejects_qualification_runtime_budget_overflow(
     assert expected_error in (result.stderr + result.stdout)
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 file identity contract",
+)
 @pytest.mark.parametrize(
     ("action", "lock_target", "marker"),
     (
@@ -4659,7 +4673,10 @@ def test_windows_publisher_accepts_only_the_manifest_bound_fixed_runtime(
     assert result.stdout == marker
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 file identity contract",
+)
 @pytest.mark.parametrize(
     ("field", "value"),
     (
@@ -4682,7 +4699,10 @@ def test_windows_publisher_rejects_invalid_qualification_runtime_manifest_contra
     assert "qualification runtime manifest contract is invalid" in (result.stderr + result.stdout)
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 file identity contract",
+)
 @pytest.mark.parametrize(
     ("mutation", "expected_error"),
     (
@@ -4713,7 +4733,10 @@ def test_windows_publisher_rejects_noncanonical_qualification_runtime_manifest(
     assert expected_error in (result.stderr + result.stdout)
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 file identity contract",
+)
 @pytest.mark.parametrize(
     ("mutation", "expected_error"),
     (
@@ -4745,7 +4768,10 @@ def test_windows_publisher_rejects_qualification_runtime_layout_or_content_drift
     assert expected_error in (result.stderr + result.stdout)
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 file identity contract",
+)
 def test_windows_publisher_rejects_case_ambiguous_qualification_runtime_directories(
     tmp_path: Path,
 ) -> None:
@@ -4762,7 +4788,10 @@ def test_windows_publisher_rejects_case_ambiguous_qualification_runtime_director
     )
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 file identity contract",
+)
 @pytest.mark.parametrize("relative", ("attacker.pth", "pyvenv.cfg"))
 def test_windows_publisher_rejects_python_path_injection_files(
     tmp_path: Path, relative: str
@@ -4778,7 +4807,10 @@ def test_windows_publisher_rejects_python_path_injection_files(
     )
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 file identity contract",
+)
 @pytest.mark.parametrize(
     ("configuration", "expected_error"),
     (
@@ -4801,7 +4833,10 @@ def test_windows_publisher_rejects_unsafe_python_pth_configuration(
     assert expected_error in (result.stderr + result.stdout)
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 file identity contract",
+)
 def test_windows_publisher_rejects_hard_linked_qualification_runtime_files(
     tmp_path: Path,
 ) -> None:
@@ -4821,7 +4856,10 @@ def test_windows_publisher_rejects_hard_linked_qualification_runtime_files(
     assert "qualification runtime file has multiple hard links" in (result.stderr + result.stdout)
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 file identity contract",
+)
 @pytest.mark.parametrize(
     ("guard", "expected_error"),
     (("acl", "unsafe ACL"), ("ancestor", "unsafe ancestor")),
@@ -4837,7 +4875,10 @@ def test_windows_publisher_checks_runtime_acl_and_ancestors(
     assert expected_error in (result.stderr + result.stdout)
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("pwsh") is None,
+    reason="Windows PowerShell 7 reparse-point contract",
+)
 def test_windows_publisher_rejects_runtime_reparse_points(tmp_path: Path) -> None:
     runtime, _, uv_lock_sha256 = _write_minimal_qualification_runtime(tmp_path)
     target = tmp_path / "junction-target"
@@ -4984,4 +5025,5 @@ def test_windows_publisher_rejects_open_ended_qualification_parameter_sets(
     )
 
     assert result.returncode != 0
-    assert expected_error in (result.stderr + result.stdout)
+    output = re.sub(r"\x1b\[[0-9;]*m", "", result.stderr + result.stdout)
+    assert expected_error in " ".join(output.split())

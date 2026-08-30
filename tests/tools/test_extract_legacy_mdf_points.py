@@ -44,6 +44,10 @@ CANONICAL = (
     / "legacy-point-candidates.json"
 )
 WINDOWS_ERROR_SHARING_VIOLATION = 32
+REQUIRES_REPOSITORY_MDF = pytest.mark.skipif(
+    not MDF.is_file(),
+    reason="repository MDF fixture is unavailable",
+)
 
 
 def _assert_windows_sharing_violation(exc: OSError) -> None:
@@ -91,7 +95,26 @@ def _require_posix_anonymous_publication(tmp_path: Path) -> None:
 
 @pytest.fixture(scope="module")
 def frozen_artifact() -> dict[str, object]:
+    if not MDF.is_file():
+        pytest.skip("repository MDF fixture is unavailable")
     return extract(MDF)
+
+
+@pytest.fixture
+def repository_source(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    source_parent = tmp_path_factory.mktemp("repository-mdf")
+    source = source_parent / "ModBus.mdf"
+    source.write_bytes(b"isolated repository MDF fixture")
+    parent_identity, source_identity = extractor._capture_expected_source_identity(source)
+    assert parent_identity is not None
+    assert source_identity is not None
+    monkeypatch.setattr(extractor, "_EXPECTED_SOURCE_PATH", source)
+    monkeypatch.setattr(extractor, "_EXPECTED_SOURCE_PARENT_STAT_AT_LOAD", parent_identity)
+    monkeypatch.setattr(extractor, "_EXPECTED_SOURCE_STAT_AT_LOAD", source_identity)
+    return source
 
 
 def test_read_only_extractor_recovers_frozen_candidates(
@@ -358,6 +381,7 @@ def test_bound_evidence_read_rejects_hard_link(tmp_path: Path) -> None:
         extractor._read_bound_regular_file(source, label="test evidence")
 
 
+@REQUIRES_REPOSITORY_MDF
 def test_page_fixture_rejects_any_byte_change() -> None:
     page, file_offset = read_page(MDF, DEFAULT_PAGE_NUMBER)
     assert hashlib.sha256(page).hexdigest().upper() == EXPECTED_PAGE_SHA256
@@ -401,6 +425,7 @@ def test_raw_page_has_independent_header_record_and_slot_oracles(
         assert location["record_sha256"] == hashlib.sha256(page[start:end]).hexdigest().upper()
 
 
+@REQUIRES_REPOSITORY_MDF
 def test_page_header_identity_is_enforced_after_authentication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -454,6 +479,7 @@ def test_slot_offsets_must_be_unique_and_ordered() -> None:
         extractor._record_offsets(bytes(page))
 
 
+@REQUIRES_REPOSITORY_MDF
 def test_source_is_not_modified() -> None:
     before = (MDF.stat().st_size, MDF.stat().st_mtime_ns)
     extract(MDF)
@@ -461,24 +487,28 @@ def test_source_is_not_modified() -> None:
     assert after == before
 
 
-def test_exclusive_writer_refuses_source_alias_and_existing_output(tmp_path: Path) -> None:
+def test_exclusive_writer_refuses_source_alias_and_existing_output(
+    tmp_path: Path, repository_source: Path
+) -> None:
     artifact: dict[str, object] = {"schema_version": "test"}
 
     with pytest.raises(MdfEvidenceError, match="must not alias"):
-        write_artifact_exclusive(artifact, source=MDF, output=MDF)
+        write_artifact_exclusive(artifact, source=repository_source, output=repository_source)
 
     _require_posix_anonymous_publication(tmp_path)
     output = tmp_path / "artifact.json"
-    write_artifact_exclusive(artifact, source=MDF, output=output)
+    write_artifact_exclusive(artifact, source=repository_source, output=output)
     assert output.read_bytes() == render_artifact(artifact).encode("utf-8")
     with pytest.raises(MdfEvidenceError, match="already exists"):
-        write_artifact_exclusive(artifact, source=MDF, output=output)
+        write_artifact_exclusive(artifact, source=repository_source, output=output)
 
 
-def test_source_path_must_be_the_repository_mdf() -> None:
-    with tempfile.TemporaryDirectory(prefix=".b08-test-", dir=MDF.parent) as temporary:
+def test_source_path_must_be_the_repository_mdf(repository_source: Path) -> None:
+    with tempfile.TemporaryDirectory(
+        prefix=".b08-test-", dir=repository_source.parent
+    ) as temporary:
         alias = Path(temporary) / "ModBus-alias.mdf"
-        os.link(MDF, alias)
+        os.link(repository_source, alias)
 
         with pytest.raises(MdfEvidenceError, match="repository MDF"):
             extractor._canonical_source_path(alias)
@@ -512,7 +542,9 @@ def test_bound_source_rejects_missing_module_load_identity(
 
 
 def test_bound_source_rejects_different_module_load_parent_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repository_source: Path,
 ) -> None:
     different_parent = tmp_path / "different-parent"
     different_parent.mkdir()
@@ -527,13 +559,15 @@ def test_bound_source_rejects_different_module_load_parent_identity(
             MdfEvidenceError,
             match="bound source parent does not match its module-load identity",
         ),
-        extractor._open_bound_source(MDF),
+        extractor._open_bound_source(repository_source),
     ):
         pytest.fail("source opened against a different trusted parent identity")
 
 
 def test_bound_source_rejects_different_module_load_mdf_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repository_source: Path,
 ) -> None:
     different_source = tmp_path / "different-source.mdf"
     different_source.write_bytes(b"different source")
@@ -548,7 +582,7 @@ def test_bound_source_rejects_different_module_load_mdf_identity(
             MdfEvidenceError,
             match="opened source does not match its module-load MDF identity",
         ),
-        extractor._open_bound_source(MDF),
+        extractor._open_bound_source(repository_source),
     ):
         pytest.fail("source opened against a different trusted MDF identity")
 
@@ -716,7 +750,7 @@ def test_windows_bound_source_blocks_write_and_delete_while_open(
     assert stream.closed
 
 
-def test_writer_rejects_reparse_output_parent(tmp_path: Path) -> None:
+def test_writer_rejects_reparse_output_parent(tmp_path: Path, repository_source: Path) -> None:
     artifact: dict[str, object] = {"schema_version": "test"}
     real_parent = tmp_path / "real"
     real_parent.mkdir()
@@ -724,19 +758,23 @@ def test_writer_rejects_reparse_output_parent(tmp_path: Path) -> None:
     _create_directory_reparse(linked_parent, real_parent)
     try:
         with pytest.raises(MdfEvidenceError, match="symlink or reparse point"):
-            write_artifact_exclusive(artifact, source=MDF, output=linked_parent / "artifact.json")
+            write_artifact_exclusive(
+                artifact,
+                source=repository_source,
+                output=linked_parent / "artifact.json",
+            )
         assert not (real_parent / "artifact.json").exists()
     finally:
         _remove_directory_reparse(linked_parent)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="NTFS alternate streams are Windows-specific")
-def test_writer_rejects_ntfs_alternate_data_stream() -> None:
+def test_writer_rejects_ntfs_alternate_data_stream(repository_source: Path) -> None:
     artifact: dict[str, object] = {"schema_version": "test"}
-    output = Path(f"{MDF}:b08-test-artifact")
+    output = Path(f"{repository_source}:b08-test-artifact")
 
     with pytest.raises(MdfEvidenceError, match="alternate data stream"):
-        write_artifact_exclusive(artifact, source=MDF, output=output)
+        write_artifact_exclusive(artifact, source=repository_source, output=output)
     assert not os.path.exists(output)
 
 
@@ -746,7 +784,9 @@ def test_windows_device_namespace_is_rejected_without_opening_it() -> None:
 
 
 def test_atomic_publish_failure_leaves_no_final_or_temporary_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repository_source: Path,
 ) -> None:
     _require_posix_anonymous_publication(tmp_path)
     artifact: dict[str, object] = {"schema_version": "test"}
@@ -776,7 +816,7 @@ def test_atomic_publish_failure_leaves_no_final_or_temporary_file(
 
     monkeypatch.setattr(extractor, "_publish_no_replace", fail_publish)
     with pytest.raises(MdfEvidenceError, match="injected publish failure"):
-        write_artifact_exclusive(artifact, source=MDF, output=output)
+        write_artifact_exclusive(artifact, source=repository_source, output=output)
 
     assert not output.exists()
     assert list(tmp_path.iterdir()) == []
@@ -817,7 +857,9 @@ def test_windows_creation_cleanup_closes_descriptor_when_delete_mark_fails(
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows handle cleanup is NT-specific")
 def test_windows_writer_cleanup_closes_stream_when_delete_mark_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repository_source: Path,
 ) -> None:
     output = tmp_path / "artifact.json"
     created: list[tuple[BinaryIO, str | None, os.stat_result]] = []
@@ -846,7 +888,9 @@ def test_windows_writer_cleanup_closes_stream_when_delete_mark_fails(
     monkeypatch.setattr(extractor, "_win_mark_handle_for_deletion", fail_delete_mark)
 
     with pytest.raises(OSError, match="injected delete-mark failure"):
-        write_artifact_exclusive({"schema_version": "test"}, source=MDF, output=output)
+        write_artifact_exclusive(
+            {"schema_version": "test"}, source=repository_source, output=output
+        )
 
     assert len(created) == 1
     stream, temporary_name, _created_stat = created[0]
@@ -859,7 +903,9 @@ def test_windows_writer_cleanup_closes_stream_when_delete_mark_fails(
 
 
 def test_temporary_mutation_is_blocked_or_detected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repository_source: Path,
 ) -> None:
     _require_posix_anonymous_publication(tmp_path)
     artifact: dict[str, object] = {"schema_version": "test"}
@@ -907,19 +953,21 @@ def test_temporary_mutation_is_blocked_or_detected(
 
     monkeypatch.setattr(extractor, "_publish_no_replace", mutate_before_publish)
     if os.name == "nt":
-        write_artifact_exclusive(artifact, source=MDF, output=output)
+        write_artifact_exclusive(artifact, source=repository_source, output=output)
         assert mutation_blocked is True
         assert output.read_bytes() == render_artifact(artifact).encode("utf-8")
     else:
         with pytest.raises(MdfEvidenceError, match="output retained.*cannot safely unlink"):
-            write_artifact_exclusive(artifact, source=MDF, output=output)
+            write_artifact_exclusive(artifact, source=repository_source, output=output)
         assert mutated is True
         assert output.read_bytes().endswith(b"X")
         assert list(tmp_path.iterdir()) == [output]
 
 
 def test_temporary_name_replacement_is_preserved_if_identity_differs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repository_source: Path,
 ) -> None:
     _require_posix_anonymous_publication(tmp_path)
     artifact: dict[str, object] = {"schema_version": "test"}
@@ -955,17 +1003,19 @@ def test_temporary_name_replacement_is_preserved_if_identity_differs(
 
     monkeypatch.setattr(extractor, "_create_bound_temporary", replace_created_name)
     if os.name == "nt":
-        write_artifact_exclusive(artifact, source=MDF, output=output)
+        write_artifact_exclusive(artifact, source=repository_source, output=output)
         assert replacement_blocked is True
         assert output.read_bytes() == render_artifact(artifact).encode("utf-8")
     else:
-        write_artifact_exclusive(artifact, source=MDF, output=output)
+        write_artifact_exclusive(artifact, source=repository_source, output=output)
         assert replacement_path is None
         assert output.read_bytes() == render_artifact(artifact).encode("utf-8")
 
 
 def test_destination_created_at_publish_boundary_is_preserved(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repository_source: Path,
 ) -> None:
     _require_posix_anonymous_publication(tmp_path)
     artifact: dict[str, object] = {"schema_version": "test"}
@@ -984,14 +1034,16 @@ def test_destination_created_at_publish_boundary_is_preserved(
 
     monkeypatch.setattr(extractor, "_publish_no_replace", create_destination_first)
     with pytest.raises(MdfEvidenceError, match="output already exists"):
-        write_artifact_exclusive(artifact, source=MDF, output=output)
+        write_artifact_exclusive(artifact, source=repository_source, output=output)
 
     assert output.read_bytes() == incumbent
     assert list(tmp_path.iterdir()) == [output]
 
 
 def test_bound_output_parent_exchange_is_blocked_or_detected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repository_source: Path,
 ) -> None:
     _require_posix_anonymous_publication(tmp_path)
     artifact: dict[str, object] = {"schema_version": "test"}
@@ -1030,12 +1082,12 @@ def test_bound_output_parent_exchange_is_blocked_or_detected(
     monkeypatch.setattr(extractor, "_publish_no_replace", exchange_parent)
     try:
         if os.name == "nt":
-            write_artifact_exclusive(artifact, source=MDF, output=output)
+            write_artifact_exclusive(artifact, source=repository_source, output=output)
             assert rename_blocked is True
             assert output.read_bytes() == render_artifact(artifact).encode("utf-8")
         else:
             with pytest.raises(MdfEvidenceError, match="output retained.*cannot safely unlink"):
-                write_artifact_exclusive(artifact, source=MDF, output=output)
+                write_artifact_exclusive(artifact, source=repository_source, output=output)
             assert exchanged is True
             assert (moved_parent / output.name).read_bytes() == render_artifact(artifact).encode(
                 "utf-8"
@@ -1048,7 +1100,9 @@ def test_bound_output_parent_exchange_is_blocked_or_detected(
 
 
 def test_post_publish_validation_failure_rolls_back_exact_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repository_source: Path,
 ) -> None:
     _require_posix_anonymous_publication(tmp_path)
     artifact: dict[str, object] = {"schema_version": "test"}
@@ -1065,7 +1119,7 @@ def test_post_publish_validation_failure_rolls_back_exact_output(
 
     monkeypatch.setattr(extractor, "_verify_parser_source_unchanged", fail_after_publish)
     with pytest.raises(MdfEvidenceError, match="post-publish validation failure"):
-        write_artifact_exclusive(artifact, source=MDF, output=output)
+        write_artifact_exclusive(artifact, source=repository_source, output=output)
 
     assert calls == 3
     if os.name == "nt":
@@ -1078,13 +1132,17 @@ def test_post_publish_validation_failure_rolls_back_exact_output(
 
 @pytest.mark.skipif(os.name == "nt", reason="O_TMPFILE is POSIX-specific")
 def test_posix_writer_fails_closed_without_anonymous_publication(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repository_source: Path,
 ) -> None:
     output = tmp_path / "artifact.json"
     monkeypatch.setattr(extractor, "_OS_O_TMPFILE", 0)
 
     with pytest.raises(MdfEvidenceError, match="requires O_TMPFILE"):
-        write_artifact_exclusive({"schema_version": "test"}, source=MDF, output=output)
+        write_artifact_exclusive(
+            {"schema_version": "test"}, source=repository_source, output=output
+        )
 
     assert not output.exists()
     assert list(tmp_path.iterdir()) == []
