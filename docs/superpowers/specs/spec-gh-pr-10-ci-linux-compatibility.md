@@ -3,7 +3,7 @@ title: 'PR #10 Linux CI Compatibility Repair'
 type: 'bugfix'
 created: '2026-08-30'
 status: 'done'
-baseline_commit: 'd85239947ea2b4df182bf6984bd5146558a30385'
+baseline_commit: '717928871f6b133b1e70e9d63146067b78f78386'
 context:
   - 'docs/superpowers/specs/spec-plan-5-b08t-trust-root-freshness.md'
 ---
@@ -51,14 +51,20 @@ context:
 - [x] `tools/extract_legacy_mdf_points.py` 与对应测试 -- 把固定源身份捕获改为可缺失状态，运行时在打开源之前显式拒绝未捕获身份。
 - [x] API/GW 集成与 replay 测试 -- 使用固定测试 token/摘要调用受保护 readiness，并保留匿名拒绝契约。
 - [x] `.github/workflows/ci-web.yml` -- 为测试 API 配置匹配摘要，等待探针携带 Bearer token。
+- [x] Python 工具测试 -- Linux 跳过 Windows Desktop PowerShell 解析，定向注入并发改写，并避免通过全局 `os.name` 污染 Pytest 路径类型。
+- [x] Web 诊断页与真实后端 E2E -- 仅将普通登录 JWT 的 readiness `403` 建模为“健康状态受保护”，其他故障显示不可用；不向浏览器暴露管理 token。
 
 **Acceptance Criteria:**
 - Given 当前 PR，when 运行 Linux 和 Windows Mypy，then 168 个源文件均无错误且没有新增宽泛忽略。
 - Given 固定 MDF 路径不存在，when pytest 收集工具测试，then 导入成功；when 尝试读取，then 在源内容读取前 fail-closed。
 - Given API/GW 管理端点受保护，when 集成、replay 与 Web CI 执行，then 认证探针通过，匿名或错误 token 仍为 403。
+- Given 普通用户已登录 Web，when 诊断页请求管理 readiness，then 精确接受预期 `403` 并显示受保护状态；其他 API 4xx/5xx 继续使全功能 E2E 失败。
 - Given 全量回归完成，when 查看改动，then B-08-T 安全边界、生产配置和现场状态均未改变。
 
 ## Spec Change Log
+
+- 2026-08-30: 首次 Linux CI 运行暴露剩余平台测试隔离和 Web 诊断页授权预期问题；补充 Windows-only 跳过、定向并发改写、局部平台模拟及普通 JWT readiness `403` 回归，不放宽管理认证。
+- 2026-08-30: 对抗审查发现 readiness catch 过宽及测试边界不足；保留管理认证、普通 JWT 精确 `403`、其他 API 错误继续失败和平台局部模拟，改为区分 `403`/其他故障、限制 E2E 请求身份、锁定测试源身份并为 PowerShell 解析增加超时。
 
 ## Design Notes
 
@@ -73,8 +79,30 @@ context:
 - API/GW 完整单元门禁 -- 222 与 174 个测试通过，覆盖率分别为 63.92% 与 86.44%。
 - `uv run ruff check .`、`uv run ruff format --check .`、双平台 Mypy 及改动文件 pre-commit -- 全部通过；全文件 pre-commit 另发现并恢复了无关旧计划文件末尾空行清理。
 - 本机实际 API 探针 -- 匿名返回 403，携带匹配 Bearer token 返回 200；临时服务和 Compose 测试容器已停止。
+- PR #10 首轮 GitHub CI -- `lint`、`api-integration`、`gw-replay`、API/GW 单元与 benchmark、Web unit/build/mock E2E 均通过；仅 `unit` 和 `web-real-backend-e2e` 暴露后续问题。
+- 后续 Python 定向回归 -- 3 passed；改动的两个 Python 测试文件 pre-commit 通过。
+- Web 后续回归 -- typecheck、ESLint、19 个 Vitest 文件共 83 个测试通过；本机真实后端 Playwright 1 passed。
+- 本机认证契约复核 -- 管理 token 请求 readiness 返回 200，普通登录 JWT 返回 403；临时 API、Compose 容器和 `8000` 监听均已清理。
+- 对抗审查修复后回归 -- 三路审查结论已处理；Python 3 passed、Web typecheck/ESLint/83 tests 和真实后端 Playwright 1 passed；API 正常退出且 Compose 无残留容器。
 
-## Suggested Review Order
+## Full PR Review Reference
+
+**后续 CI 平台与授权回归**
+
+- Windows Desktop PowerShell 解析测试只在具备对应运行时的 Windows 执行。
+  [`test_publisher_authenticity.py:79`](../../../tests/tools/test_publisher_authenticity.py#L79)
+
+- 并发改写只注入目标文件描述符，Windows CLI 通过模块局部平台对象模拟。
+  [`test_release_artifacts.py:2078`](../../../tests/tools/test_release_artifacts.py#L2078)
+
+- 普通用户无法读取管理 readiness 时显示稳定的受保护状态。
+  [`DiagView.vue:11`](../../../ruisheng-web/src/views/DiagView.vue#L11)
+
+- 精简真实后端巡检锁定 readiness `403` 与页面状态。
+  [`real-backend.spec.ts:30`](../../../ruisheng-web/e2e/real-backend.spec.ts#L30)
+
+- 全功能巡检仅豁免该端点的精确预期 `403`，其他运行时错误仍失败。
+  [`real-backend-full.spec.ts:26`](../../../ruisheng-web/e2e/real-backend-full.spec.ts#L26)
 
 **MDF fail-closed 边界**
 
@@ -125,3 +153,29 @@ context:
 
 - 证据摘要同步 canonical JSON 与 validator 身份。
   [`spec-plan-5-b08-device-identity-point-evidence.md:9`](spec-plan-5-b08-device-identity-point-evidence.md#L9)
+
+## Suggested Review Order
+
+**Readiness 状态边界**
+
+- 仅精确 `403` 显示受保护，其余失败明确显示不可用。
+  [`DiagView.vue:26`](../../../ruisheng-web/src/views/DiagView.vue#L26)
+
+**真实后端授权回归**
+
+- 入口测试锁定同源、GET、无查询参数的 readiness 请求。
+  [`real-backend.spec.ts:3`](../../../ruisheng-web/e2e/real-backend.spec.ts#L3)
+
+- 全功能错误收集仅豁免同一精确请求的预期 `403`。
+  [`real-backend-full.spec.ts:44`](../../../ruisheng-web/e2e/real-backend-full.spec.ts#L44)
+
+**跨平台测试稳定性**
+
+- Windows 专属解析门禁有平台边界和有界执行时间。
+  [`test_publisher_authenticity.py:78`](../../../tests/tools/test_publisher_authenticity.py#L78)
+
+- 并发改写用预捕获身份定向注入，消除路径复查竞态。
+  [`test_release_artifacts.py:2040`](../../../tests/tools/test_release_artifacts.py#L2040)
+
+- 局部 Windows 模拟保留 `os` 其余接口且不污染 Pytest。
+  [`test_release_artifacts.py:2146`](../../../tests/tools/test_release_artifacts.py#L2146)

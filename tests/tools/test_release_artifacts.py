@@ -2037,6 +2037,7 @@ def test_protected_snapshot_rejects_same_length_concurrent_rewrite(
     package = _write_minimal_snapshot_candidate(tmp_path)
     source = package / ".env.prod.example"
     original = source.read_bytes()
+    source_identity = source.stat()
     replacement = b"x" * (len(original) - 1) + b"\n"
     assert replacement != original
     assert len(replacement) == len(original)
@@ -2075,10 +2076,12 @@ def test_protected_snapshot_rejects_same_length_concurrent_rewrite(
         newline: str | None = None,
         closefd: bool = True,
         opener: object = None,
-    ) -> RewriteAfterFirstRead:
+    ) -> BinaryIO | RewriteAfterFirstRead:
         del buffering, encoding, errors, newline, opener
         stream = cast(BinaryIO, actual_fdopen(descriptor, mode, buffering=0, closefd=closefd))
-        return RewriteAfterFirstRead(stream)
+        if os.path.samestat(os.fstat(descriptor), source_identity):
+            return RewriteAfterFirstRead(stream)
+        return stream
 
     monkeypatch.setattr(os, "fdopen", mutating_fdopen)
 
@@ -2140,7 +2143,8 @@ def test_protected_snapshot_rejects_same_length_path_replacement_before_open(
 def test_windows_cli_verify_fails_closed_before_trust_or_docker(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(release_artifacts.os, "name", "nt")
+    windows_os = SimpleNamespace(**{**vars(os), "name": "nt"})
+    monkeypatch.setattr(release_artifacts, "os", windows_os)
 
     result = release_artifacts.main(["verify", "candidate", "--load"])
 

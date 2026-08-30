@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from tools.release_artifacts import FIXED_PACKAGE_FILES
 
@@ -72,6 +75,10 @@ def test_candidate_and_publisher_verifiers_use_exact_probe_allowlists() -> None:
         assert "SHA256SUMS" in value
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="Windows Desktop PowerShell parser is Windows-only",
+)
 def test_windows_probe_scripts_parse_in_desktop_powershell() -> None:
     command = (
         "$errors=$null; "
@@ -86,6 +93,7 @@ def test_windows_probe_scripts_parse_in_desktop_powershell() -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
 
     assert result.returncode == 0, result.stderr or result.stdout

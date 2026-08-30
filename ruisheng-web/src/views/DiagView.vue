@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import axios from 'axios'
 import { ref, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { getVersion, getReady, type MetaVersion, type ReadyCheck } from '@/api/meta'
@@ -8,6 +9,7 @@ import WsStatePanel from '@/debug/WsStatePanel.vue'
 const auth = useAuthStore()
 const version = ref<MetaVersion | null>(null)
 const ready = ref<ReadyCheck | null>(null)
+const readyState = ref<'loading' | 'protected' | 'unavailable'>('loading')
 const clientBuild = import.meta.env.VITE_BUILD_HASH
 
 const clientNow = ref(Date.now())
@@ -20,8 +22,9 @@ onMounted(async () => {
   }
   try {
     ready.value = await getReady()
-  } catch {
-    /* ignore */
+  } catch (error) {
+    readyState.value =
+      axios.isAxiosError(error) && error.response?.status === 403 ? 'protected' : 'unavailable'
   }
   setInterval(() => (clientNow.value = Date.now()), 1000)
 })
@@ -68,6 +71,8 @@ function copy(s: string): void {
             </li>
           </ul>
         </div>
+        <p v-else-if="readyState === 'protected'">健康状态受保护</p>
+        <p v-else-if="readyState === 'unavailable'">健康状态不可用</p>
         <p v-else>加载中…</p>
       </section>
 

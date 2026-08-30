@@ -1,4 +1,15 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page, type Response } from '@playwright/test'
+
+function isReadyResponse(page: Page, response: Response): boolean {
+  const responseUrl = new URL(response.url())
+  const pageUrl = new URL(page.url())
+  return (
+    response.request().method() === 'GET' &&
+    responseUrl.origin === pageUrl.origin &&
+    responseUrl.pathname === '/api/health/ready' &&
+    responseUrl.search === ''
+  )
+}
 
 test.describe('真实后端联调', () => {
   test.skip(!process.env.E2E_REAL_BACKEND, '需要本机 API/PostgreSQL/Redis 已启动')
@@ -27,7 +38,9 @@ test.describe('真实后端联调', () => {
     await page.goto('/settings/users')
     await expect(page.getByRole('heading', { name: '用户管理' })).toBeVisible()
 
+    const readyResponse = page.waitForResponse((response) => isReadyResponse(page, response))
     await page.goto('/__diag')
-    await expect(page.getByText('全部组件健康')).toBeVisible()
+    expect((await readyResponse).status()).toBe(403)
+    await expect(page.getByText('健康状态受保护')).toBeVisible()
   })
 })

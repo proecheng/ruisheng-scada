@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page, type Response } from '@playwright/test'
 
 const RUN_REAL = !!process.env.E2E_REAL_BACKEND
 const TEST_TIMEOUT_MS = Number(process.env.E2E_TEST_TIMEOUT_MS ?? 180_000)
@@ -23,8 +23,10 @@ test.describe('真实后端全功能巡检', () => {
     await exerciseScenes(page, devNumber)
     await exerciseSettings(page)
     await exercisePay(page, devNumber)
+    const readyResponse = page.waitForResponse((response) => isReadyResponse(page, response))
     await page.goto('/__diag')
-    await expect(page.getByText('全部组件健康')).toBeVisible()
+    expect((await readyResponse).status()).toBe(403)
+    await expect(page.getByText('健康状态受保护')).toBeVisible()
 
     expect(errors, errors.join('\n')).toEqual([])
   })
@@ -39,8 +41,20 @@ async function captureRuntimeErrors(page: Page, errors: string[]): Promise<void>
     const url = response.url()
     if (!url.includes('/api/')) return
     const status = response.status()
+    if (status === 403 && isReadyResponse(page, response)) return
     if (status >= 400) errors.push(`${status} ${response.request().method()} ${url}`)
   })
+}
+
+function isReadyResponse(page: Page, response: Response): boolean {
+  const responseUrl = new URL(response.url())
+  const pageUrl = new URL(page.url())
+  return (
+    response.request().method() === 'GET' &&
+    responseUrl.origin === pageUrl.origin &&
+    responseUrl.pathname === '/api/health/ready' &&
+    responseUrl.search === ''
+  )
 }
 
 async function login(page: Page): Promise<void> {
