@@ -5,6 +5,10 @@ description = "江苏润盛 IoT SCADA 平台重做 monorepo"
 requires-python = ">=3.11,<3.12"
 readme = "README.md"
 license = { text = "Proprietary" }
+dependencies = [
+  "pydantic>=2.7",
+  "cryptography>=46",
+]
 
 [tool.uv.workspace]
 members = ["ruisheng-shared", "tools/pcap_gen", "ruisheng-gw", "ruisheng-api"]
@@ -18,7 +22,6 @@ dev = [
   "hypothesis>=6.100",
   "ruff>=0.5",
   "mypy>=1.11",
-  "pydantic>=2.7",
   "pre-commit>=3.7",
   "testcontainers[postgres,redis]>=4.7",
   # "asyncpg>=0.29",  # G6: retry transitive via testcontainers[postgres]
@@ -54,7 +57,7 @@ python_version = "3.11"
 strict = true
 explicit_package_bases = true
 plugins = ["pydantic.mypy"]
-exclude = ["conftest.py", "tests/.*", "ruisheng-shared/tests/.*", "ruisheng-gw/tests/.*", "alembic/.*", "ruisheng-api/tests/.*"]
+exclude = ["conftest.py", "tests/.*", "ruisheng-shared/tests/.*", "ruisheng-gw/tests/.*", "alembic/.*", "ruisheng-api/tests/.*", "dist/.*"]
 mypy_path = "ruisheng-shared/src:ruisheng-gw/src:tools/pcap_gen/src:ruisheng-api/src"
 
 [[tool.mypy.overrides]]

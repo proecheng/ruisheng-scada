@@ -1,0 +1,7 @@
+services:
+  gw:
+    environment:
+      GW_SERIAL_PORTS: >-
+        [{"port":"${GW_SERIAL_DEVICE_PATH:?GW_SERIAL_DEVICE_PATH must be set}","baud_rate":${GW_SERIAL_BAUD_RATE:?GW_SERIAL_BAUD_RATE must be set}}]
+    devices:
+      - "${GW_SERIAL_DEVICE_PATH:?GW_SERIAL_DEVICE_PATH must be set}:${GW_SERIAL_DEVICE_PATH:?GW_SERIAL_DEVICE_PATH must be set}:rw"

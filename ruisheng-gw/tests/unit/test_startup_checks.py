@@ -94,3 +94,27 @@ def test_normal_run_exit3_on_missing_required_env() -> None:
     )
     assert result.returncode == _EXIT_CONFIG_INVALID
     assert "config invalid" in result.stderr.lower()
+
+
+def test_invalid_management_digest_is_not_echoed_by_entrypoint() -> None:
+    plaintext = "SYNTHETIC-PLAINTEXT-MANAGEMENT-TOKEN-" + "x" * 32
+    env = {k: v for k, v in _subprocess_env().items() if not k.startswith("GW_")}
+    env.update(
+        {
+            "GW_ENV": "prod",
+            "GW_LISTEN_HOST": "0.0.0.0",
+            "GW_LISTEN_PORT": "5020",
+            "GW_DATABASE_URL": "postgresql+asyncpg://u:p@h:5432/d",
+            "GW_REDIS_URL": "redis://h:6379/0",
+            "GW_HEALTH_TOKEN_SHA256": plaintext,
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "ruisheng_gw", "--print-config"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == _EXIT_CONFIG_INVALID
+    assert plaintext not in result.stderr

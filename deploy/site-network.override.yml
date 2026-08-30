@@ -1,0 +1,7 @@
+services:
+  web:
+    volumes:
+      - type: bind
+        source: ${WEB_HEALTH_ACL_FILE:?WEB_HEALTH_ACL_FILE must be set}
+        target: /etc/nginx/site-health-acl.conf
+        read_only: true

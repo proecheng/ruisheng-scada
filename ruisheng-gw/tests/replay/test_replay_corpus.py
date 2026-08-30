@@ -39,7 +39,10 @@ async def test_replay_15_corpus(gw_server, corpus_case) -> None:
 
     async with (
         ClientSession() as session,
-        session.get(f"http://{gw_server.host}:{gw_server.health_port}/ready") as response,
+        session.get(
+            f"http://{gw_server.host}:{gw_server.health_port}/ready",
+            headers={"Authorization": f"Bearer {gw_server.health_token}"},
+        ) as response,
     ):
         assert response.status == 200
 

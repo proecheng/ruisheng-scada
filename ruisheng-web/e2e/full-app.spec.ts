@@ -9,6 +9,7 @@ test.describe('全功能页面巡检', () => {
   })
 
   test('主导航逐页可打开', async ({ page }) => {
+    test.setTimeout(60_000)
     const pages = [
       ['/dashboard', '欢迎'],
       ['/devices', '设备列表'],

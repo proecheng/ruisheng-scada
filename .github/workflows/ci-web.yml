@@ -108,6 +108,7 @@ jobs:
       API_GW_DB_URL: postgresql+asyncpg://ruisheng_gw:dev-gw-change-me@127.0.0.1:5432/ruisheng
       API_REDIS_URL: redis://:dev-redis-pw@127.0.0.1:6379/0
       API_JWT_SECRET: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      API_MANAGEMENT_TOKEN_SHA256: 66d34fba71f8f450f7e45598853e53bfc23bbd129027cbb131a2f4ffd7878cd0
       API_ENV: dev
       API_LISTEN_HOST: 127.0.0.1
       API_LISTEN_PORT: 8000
@@ -138,8 +139,12 @@ jobs:
           echo $! > api.pid
       - name: Wait for API
         run: |
+          CI_MANAGEMENT_TOKEN="$(printf 'a%.0s' {1..43})"
+          echo "::add-mask::${CI_MANAGEMENT_TOKEN}"
           for i in {1..60}; do
-            if curl -fsS http://127.0.0.1:8000/api/health/ready; then
+            if curl --connect-timeout 1 --max-time 2 -fsS \
+              -H "Authorization: Bearer ${CI_MANAGEMENT_TOKEN}" \
+              http://127.0.0.1:8000/api/health/ready; then
               exit 0
             fi
             sleep 1

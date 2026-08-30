@@ -148,6 +148,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         openapi_url="/api/openapi.json" if cfg.env != "prod" else None,
     )
     app.state.config = cfg
+    app.state.management_token_sha256 = cfg.management_token_sha256
     register_exception_handlers(app)
     mount_routers(app)
     return app

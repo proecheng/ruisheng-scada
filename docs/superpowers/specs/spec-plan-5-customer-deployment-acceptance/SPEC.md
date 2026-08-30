@@ -21,7 +21,7 @@ Plan 4 已证明系统能在开发机通过 Compose 冒烟和自动化回归，�
 
 - id: CAP-1
   intent: 发布人员可以生成身份固定、可校验且无需联网构建的候选部署包。
-  success: 在断网的空白目标机上，仅使用候选包即可验证发布者身份并加载全部镜像；Compose 不拉取、不构建，清单中的源提交、目标架构、镜像 ID/摘要和每个归档的 SHA-256 均与实际制品一致，运行身份不依赖可漂移标签。
+  success: 在断网的空白目标机上，使用预先经可信介质安装的包外发布信任锚和候选包即可验证发布者身份并加载全部镜像；Compose 不拉取、不构建，清单中的源提交、目标架构、镜像 ID/摘要和每个归档的 SHA-256 均与实际制品一致，运行身份不依赖可漂移标签。Manifest v2 可继续用于一般候选验证和既有远程维护，但只有带完整 authenticated qualification toolchain 的 v3 候选可以进入 B-08 qualification/receipt。
 
 - id: CAP-2
   intent: 运维人员可以用现场唯一密钥在空白数据卷上完成安全的首次安装。
@@ -37,7 +37,7 @@ Plan 4 已证明系统能在开发机通过 Compose 冒烟和自动化回归，�
 
 - id: CAP-5
   intent: 现场人员可以把至少一台批准的真实 RS485 设备稳定接入 GW，并完成安全的采集与控制闭环。
-  success: 系统能表达并应用设备实际串口参数，在 `site-acceptance-profile.md` 批准的持续时间内，点位值、历史和浏览器实时显示一致；断开、重连和 GW 重启后自动恢复，已批准的控制命令有可追溯结果且不产生重复执行。
+  success: 只有绑定 B-08 canonical gate digest 且由 validator v5 派生为全部 `resolved + supported` 的不可变点表 manifest 才能进入另行批准的 canary；该资格同时要求 manifest v3 完整 qualification toolchain、事前 `CalibrationRunApproval` 与事后独立 `EligibilityApproval` 的四角色受信签名、validator source digest、逐点 role/subject、设备绑定的线路证据、分类校准证据内容、受信 runtime attestation，以及 trust-policy-recognized verifier 签名且由 `EligibilityApproval` 绑定的有效 `ReleaseVerificationReceipt` 对 OpenSSH 候选、实际加载镜像和 API-image migration head 的证明。trust-root anti-rollback freshness 与 Windows verifier runtime/signing-key isolation 均已按 Profile provision 并验收；v2 候选不能进入 B-09 或 canary。系统能表达并应用设备实际串口参数，在 `site-acceptance-profile.md` 批准的持续时间内，点位值、历史和浏览器实时显示一致；断开、重连和 GW 重启后自动恢复，已批准的控制命令有可追溯结果且不产生重复执行。
 
 - id: CAP-6
   intent: 验收人员可以用真实设备越限验证告警从 GW 到 API、Web 和通知审计的完整链路。
@@ -68,6 +68,11 @@ Plan 4 已证明系统能在开发机通过 Compose 冒烟和自动化回归，�
 - 签名的候选基础文件不得在现场直接编辑；站点差异必须位于独立、受控且可校验的配置或 Compose override 中。
 - CRC、截断、乱序等故障注入只能在隔离台架或批准的仿真链路进行，不得向生产总线或未授权真机发送畸形帧。
 - 现场控制仅限客户书面批准的设备、点位、值域和时间窗，并预先约定人工急停与回退步骤。
+- B-08 的候选证据、validator 结果或 `ELIGIBLE` 状态都不授权真机 TX、GW 重建、canary、持续轮询或生产切换；这些动作需要独立 implementation/canary 规格、不可变现场执行审批和适用 Gate 前置。validator 不得兼任执行授权，且 Profile、事前 `CalibrationRunApproval`、事后 `EligibilityApproval`、validator source digest、trust policy、canonical gate digest、签名人、证据、runner、`ReleaseVerificationReceipt`、OpenSSH 发布根、verifier 工具或运行目标任一变化都会使资格失效。
+- Manifest v2 的兼容范围止于一般候选验证和既有远程维护；它不得满足 B-08 qualification/receipt、G0-06、G4-01、B-09 或 canary。上述路径必须使用 v3 候选和有效 receipt，并先关闭 trust-root anti-rollback provisioning 与 Windows verifier runtime/signing-key isolation。
+- V3 qualification 只能由候选包外受保护 bootstrap 启动；系统 publisher 仅接受 `ValidatorSchema`、`ValidatorProfile`、`ValidatorLegacy`、`Receipt` 四种模式及各自精确参数。候选包不得携带可执行 launcher，FC2 不得复用 FC1 coil evidence；Windows system qualification 经通用 Python bootstrap 请求必须 fail-closed，并指向受保护 PowerShell publisher。
+- Qualification toolchain 必须通过 canonical single-member gzip、deterministic strict USTAR、精确 regular-file allowlist、零 padding/trailer 门禁；Docker 外层归档及嵌套 layer 必须在扩展 payload 分配前拒绝 PAX/GNU header，receipt migration 检查还必须拒绝重复外层成员。OCI/迁移扫描必须在资源预算内解析最终 overlay，只接受零长度 regular-file whiteout，并从实际加载 API 镜像的 source-only Alembic graph 静态导出唯一 migration head，禁止导入或执行 migration。
+- 构建与 receipt 必须对同一 candidate ID 使用受保护的主机级锁；receipt 已原子发布后若锁释放失败，必须保留完整 receipt 和已加载 tags，并以 distinct published-error 终止。Windows runtime 须执行总计 32,768 个实际文件（包含 runtime manifest）、目录、单文件、总字节和路径预算。POSIX 进程组与 Windows gated kill-on-close Job 在正常退出、非零、异常和超时后都必须有界清理，不得留下可继续写入或执行的后代。远程审计缓存仅在受保护身份/元数据及内容 SHA-256 均未改变时可复用。
 - 未解决目标环境、网络/TLS、串口参数、容量基线、切换窗口和合规要求前，只能完成隔离部署演练，不能宣布 Plan 5 完成。
 
 ## Non-goals

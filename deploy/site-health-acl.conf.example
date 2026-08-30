@@ -1,0 +1,7 @@
+# Copy this file to the controlled site directory named by WEB_HEALTH_ACL_FILE.
+# Replace the allow entries only with container-observed CIDRs approved in the Profile.
+# Docker Desktop host-published probes use the exact fixed bridge gateway /32;
+# never allow the full application bridge subnet and never trust forwarded headers.
+# Keep the final deny rule. Do not put credentials or customer data here.
+allow 10.254.250.1/32;
+deny all;

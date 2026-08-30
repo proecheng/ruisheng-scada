@@ -7,9 +7,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network, ip_address, ip_network
+from typing import Final
 
 from aiohttp import web
+
+from ruisheng_gw.management_auth import management_bearer_matches
 
 OUTBOX_READINESS_FAILURE_THRESHOLD = 3
 
@@ -57,6 +62,57 @@ class HealthState:
 
 
 HEALTH_STATE_KEY = web.AppKey("health_state", HealthState)
+HEALTH_NETWORKS_KEY = web.AppKey("health_networks", tuple[IPv4Network | IPv6Network, ...])
+HEALTH_TOKEN_DIGEST_KEY = web.AppKey("health_token_digest", str)
+DEFAULT_HEALTH_CIDRS: Final = "127.0.0.1/32,::1/128"
+
+
+def _parse_health_networks(value: str) -> tuple[IPv4Network | IPv6Network, ...]:
+    networks: list[IPv4Network | IPv6Network] = []
+    for raw_subject in value.split(","):
+        subject = raw_subject.strip()
+        if not subject:
+            continue
+        network = ip_network(subject, strict=False)
+        if isinstance(network, IPv6Network) and network.network_address.ipv4_mapped is not None:
+            raise ValueError("health source ACL must not contain IPv4-mapped IPv6 CIDRs")
+        if network.prefixlen == 0:
+            raise ValueError("health source ACL must not contain a default route")
+        networks.append(network)
+    if not networks:
+        raise ValueError("health source ACL must contain at least one CIDR")
+    return tuple(networks)
+
+
+@web.middleware
+async def _health_source_acl(
+    request: web.Request,
+    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+) -> web.StreamResponse:
+    peer = request.transport.get_extra_info("peername") if request.transport else None
+    peer_host = peer[0] if isinstance(peer, tuple) and peer else None
+    try:
+        peer_ip = ip_address(str(peer_host))
+    except ValueError:
+        peer_ip = None
+    if isinstance(peer_ip, IPv6Address) and peer_ip.ipv4_mapped is not None:
+        peer_ip = IPv4Address(peer_ip.ipv4_mapped)
+    networks = request.app[HEALTH_NETWORKS_KEY]
+    if peer_ip is None or not any(peer_ip in network for network in networks):
+        return web.json_response({"detail": "health source is not approved"}, status=403)
+    response = await handler(request)
+    return response
+
+
+@web.middleware
+async def _health_token_auth(
+    request: web.Request,
+    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+) -> web.StreamResponse:
+    expected_digest = request.app.get(HEALTH_TOKEN_DIGEST_KEY)
+    if not management_bearer_matches(request.headers.get("Authorization"), expected_digest):
+        return web.json_response({"detail": "management access denied"}, status=403)
+    return await handler(request)
 
 
 async def _health_handler(request: web.Request) -> web.Response:  # noqa: ARG001
@@ -91,9 +147,16 @@ async def _metrics_handler(request: web.Request) -> web.Response:
     return web.Response(text=body, content_type="text/plain; version=0.0.4")
 
 
-def create_health_app(state: HealthState) -> web.Application:
-    app = web.Application()
+def create_health_app(
+    state: HealthState,
+    allowed_cidrs: str = DEFAULT_HEALTH_CIDRS,
+    token_sha256: str | None = None,
+) -> web.Application:
+    app = web.Application(middlewares=(_health_source_acl, _health_token_auth))
     app[HEALTH_STATE_KEY] = state
+    app[HEALTH_NETWORKS_KEY] = _parse_health_networks(allowed_cidrs)
+    if token_sha256 is not None:
+        app[HEALTH_TOKEN_DIGEST_KEY] = token_sha256
     app.router.add_get("/health", _health_handler)
     app.router.add_get("/ready", _ready_handler)
     app.router.add_get("/metrics", _metrics_handler)
