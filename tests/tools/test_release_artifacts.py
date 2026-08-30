@@ -4979,6 +4979,27 @@ def test_windows_publisher_builds_only_fixed_qualification_invocations(
     assert "--trust-directory" not in arguments
 
 
+def _normalize_powershell_error(output: str) -> str:
+    without_ansi = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    without_continuation_gutters = re.sub(r"(?m)^\s*\|\s?", "", without_ansi)
+    return " ".join(without_continuation_gutters.split())
+
+
+def test_powershell_error_normalization_removes_linux_continuation_gutters() -> None:
+    output = """
+Exception: verify-publisher.ps1:40
+Line |
+  40 | throw $Message
+     | [publisher] authenticity FAILED: qualification-only parameters require
+     | an explicit qualification mode
+"""
+
+    assert (
+        "qualification-only parameters require an explicit qualification mode"
+        in _normalize_powershell_error(output)
+    )
+
+
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is unavailable")
 @pytest.mark.parametrize(
     ("arguments", "expected_error"),
@@ -5025,5 +5046,4 @@ def test_windows_publisher_rejects_open_ended_qualification_parameter_sets(
     )
 
     assert result.returncode != 0
-    output = re.sub(r"\x1b\[[0-9;]*m", "", result.stderr + result.stdout)
-    assert expected_error in " ".join(output.split())
+    assert expected_error in _normalize_powershell_error(result.stderr + result.stdout)

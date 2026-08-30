@@ -3,7 +3,7 @@ title: 'PR #10 Linux CI Compatibility Repair'
 type: 'bugfix'
 created: '2026-08-30'
 status: 'done'
-baseline_commit: 'c4f0d69ad493a3c7022037069a1eb2325af54686'
+baseline_commit: '41d0cb4946976561858d185a3b5645598b9ef6ec'
 context:
   - 'docs/superpowers/specs/spec-plan-5-b08t-trust-root-freshness.md'
 ---
@@ -71,6 +71,7 @@ context:
 - [x] [Review][Patch] 发布器安全回归改用隔离可信源，仅真实解析测试依赖现场 MDF [tests/tools/test_extract_legacy_mdf_points.py]
 - [x] [Review][Patch] Compose 变量补偿改为扫描结构化值并覆盖嵌套、转义与 `$VAR` [tests/tools/test_production_compose.py]
 - [x] [Review][Patch] Linux 在构造 Windows PowerShell 环境前按能力跳过 [tests/tools/test_remote_operations.py]
+- [x] [Review][Patch] Linux PowerShell Core 续行 gutter 归一化后仍精确匹配业务拒绝消息 [tests/tools/test_release_artifacts.py]
 
 ## Spec Change Log
 
@@ -78,6 +79,7 @@ context:
 - 2026-08-30: 对抗审查发现 readiness catch 过宽及测试边界不足；保留管理认证、普通 JWT 精确 `403`、其他 API 错误继续失败和平台局部模拟，改为区分 `403`/其他故障、限制 E2E 请求身份、锁定测试源身份并为 PowerShell 解析增加超时。
 - 2026-08-30: 第二次 Linux CI 解除 Pytest 平台污染后暴露 72 个后续失败；将现场 MDF、Windows 文件身份/远程维护测试限制到具备相应能力的环境，保留跨平台 PowerShell 解析与纯契约回归，并消除 Compose 变量枚举的版本差异。
 - 2026-08-30: 最终三路审查收窄 skip 边界；用隔离可信源保留无 MDF 环境的发布安全覆盖，以 Compose 结构化模型替代原文正则，并在远程维护测试构造 Windows 环境前显式按平台跳过。
+- 2026-08-30: 第三次 Linux `unit` 仅剩 PowerShell Core 错误折行断言失败；移除 continuation gutter 后继续要求非零退出码和完整场景消息，三路复审均为 0 findings。
 
 ## Design Notes
 
@@ -99,6 +101,8 @@ context:
 - 对抗审查修复后回归 -- 三路审查结论已处理；Python 3 passed、Web typecheck/ESLint/83 tests 和真实后端 Playwright 1 passed；API 正常退出且 Compose 无残留容器。
 - Linux 隔离最终定向回归 -- 179 passed，1 个 Windows 平台项按设计 skipped；Ruff 与 diff check 通过。
 - 最终三路审查 -- Blind/Edge findings 已修复，Acceptance Auditor 0 findings；未放宽 B-08-T、认证或现场边界。
+- PR #10 第三轮 GitHub CI -- 16 项通过、1 项按设计跳过；`unit` 仅 3 个 PowerShell Core 续行格式断言失败，1128 passed、100 skipped。
+- PowerShell 续行修复 -- 4 个定向测试通过；Ruff、format、diff check 通过；缩小范围三路复审 0 findings。
 
 ## Full PR Review Reference
 
@@ -170,6 +174,17 @@ context:
   [`spec-plan-5-b08-device-identity-point-evidence.md:9`](spec-plan-5-b08-device-identity-point-evidence.md#L9)
 
 ## Suggested Review Order
+
+**PowerShell Core 输出稳定性**
+
+- 归一化仅移除 ANSI、续行 gutter 和折行空白。
+  [`test_release_artifacts.py:4982`](../../../tests/tools/test_release_artifacts.py#L4982)
+
+- 合成 Linux 诊断锁定跨行完整业务消息。
+  [`test_release_artifacts.py:4988`](../../../tests/tools/test_release_artifacts.py#L4988)
+
+- 非零退出码与逐场景完整消息仍共同构成断言。
+  [`test_release_artifacts.py:5026`](../../../tests/tools/test_release_artifacts.py#L5026)
 
 **缺失现场 MDF 的安全覆盖**
 
