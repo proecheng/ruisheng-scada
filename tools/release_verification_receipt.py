@@ -23,7 +23,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from tools import release_artifacts as release_artifacts_module
 from tools import validate_device_point_profile as validator_module
@@ -1663,7 +1663,17 @@ def _publish_posix_no_replace(output: Path, payload: bytes) -> None:
 
 
 def _win_kernel32() -> Any:
-    return ctypes.WinDLL("kernel32", use_last_error=True)
+    return ctypes.__dict__["WinDLL"]("kernel32", use_last_error=True)
+
+
+def _win_last_error() -> int:
+    return int(ctypes.__dict__["get_last_error"]())
+
+
+def _win_error(error_code: int | None = None) -> OSError:
+    if error_code is None:
+        error_code = _win_last_error()
+    return cast(OSError, ctypes.__dict__["WinError"](error_code))
 
 
 def _win_create_handle(
@@ -1696,7 +1706,7 @@ def _win_create_handle(
         None,
     )
     if handle in (None, ctypes.c_void_p(-1).value):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _win_error()
     return int(handle)
 
 
@@ -1706,7 +1716,7 @@ def _win_close_handle(handle: int) -> None:
     close_handle.argtypes = [ctypes.c_void_p]
     close_handle.restype = ctypes.c_int
     if not close_handle(ctypes.c_void_p(handle)):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _win_error()
 
 
 def _win_descriptor_handle(descriptor: int) -> int:
@@ -1731,7 +1741,7 @@ def _win_handle_attributes(handle: int) -> _WinFileAttributeTagInfo:
         ctypes.byref(information),
         ctypes.sizeof(information),
     ):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _win_error()
     return information
 
 
@@ -1752,7 +1762,7 @@ def _win_mark_handle_for_deletion(handle: int) -> None:
         ctypes.byref(information),
         ctypes.sizeof(information),
     ):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _win_error()
 
 
 def _win_rename_handle_no_replace(
@@ -1786,14 +1796,14 @@ def _win_rename_handle_no_replace(
         buffer,
         size,
     ):
-        error_code = ctypes.get_last_error()
+        error_code = _win_last_error()
         if error_code in (WIN_ERROR_FILE_EXISTS, WIN_ERROR_ALREADY_EXISTS):
             raise FileExistsError(error_code, "receipt already exists", os.fspath(output))
         if error_code == WIN_ERROR_INVALID_PARAMETER:
             raise ReleaseArtifactError(
                 "Windows retained-handle no-replace rename is unavailable; refusing path fallback"
             )
-        raise ctypes.WinError(error_code)
+        raise _win_error(error_code)
 
 
 def _sync_bound_publish_directory(descriptor: int) -> None:

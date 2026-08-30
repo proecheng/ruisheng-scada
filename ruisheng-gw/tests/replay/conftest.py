@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import socket
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,9 @@ from ruisheng_gw.main import run_gw_service_for_test
 from ruisheng_gw.persistence.repository import RealtimeRow, Repository
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+HEALTH_TOKEN = "a" * 43
+HEALTH_TOKEN_DIGEST = hashlib.sha256(HEALTH_TOKEN.encode("ascii")).hexdigest()
 
 
 def _free_port() -> int:
@@ -26,6 +30,7 @@ class LiveGateway:
     host: str
     port: int
     health_port: int
+    health_token: str
     repo: Repository
     engine: AsyncEngine
 
@@ -133,6 +138,7 @@ async def gw_server(
             wal_dir=str(tmp_path / "wal"),
             port=port,
             health_port=health_port,
+            health_token_sha256=HEALTH_TOKEN_DIGEST,
         )
     )
 
@@ -156,6 +162,7 @@ async def gw_server(
             host="127.0.0.1",
             port=port,
             health_port=health_port,
+            health_token=HEALTH_TOKEN,
             repo=Repository(engine),
             engine=engine,
         )

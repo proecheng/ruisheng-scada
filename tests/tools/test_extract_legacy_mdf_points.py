@@ -484,6 +484,33 @@ def test_source_path_must_be_the_repository_mdf() -> None:
             extractor._canonical_source_path(alias)
 
 
+def test_missing_source_has_no_module_load_identity(tmp_path: Path) -> None:
+    missing_source = tmp_path / "missing" / "ModBus.mdf"
+
+    assert extractor._capture_expected_source_identity(missing_source) == (None, None)
+
+
+def test_bound_source_rejects_missing_module_load_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(extractor, "_EXPECTED_SOURCE_PARENT_STAT_AT_LOAD", None)
+    monkeypatch.setattr(extractor, "_EXPECTED_SOURCE_STAT_AT_LOAD", None)
+
+    def unexpected_path_access(_source: Path) -> Path:
+        raise AssertionError("source path must not be inspected without a module-load identity")
+
+    monkeypatch.setattr(extractor, "_canonical_source_path", unexpected_path_access)
+
+    with (
+        pytest.raises(
+            MdfEvidenceError,
+            match="repository MDF identity was unavailable at module load",
+        ),
+        extractor._open_bound_source(MDF),
+    ):
+        pytest.fail("source opened without a module-load identity")
+
+
 def test_bound_source_rejects_different_module_load_parent_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

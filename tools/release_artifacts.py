@@ -32,11 +32,6 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Protocol, cast
 
-try:
-    import winreg
-except ImportError:  # pragma: no cover - Windows-only system Git discovery
-    winreg = None  # type: ignore[assignment]
-
 CANDIDATE_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}\Z")
 PLATFORM_PATTERN = re.compile(
     r"(?P<os>[a-z0-9][a-z0-9._-]*)/(?P<architecture>[a-z0-9][a-z0-9._-]*)\Z"
@@ -225,7 +220,21 @@ class _WindowsJobExtendedLimitInformation(ctypes.Structure):
 
 
 def _windows_kernel32() -> Any:
-    return ctypes.WinDLL("kernel32", use_last_error=True)
+    return ctypes.__dict__["WinDLL"]("kernel32", use_last_error=True)
+
+
+def _windows_last_error() -> int:
+    return int(ctypes.__dict__["get_last_error"]())
+
+
+def _windows_error(error_code: int | None = None) -> OSError:
+    if error_code is None:
+        error_code = _windows_last_error()
+    return cast(OSError, ctypes.__dict__["WinError"](error_code))
+
+
+def _effective_uid() -> int:
+    return int(os.__dict__["geteuid"]())
 
 
 def _close_windows_native_handle(handle: int) -> None:
@@ -234,7 +243,7 @@ def _close_windows_native_handle(handle: int) -> None:
     close_handle.argtypes = [ctypes.c_void_p]
     close_handle.restype = ctypes.c_int
     if not close_handle(ctypes.c_void_p(handle)):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _windows_error()
 
 
 def _create_windows_kill_on_close_job() -> int:
@@ -244,7 +253,7 @@ def _create_windows_kill_on_close_job() -> int:
     create_job.restype = ctypes.c_void_p
     handle = create_job(None, None)
     if handle in (None, ctypes.c_void_p(-1).value):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _windows_error()
     job_handle = int(handle)
     information = _WindowsJobExtendedLimitInformation()
     information.basic_limit_information.limit_flags = WINDOWS_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -262,7 +271,7 @@ def _create_windows_kill_on_close_job() -> int:
         ctypes.byref(information),
         ctypes.sizeof(information),
     ):
-        error = ctypes.WinError(ctypes.get_last_error())
+        error = _windows_error()
         _close_windows_native_handle(job_handle)
         raise error
     return job_handle
@@ -276,7 +285,7 @@ def _create_windows_process_gate() -> tuple[int, str]:
     create_event.restype = ctypes.c_void_p
     handle = create_event(None, 1, 0, name)
     if handle in (None, ctypes.c_void_p(-1).value):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _windows_error()
     return int(handle), name
 
 
@@ -289,7 +298,7 @@ def _assign_windows_process_to_job(job_handle: int, process: subprocess.Popen[by
     assign.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     assign.restype = ctypes.c_int
     if not assign(ctypes.c_void_p(job_handle), ctypes.c_void_p(int(process_handle))):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _windows_error()
 
 
 def _signal_windows_process_gate(gate_handle: int) -> None:
@@ -298,7 +307,7 @@ def _signal_windows_process_gate(gate_handle: int) -> None:
     set_event.argtypes = [ctypes.c_void_p]
     set_event.restype = ctypes.c_int
     if not set_event(ctypes.c_void_p(gate_handle)):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _windows_error()
 
 
 def _terminate_isolated_process_tree(
@@ -400,7 +409,7 @@ def candidate_tag_operation_lock(lock_directory: Path, candidate_id: str) -> Ite
         if (
             not stat.S_ISREG(observed.st_mode)
             or observed.st_nlink != 1
-            or observed.st_uid != os.geteuid()  # type: ignore[attr-defined]
+            or observed.st_uid != _effective_uid()
             or stat.S_IMODE(observed.st_mode) & 0o077
         ):
             raise ReleaseArtifactError("candidate tag operation lock is not a private regular file")
@@ -468,7 +477,7 @@ def _system_docker() -> Path:
 
 def _system_git() -> Path:  # noqa: PLR0912
     if os.name == "nt":
-        assert winreg is not None
+        winreg = importlib.import_module("winreg")
         try:
             install_roots: set[str] = set()
             access_modes = (
@@ -1128,7 +1137,7 @@ while ($null -ne $current) {
 
 def _windows_system_directory() -> Path:
     buffer = ctypes.create_unicode_buffer(32768)
-    length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+    length = _windows_kernel32().GetSystemDirectoryW(buffer, len(buffer))
     if length <= 0 or length >= len(buffer):
         raise ReleaseArtifactError("cannot resolve the Windows system directory")
     return Path(buffer.value)
@@ -1336,7 +1345,7 @@ def _validate_atomic_publish_root(output_root: Path) -> Path:
                 + (f": {details}" if details else "")
             )
     else:
-        trusted_uids = {0, os.geteuid()}  # type: ignore[attr-defined]
+        trusted_uids = {0, _effective_uid()}
         for path in (output_root, *output_root.parents):
             metadata = path.stat()
             if metadata.st_uid not in trusted_uids or metadata.st_mode & 0o022:

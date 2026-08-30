@@ -183,7 +183,7 @@ EVIDENCE_SOURCE_FILES: dict[str, dict[str, Any]] = {
     },
     "current_gateway_runtime": {
         "path": "ruisheng-gw/src/ruisheng_gw/main.py",
-        "sha256": "3FBF6FDE519E3C526A55401AFAAD03FC4D146240F2FC089D80D2723654C0D203",
+        "sha256": "0F24E94C5F9BE616EAE15B99FB1871CCDA18FF02935B564D5FA69B9655219EA8",
         "evidence_ids": ["CURRENT_GATEWAY_STARTUP_AND_RELOAD", "CURRENT_GATEWAY_SERIAL_SOURCE"],
         "locators": [
             {"purpose": "registry startup load", "line_start": 115, "line_end": 124},
@@ -332,7 +332,21 @@ def _same_identity(left: os.stat_result, right: os.stat_result) -> bool:
 def _win_kernel32() -> Any:
     if os.name != "nt":
         raise MdfEvidenceError("Windows handle operation requested on a non-Windows platform")
-    return ctypes.WinDLL("kernel32", use_last_error=True)
+    return ctypes.__dict__["WinDLL"]("kernel32", use_last_error=True)
+
+
+def _win_last_error() -> int:
+    return int(ctypes.__dict__["get_last_error"]())
+
+
+def _win_error(error_code: int | None = None) -> OSError:
+    if error_code is None:
+        error_code = _win_last_error()
+    return cast(OSError, ctypes.__dict__["WinError"](error_code))
+
+
+def _win_format_error(error_code: int) -> str:
+    return str(ctypes.__dict__["FormatError"](error_code))
 
 
 def _win_create_handle(
@@ -366,8 +380,8 @@ def _win_create_handle(
     )
     invalid_handle = ctypes.c_void_p(-1).value
     if handle in (None, invalid_handle):
-        error_code = ctypes.get_last_error()
-        raise ctypes.WinError(error_code)
+        error_code = _win_last_error()
+        raise _win_error(error_code)
     return cast(int, handle)
 
 
@@ -377,8 +391,8 @@ def _win_close_handle(handle: int) -> None:
     close_handle.argtypes = [ctypes.c_void_p]
     close_handle.restype = ctypes.c_int
     if not close_handle(ctypes.c_void_p(handle)):
-        error_code = ctypes.get_last_error()
-        raise OSError(error_code, ctypes.FormatError(error_code))
+        error_code = _win_last_error()
+        raise OSError(error_code, _win_format_error(error_code))
 
 
 def _win_handle_attributes(handle: int) -> _WinFileAttributeTagInfo:
@@ -398,8 +412,8 @@ def _win_handle_attributes(handle: int) -> _WinFileAttributeTagInfo:
         ctypes.byref(information),
         ctypes.sizeof(information),
     ):
-        error_code = ctypes.get_last_error()
-        raise OSError(error_code, ctypes.FormatError(error_code))
+        error_code = _win_last_error()
+        raise OSError(error_code, _win_format_error(error_code))
     return information
 
 
@@ -416,8 +430,8 @@ def _win_final_path(handle: int) -> str:
     buffer = ctypes.create_unicode_buffer(32_768)
     length = get_final_path(ctypes.c_void_p(handle), buffer, len(buffer), 0)
     if length == 0 or length >= len(buffer):
-        error_code = ctypes.get_last_error()
-        raise OSError(error_code, ctypes.FormatError(error_code))
+        error_code = _win_last_error()
+        raise OSError(error_code, _win_format_error(error_code))
     raw = buffer.value
     if raw.startswith("\\\\?\\UNC\\"):
         raw = "\\\\" + raw[8:]
@@ -452,8 +466,8 @@ def _win_mark_handle_for_deletion(handle: int) -> None:
         ctypes.byref(information),
         ctypes.sizeof(information),
     ):
-        error_code = ctypes.get_last_error()
-        raise OSError(error_code, ctypes.FormatError(error_code))
+        error_code = _win_last_error()
+        raise OSError(error_code, _win_format_error(error_code))
 
 
 def _win_rename_handle_no_replace(handle: int, output: Path) -> None:
@@ -484,14 +498,14 @@ def _win_rename_handle_no_replace(handle: int, output: Path) -> None:
         buffer,
         size,
     ):
-        error_code = ctypes.get_last_error()
+        error_code = _win_last_error()
         if error_code in (_WIN_ERROR_FILE_EXISTS, _WIN_ERROR_ALREADY_EXISTS):
             raise FileExistsError(error_code, "output already exists", os.fspath(output))
         if error_code == _WIN_ERROR_INVALID_PARAMETER:
             raise MdfEvidenceError(
                 "Windows handle-bound no-replace rename is unavailable; refusing path fallback"
             )
-        raise OSError(error_code, ctypes.FormatError(error_code), os.fspath(output))
+        raise OSError(error_code, _win_format_error(error_code), os.fspath(output))
 
 
 def _open_windows_bound_directory(path: Path, *, label: str, writable: bool) -> BoundDirectory:
@@ -976,8 +990,24 @@ def _open_bound_regular_leaf(  # noqa: PLR0912 - platform-specific handle bindin
 _PARSER_SOURCE_PATH = Path(__file__).resolve(strict=True)
 _REPO_ROOT = _PARSER_SOURCE_PATH.parents[1]
 _EXPECTED_SOURCE_PATH = _REPO_ROOT / SOURCE_LOGICAL_PATH
-_EXPECTED_SOURCE_PARENT_STAT_AT_LOAD = _EXPECTED_SOURCE_PATH.parent.stat(follow_symlinks=False)
-_EXPECTED_SOURCE_STAT_AT_LOAD = _EXPECTED_SOURCE_PATH.stat(follow_symlinks=False)
+
+
+def _capture_expected_source_identity(
+    source: Path,
+) -> tuple[os.stat_result | None, os.stat_result | None]:
+    try:
+        return (
+            source.parent.stat(follow_symlinks=False),
+            source.stat(follow_symlinks=False),
+        )
+    except OSError:
+        return None, None
+
+
+(
+    _EXPECTED_SOURCE_PARENT_STAT_AT_LOAD,
+    _EXPECTED_SOURCE_STAT_AT_LOAD,
+) = _capture_expected_source_identity(_EXPECTED_SOURCE_PATH)
 (
     _PARSER_SOURCE_BYTES_AT_LOAD,
     _PARSER_SOURCE_SHA256_AT_LOAD,
@@ -1009,6 +1039,8 @@ def _verify_parser_source_unchanged() -> None:
 def _open_bound_source(
     source: Path,
 ) -> Iterator[tuple[BinaryIO, os.stat_result, BoundDirectory, str]]:
+    if _EXPECTED_SOURCE_PARENT_STAT_AT_LOAD is None or _EXPECTED_SOURCE_STAT_AT_LOAD is None:
+        raise MdfEvidenceError("repository MDF identity was unavailable at module load")
     expected = _canonical_source_path(source)
     with _bound_directory(expected.parent, label="source parent") as bound:
         if not _same_identity(bound.identity, _EXPECTED_SOURCE_PARENT_STAT_AT_LOAD):

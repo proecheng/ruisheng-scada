@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -3787,6 +3787,20 @@ def _windows_component_snapshot(
     return tuple(snapshots)
 
 
+def _windows_dll(name: str) -> Any:
+    return ctypes.__dict__["WinDLL"](name, use_last_error=True)
+
+
+def _windows_last_error() -> int:
+    return int(ctypes.__dict__["get_last_error"]())
+
+
+def _windows_error(error_code: int | None = None) -> OSError:
+    if error_code is None:
+        error_code = _windows_last_error()
+    return cast(OSError, ctypes.__dict__["WinError"](error_code))
+
+
 def _read_relative_file_once(  # noqa: PLR0912, PLR0915 - platform-specific handle binding
     root: Path,
     relative: str,
@@ -3805,7 +3819,7 @@ def _read_relative_file_once(  # noqa: PLR0912, PLR0915 - platform-specific hand
         if os.name == "nt":
             before = _windows_component_snapshot(root_resolved, parts)
             candidate = root_resolved.joinpath(*parts)
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32 = _windows_dll("kernel32")
             create_file = kernel32.CreateFileW
             create_file.argtypes = [
                 ctypes.c_wchar_p,
@@ -3828,7 +3842,7 @@ def _read_relative_file_once(  # noqa: PLR0912, PLR0915 - platform-specific hand
             )
             invalid_handle = ctypes.c_void_p(-1).value
             if handle in (None, invalid_handle):
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise _windows_error()
             try:
                 final_path = kernel32.GetFinalPathNameByHandleW
                 final_path.argtypes = [
@@ -3841,7 +3855,7 @@ def _read_relative_file_once(  # noqa: PLR0912, PLR0915 - platform-specific hand
                 buffer = ctypes.create_unicode_buffer(32768)
                 length = final_path(handle, buffer, len(buffer), 0)
                 if length == 0 or length >= len(buffer):
-                    raise ctypes.WinError(ctypes.get_last_error())
+                    raise _windows_error()
                 opened_path = buffer.value
                 if opened_path.startswith("\\\\?\\UNC\\"):
                     opened_path = "\\\\" + opened_path[8:]
@@ -4120,7 +4134,7 @@ def _windows_sid_to_string(advapi32: Any, kernel32: Any, sid_address: int) -> st
     convert_sid.restype = ctypes.c_int
     string_pointer = ctypes.c_void_p()
     if not convert_sid(ctypes.c_void_p(sid_address), ctypes.byref(string_pointer)):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _windows_error()
     try:
         if string_pointer.value is None:
             raise ValueError("Windows returned an empty SID string")
@@ -4181,7 +4195,7 @@ def _windows_acl_from_handle(  # noqa: PLR0912, PLR0915
             ctypes.byref(control),
             ctypes.byref(revision),
         ):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise _windows_error()
         owner_sid = (
             _windows_sid_to_string(advapi32, kernel32, owner.value)
             if owner.value is not None
@@ -4205,7 +4219,7 @@ def _windows_acl_from_handle(  # noqa: PLR0912, PLR0915
                 ctypes.sizeof(acl_info),
                 2,  # AclSizeInformation
             ):
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise _windows_error()
             get_ace = advapi32.GetAce
             get_ace.argtypes = [
                 ctypes.c_void_p,
@@ -4216,7 +4230,7 @@ def _windows_acl_from_handle(  # noqa: PLR0912, PLR0915
             for index in range(acl_info.ace_count):
                 ace_pointer = ctypes.c_void_p()
                 if not get_ace(dacl, index, ctypes.byref(ace_pointer)):
-                    raise ctypes.WinError(ctypes.get_last_error())
+                    raise _windows_error()
                 if ace_pointer.value is None:
                     raise ValueError("Windows returned an empty ACE")
                 header = ctypes.string_at(ace_pointer.value, _WINDOWS_ACE_HEADER_BYTES)
@@ -4279,7 +4293,7 @@ def _windows_handle_snapshot(
     buffer = ctypes.create_unicode_buffer(32768)
     length = get_final_path(ctypes.c_void_p(handle), buffer, len(buffer), 0)
     if length == 0 or length >= len(buffer):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _windows_error()
     final_path = _windows_normalized_handle_path(buffer.value)
     if final_path != _windows_normalized_handle_path(expected_path):
         raise ValueError("fixed trust-root handle final path does not match its requested path")
@@ -4299,7 +4313,7 @@ def _windows_handle_snapshot(
         ctypes.byref(attribute_tag),
         ctypes.sizeof(attribute_tag),
     ):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _windows_error()
     if attribute_tag.attributes & 0x00000400:  # FILE_ATTRIBUTE_REPARSE_POINT
         raise ValueError("reparse points are forbidden in the fixed trust-root path")
     is_directory = bool(attribute_tag.attributes & 0x00000010)
@@ -4314,7 +4328,7 @@ def _windows_handle_snapshot(
     get_file_information.restype = ctypes.c_int
     file_information = _WindowsByHandleFileInformation()
     if not get_file_information(ctypes.c_void_p(handle), ctypes.byref(file_information)):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _windows_error()
     identity = (
         file_information.volume_serial_number,
         file_information.file_index_high,
@@ -4330,8 +4344,8 @@ def _windows_handle_snapshot(
 
 
 def _windows_native_trust_root_operations() -> _WindowsTrustRootOperations:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = _windows_dll("kernel32")
+    advapi32 = _windows_dll("advapi32")
     create_file = kernel32.CreateFileW
     create_file.argtypes = [
         ctypes.c_wchar_p,
@@ -4362,7 +4376,7 @@ def _windows_native_trust_root_operations() -> _WindowsTrustRootOperations:
         )
         invalid_handle = ctypes.c_void_p(-1).value
         if handle in (None, invalid_handle):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise _windows_error()
         return int(handle)
 
     def snapshot_component(
@@ -4398,7 +4412,7 @@ def _windows_native_trust_root_operations() -> _WindowsTrustRootOperations:
             False,
             0x00000002,  # DUPLICATE_SAME_ACCESS
         ):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise _windows_error()
         if duplicate.value is None:
             raise ValueError("Windows returned an empty duplicate handle")
         msvcrt = importlib.import_module("msvcrt")

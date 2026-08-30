@@ -432,6 +432,7 @@ async def run_gw_service_for_test(
     wal_dir: str,
     port: int,
     health_port: int,
+    health_token_sha256: str,
 ) -> None:
     """Test harness: create a minimal Config and call run_server().
 
@@ -448,6 +449,7 @@ async def run_gw_service_for_test(
         redis_url=redis_url,
         wal_dir=wal_dir,
         health_port=health_port,
+        health_token_sha256=health_token_sha256,
         wal_single_file_mb=10,
         wal_total_gb=1,
         batch_flush_rows=500,

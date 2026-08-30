@@ -35,7 +35,7 @@
   "parser_contract": {
     "tool": "tools/extract_legacy_mdf_points.py",
     "algorithm_version": "b08-mdf-page-258-v3",
-    "extractor_source_sha256": "BDD85C0447EEB860FE8B3373AC015511211DC7944724D4E98F7929F7F2AEDF77",
+    "extractor_source_sha256": "372955AD11F44652773BCA397FE7D57009F1EFECD924A030C63226F6E97F3F28",
     "mode": "read_only_identity_bound_authenticated_mdf_page_258_only",
     "source_binding": "repository logical path, no symlink/reparse components, and opened-handle identity",
     "output_publish": "same-directory fsynced temporary file followed by atomic no-replace publish",
@@ -356,7 +356,7 @@
     },
     "current_gateway_runtime": {
       "path": "ruisheng-gw/src/ruisheng_gw/main.py",
-      "sha256": "3FBF6FDE519E3C526A55401AFAAD03FC4D146240F2FC089D80D2723654C0D203",
+      "sha256": "0F24E94C5F9BE616EAE15B99FB1871CCDA18FF02935B564D5FA69B9655219EA8",
       "evidence_ids": [
         "CURRENT_GATEWAY_STARTUP_AND_RELOAD",
         "CURRENT_GATEWAY_SERIAL_SOURCE"
