@@ -15,6 +15,7 @@ import sys
 import tarfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import BinaryIO, cast
@@ -778,6 +779,90 @@ Get-ManifestLogicalIdentity $manifest ([int]$manifest.schema_version)
         env=environment,
         timeout=30,
     )
+
+
+def _run_powershell_authenticated_manifest_contract(
+    manifest: dict[str, object],
+    *,
+    script_relative: str,
+    simulate_legacy_parser: bool = False,
+    shadow_parser: bool = False,
+    executable: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command = r"""
+$source = Get-Content -Raw -LiteralPath $env:RS_VERIFY_SCRIPT
+$helperStartMarker = '# BEGIN authenticated manifest JSON helpers'
+$helperEndMarker = '# END authenticated manifest JSON helpers'
+$helperStart = $source.IndexOf($helperStartMarker)
+$helperEnd = $source.IndexOf($helperEndMarker, $helperStart)
+$assertStart = $source.IndexOf('function Assert-ManifestValueTypes')
+$assertEnd = $source.IndexOf('Assert-ManifestValueTypes $Manifest', $assertStart)
+if ($helperStart -lt 0 -or $helperEnd -lt 0 -or $assertStart -lt 0 -or $assertEnd -lt 0) {
+    throw 'Authenticated manifest parser block not found'
+}
+$helperEnd += $helperEndMarker.Length
+$fail = 'function Fail([string]$Message) { throw ("[verify] " + $Message) }' +
+    [Environment]::NewLine
+. ([scriptblock]::Create(
+    $fail + $source.Substring($helperStart, $helperEnd - $helperStart) +
+    [Environment]::NewLine + $source.Substring($assertStart, $assertEnd - $assertStart)
+))
+if ($env:RS_SIMULATE_LEGACY -ceq '1') {
+    function ConvertFrom-Json {
+        param(
+            [Parameter(Mandatory, ValueFromPipeline)]
+            [string]$InputObject
+        )
+        process {
+            Microsoft.PowerShell.Utility\ConvertFrom-Json `
+                -InputObject $InputObject -DateKind String
+        }
+    }
+    function Get-AuthenticatedManifestJsonCommand {
+        return Get-Command ConvertFrom-Json -CommandType Function
+    }
+} elseif ($env:RS_SHADOW_PARSER -ceq '1') {
+    function ConvertFrom-Json { throw 'shadow parser must not execute' }
+}
+$manifest = ConvertFrom-AuthenticatedManifestJson $env:RS_MANIFEST_JSON
+Assert-ManifestValueTypes $manifest
+[Console]::Out.WriteLine($manifest.generated_at.GetType().FullName)
+[Console]::Out.Write([string]$manifest.generated_at)
+"""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RS_VERIFY_SCRIPT": str(ROOT / script_relative),
+            "RS_MANIFEST_JSON": json.dumps(manifest, separators=(",", ":")),
+            "RS_SIMULATE_LEGACY": "1" if simulate_legacy_parser else "0",
+            "RS_SHADOW_PARSER": "1" if shadow_parser else "0",
+        }
+    )
+    return subprocess.run(
+        [executable or shutil.which("pwsh") or "pwsh", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+
+def _minimal_powershell_manifest(generated_at: object, *, schema_version: int) -> dict[str, object]:
+    return {
+        "schema_version": schema_version,
+        "candidate_id": "deploy-20260831.1",
+        "source_commit": "a" * 40,
+        "generated_at": generated_at,
+        "target_os": "linux",
+        "target_architecture": "amd64",
+        "alembic_head": "release_head",
+        "logical_identity": f"sha256:{'b' * 64}",
+        "tools": {"python": "3.11"},
+        "images": [],
+    }
 
 
 def _run_powershell_publisher_snapshot_mutation(
@@ -3605,6 +3690,192 @@ def test_powershell_recomputes_the_same_v2_and_v3_logical_identity(
             assert result.stdout.strip() == manifest["logical_identity"]
         if schema_version == 3:
             _downgrade_package_to_v2(package, runner)
+
+
+@pytest.mark.skipif(
+    shutil.which("pwsh") is None,
+    reason="PowerShell authenticated manifest contract test",
+)
+@pytest.mark.parametrize(
+    "script_relative",
+    ("deploy/verify-candidate.ps1", "tools/release_trust/verify-publisher.ps1"),
+)
+@pytest.mark.parametrize("schema_version", (2, 3))
+@pytest.mark.parametrize(
+    "generated_at",
+    (
+        "2026-08-30T00:00:00+00:00",
+        "2026-08-30T00:00:00Z",
+        "2026-08-30T00:00:00.123456+00:00",
+        "2026-08-30T00:00:00,123456+00:00",
+        "2026-08-30T08:15:30.25+08:00",
+        "20260830T001530+1500",
+        "2026-W35-7 00:15+00",
+    ),
+)
+def test_powershell_authenticated_manifest_preserves_generated_at(
+    script_relative: str, schema_version: int, generated_at: str
+) -> None:
+    result = _run_powershell_authenticated_manifest_contract(
+        _minimal_powershell_manifest(generated_at, schema_version=schema_version),
+        script_relative=script_relative,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout.splitlines() == ["System.String", generated_at]
+
+
+@pytest.mark.skipif(
+    shutil.which("pwsh") is None,
+    reason="PowerShell authenticated manifest contract test",
+)
+@pytest.mark.parametrize(
+    "script_relative",
+    ("deploy/verify-candidate.ps1", "tools/release_trust/verify-publisher.ps1"),
+)
+@pytest.mark.parametrize(
+    ("generated_at", "expected_acceptance"),
+    (
+        ("2026-08-30T00:00:00+00:00", True),
+        ("2026-08-30T00:00:00,123+00:00", True),
+        ("2026-08-30T08:15:30.25+08:00", True),
+        ("20260830T001530+1500", True),
+        ("2026-W35-7 00:15+00", True),
+        ("2026W35X00.5-23:59", True),
+        ("2026-08-30T00:00:00+01:30:45.5", True),
+        ("2026-08-30T00:00:00+00:60", True),
+        ("2026-08-30T00:00:00+00:00:60", True),
+        ("2026-08-30\n00:00:00+00:00", True),
+        ("not-a-timestamp", False),
+        ("2026-08-30T00:00:00", False),
+        ("2026-02-29T00:00:00+00:00", False),
+        ("2026-W54-1T00:00:00+00:00", False),
+        ("9999-W52-6T00:00:00+00:00", False),
+        ("2026-08-30T24:00:00+00:00", False),
+        ("2026-08-30T00:00:00+24:00", False),
+        ("2026-08-30T00:00:00+23:60", False),
+        ("2026-08-30T٠٠:00:00+00:00", False),
+        ("2026-08-30T00:00:00Z\n", False),
+        ("2026-08-30T00:00:00Z\r\n", False),
+    ),
+)
+def test_powershell_generated_at_matches_python_manifest_contract(
+    script_relative: str, generated_at: str, expected_acceptance: bool
+) -> None:
+    try:
+        parsed = datetime.fromisoformat(generated_at)
+        python_accepts = parsed.utcoffset() is not None
+    except ValueError:
+        python_accepts = False
+
+    assert python_accepts is expected_acceptance
+
+    result = _run_powershell_authenticated_manifest_contract(
+        _minimal_powershell_manifest(generated_at, schema_version=3),
+        script_relative=script_relative,
+    )
+
+    assert (result.returncode == 0) is python_accepts, result.stderr or result.stdout
+
+
+@pytest.mark.skipif(
+    shutil.which("pwsh") is None,
+    reason="PowerShell authenticated manifest compatibility test",
+)
+@pytest.mark.parametrize(
+    "script_relative",
+    ("deploy/verify-candidate.ps1", "tools/release_trust/verify-publisher.ps1"),
+)
+def test_powershell_authenticated_manifest_falls_back_without_datekind(
+    script_relative: str,
+) -> None:
+    generated_at = "2026-08-30T08:15:30.123456+08:00"
+    result = _run_powershell_authenticated_manifest_contract(
+        _minimal_powershell_manifest(generated_at, schema_version=3),
+        script_relative=script_relative,
+        simulate_legacy_parser=True,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout.splitlines() == ["System.String", generated_at]
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("powershell.exe") is None,
+    reason="Windows PowerShell authenticated manifest compatibility test",
+)
+@pytest.mark.parametrize(
+    "script_relative",
+    ("deploy/verify-candidate.ps1", "tools/release_trust/verify-publisher.ps1"),
+)
+def test_powershell_authenticated_manifest_uses_real_legacy_parser(
+    script_relative: str,
+) -> None:
+    generated_at = "2026-08-30T08:15:30.123456+08:00"
+    result = _run_powershell_authenticated_manifest_contract(
+        _minimal_powershell_manifest(generated_at, schema_version=3),
+        script_relative=script_relative,
+        executable=shutil.which("powershell.exe"),
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout.splitlines() == ["System.String", generated_at]
+
+
+@pytest.mark.skipif(
+    shutil.which("pwsh") is None,
+    reason="PowerShell authenticated manifest command binding test",
+)
+@pytest.mark.parametrize(
+    "script_relative",
+    ("deploy/verify-candidate.ps1", "tools/release_trust/verify-publisher.ps1"),
+)
+def test_powershell_authenticated_manifest_ignores_shadow_parser(
+    script_relative: str,
+) -> None:
+    generated_at = "2026-08-30T00:00:00Z"
+    result = _run_powershell_authenticated_manifest_contract(
+        _minimal_powershell_manifest(generated_at, schema_version=3),
+        script_relative=script_relative,
+        shadow_parser=True,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout.splitlines() == ["System.String", generated_at]
+
+
+@pytest.mark.skipif(
+    shutil.which("pwsh") is None,
+    reason="PowerShell authenticated manifest contract test",
+)
+@pytest.mark.parametrize(
+    "script_relative",
+    ("deploy/verify-candidate.ps1", "tools/release_trust/verify-publisher.ps1"),
+)
+@pytest.mark.parametrize(
+    "generated_at",
+    (
+        1_777_777_777,
+        True,
+        {"timestamp": "2026-08-30T00:00:00+00:00"},
+        "not-a-timestamp",
+        "2026-08-30T00:00:00",
+        "2026-08-30T00:00:00+24:00",
+        "2026-08-30T24:00:00+00:00",
+        "2026-08-30T00:00:00Z\n",
+        "2026-08-30T00:00:00Z\r\n",
+    ),
+)
+def test_powershell_authenticated_manifest_rejects_invalid_generated_at(
+    script_relative: str, generated_at: object
+) -> None:
+    result = _run_powershell_authenticated_manifest_contract(
+        _minimal_powershell_manifest(generated_at, schema_version=3),
+        script_relative=script_relative,
+    )
+
+    assert result.returncode != 0
+    assert "generated_at" in (result.stderr + result.stdout)
 
 
 def test_v3_toolchain_member_tamper_is_rejected_even_when_outer_hash_is_resigned(

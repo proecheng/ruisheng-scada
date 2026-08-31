@@ -563,7 +563,7 @@ def test_release_verifiers_pin_trust_tools_and_authentication_order() -> None:
         "manifest = strict_json_loads(manifest_bytes.decode"
     )
     assert powershell.index("$ManifestDigest -cne $AuthenticatedSums") < powershell.index(
-        "$Manifest = [Text.UTF8Encoding]"
+        "$Manifest = ConvertFrom-AuthenticatedManifestJson"
     )
     assert "$NetworkExitCode" not in powershell
     assert "$PythonLauncher" not in powershell
