@@ -967,9 +967,127 @@ function Assert-NoDuplicateJsonKeys([byte[]]$Bytes, [string]$Label) {
         }
     }
 }
+# BEGIN authenticated manifest JSON helpers
+function Get-AuthenticatedManifestJsonCommand {
+    return Microsoft.PowerShell.Core\Get-Command `
+        Microsoft.PowerShell.Utility\ConvertFrom-Json `
+        -CommandType Cmdlet -ErrorAction Stop
+}
+function ConvertFrom-AuthenticatedManifestJson([string]$Json) {
+    $Command = Get-AuthenticatedManifestJsonCommand
+    if ($Command.Parameters.ContainsKey("DateKind")) {
+        return & $Command -InputObject $Json -DateKind String
+    }
+    return & $Command -InputObject $Json
+}
+
+function Test-PythonIsoClock([string]$Value) {
+    $Pattern = '^(?<hour>[0-9]{2})(?:(?::(?<minute>[0-9]{2})(?::(?<second>[0-9]{2}))?)|(?<minute>[0-9]{2})(?<second>[0-9]{2})?)?(?:[\.,][0-9]+)?\z'
+    $Match = [Text.RegularExpressions.Regex]::Match(
+        $Value,
+        $Pattern,
+        [Text.RegularExpressions.RegexOptions]::CultureInvariant,
+        [TimeSpan]::FromSeconds(1)
+    )
+    if (-not $Match.Success) { return $false }
+    $Hour = [int]$Match.Groups["hour"].Value
+    $Minute = if ($Match.Groups["minute"].Success) {
+        [int]$Match.Groups["minute"].Value
+    } else { 0 }
+    $Second = if ($Match.Groups["second"].Success) {
+        [int]$Match.Groups["second"].Value
+    } else { 0 }
+    return $Hour -le 23 -and $Minute -le 59 -and $Second -le 59
+}
+
+function Test-PythonIsoOffset([string]$Value) {
+    $Pattern = '^(?<hour>[0-9]{2})(?:(?::(?<minute>[0-9]{2})(?::(?<second>[0-9]{2}))?)|(?<minute>[0-9]{2})(?<second>[0-9]{2})?)?(?:[\.,][0-9]+)?\z'
+    $Match = [Text.RegularExpressions.Regex]::Match(
+        $Value,
+        $Pattern,
+        [Text.RegularExpressions.RegexOptions]::CultureInvariant,
+        [TimeSpan]::FromSeconds(1)
+    )
+    if (-not $Match.Success) { return $false }
+    $Hour = [int]$Match.Groups["hour"].Value
+    $Minute = if ($Match.Groups["minute"].Success) {
+        [int]$Match.Groups["minute"].Value
+    } else { 0 }
+    $Second = if ($Match.Groups["second"].Success) {
+        [int]$Match.Groups["second"].Value
+    } else { 0 }
+    return ($Hour * 3600 + $Minute * 60 + $Second) -lt 86400
+}
+
+function Test-PythonIsoDate([string]$Value) {
+    $Parsed = [DateTime]::MinValue
+    foreach ($Format in @("yyyy-MM-dd", "yyyyMMdd")) {
+        if ([DateTime]::TryParseExact(
+                $Value,
+                $Format,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::None,
+                [ref]$Parsed
+            )) {
+            return $true
+        }
+    }
+    $WeekMatch = [Text.RegularExpressions.Regex]::Match(
+        $Value,
+        '^(?:(?<year>[0-9]{4})-W(?<week>[0-9]{2})(?:-(?<day>[0-9]))?|(?<year>[0-9]{4})W(?<week>[0-9]{2})(?<day>[0-9])?)\z',
+        [Text.RegularExpressions.RegexOptions]::CultureInvariant,
+        [TimeSpan]::FromSeconds(1)
+    )
+    if (-not $WeekMatch.Success) { return $false }
+    $Year = [int]$WeekMatch.Groups["year"].Value
+    $Week = [int]$WeekMatch.Groups["week"].Value
+    $Day = if ($WeekMatch.Groups["day"].Success) {
+        [int]$WeekMatch.Groups["day"].Value
+    } else { 1 }
+    if ($Year -lt 1 -or $Year -gt 9999 -or $Week -lt 1 -or
+        $Day -lt 1 -or $Day -gt 7) {
+        return $false
+    }
+    if ($Week -gt [Globalization.ISOWeek]::GetWeeksInYear($Year)) { return $false }
+    try {
+        [void][Globalization.ISOWeek]::ToDateTime(
+            $Year,
+            $Week,
+            [DayOfWeek]($Day % 7)
+        )
+        return $true
+    } catch [ArgumentOutOfRangeException] {
+        return $false
+    }
+}
+
+function Test-PythonIsoDateTimeWithOffset([string]$Value) {
+    if ([string]::IsNullOrEmpty($Value)) { return $false }
+    $ClockPattern = '[0-9]{2}(?:(?::[0-9]{2}(?::[0-9]{2})?)|(?:[0-9]{2}(?:[0-9]{2})?))?(?:[\.,][0-9]+)?'
+    $Pattern = '^(?<date>(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{8}|[0-9]{4}-W[0-9]{2}(?:-[0-9])?|[0-9]{4}W[0-9]{2}[0-9]?))' +
+        '(?<separator>(?:[\uD800-\uDBFF][\uDC00-\uDFFF]|[\s\S]))' +
+        '(?<time>' + $ClockPattern + ')' +
+        '(?<offset>Z|[+-](?:' + $ClockPattern + '))\z'
+    $Match = [Text.RegularExpressions.Regex]::Match(
+        $Value,
+        $Pattern,
+        [Text.RegularExpressions.RegexOptions]::CultureInvariant,
+        [TimeSpan]::FromSeconds(1)
+    )
+    if (-not $Match.Success -or
+        -not (Test-PythonIsoDate $Match.Groups["date"].Value) -or
+        -not (Test-PythonIsoClock $Match.Groups["time"].Value)) {
+        return $false
+    }
+    $Offset = $Match.Groups["offset"].Value
+    return $Offset -ceq "Z" -or (Test-PythonIsoOffset $Offset.Substring(1))
+}
+# END authenticated manifest JSON helpers
 Assert-NoDuplicateJsonKeys $ManifestBytes "authenticated MANIFEST.json"
 try {
-    $Manifest = [Text.UTF8Encoding]::new($false, $true).GetString($ManifestBytes) | ConvertFrom-Json
+    $Manifest = ConvertFrom-AuthenticatedManifestJson (
+        [Text.UTF8Encoding]::new($false, $true).GetString($ManifestBytes)
+    )
 } catch {
     Fail "cannot parse authenticated MANIFEST.json"
 }
@@ -1527,6 +1645,9 @@ function Assert-ManifestValueTypes([object]$Value) {
         if ($Value.$Name -isnot [string]) {
             Fail "MANIFEST.json scalar field has an invalid type: $Name"
         }
+    }
+    if (-not (Test-PythonIsoDateTimeWithOffset $Value.generated_at)) {
+        Fail "MANIFEST.json generated_at must be an ISO-8601 timestamp with a timezone"
     }
     if ($Value.candidate_id -cnotmatch '^[a-z0-9][a-z0-9._-]{0,62}$' -or
         $Value.source_commit -cnotmatch '^[0-9a-f]{40}$' -or
