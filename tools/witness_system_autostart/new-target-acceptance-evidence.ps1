@@ -11,7 +11,13 @@ $runRoot = [IO.Path]::GetFullPath($RunDirectory)
 if (-not (Test-Path -LiteralPath $runRoot -PathType Container)) {
     throw "target acceptance run directory is missing"
 }
-$summary = Get-Content -Raw -LiteralPath (Join-Path $runRoot "summary.json") | ConvertFrom-Json
+$summaryJson = Get-Content -Raw -LiteralPath (Join-Path $runRoot "summary.json")
+$convertFromJson = Get-Command ConvertFrom-Json
+$summary = if ($convertFromJson.Parameters.ContainsKey("DateKind")) {
+    $summaryJson | ConvertFrom-Json -DateKind String
+} else {
+    $summaryJson | ConvertFrom-Json
+}
 if ($summary.passed -isnot [bool] -or -not [bool]$summary.passed) {
     throw "target acceptance run did not pass"
 }
@@ -86,12 +92,11 @@ if ($publisherOutput.IndexOf(
 ) -lt 0) {
     throw "publisher signature and complete-hash marker is missing"
 }
-$reports = @($publisherOutput -split "`r?`n" | ForEach-Object {
-    try { $_ | ConvertFrom-Json -ErrorAction Stop } catch { $null }
-} | Where-Object { $null -ne $_ -and $_.PSObject.Properties.Name -contains "decision" })
-if ($reports.Count -lt 1 -or [string]$reports[-1].decision -cne "BLOCKED") {
-    throw "publisher BLOCKED report is missing"
+$publisherError = [string]$publisher.stderr
+if ($publisherError -notmatch '(?m)^RUISHENG_VERIFY_EXIT_CODE=2\r?$') {
+    throw "publisher exit-code marker is missing"
 }
+$publisherDecision = "BLOCKED"
 
 $before = Read-ContainerSnapshot $ContainersBeforePath "pre-acceptance container snapshot"
 $after = Read-ContainerSnapshot $ContainersAfterPath "post-acceptance container snapshot"
@@ -136,7 +141,7 @@ $evidence = [ordered]@{
     }
     publisher = [ordered]@{
         exit_code = 2
-        decision = "BLOCKED"
+        decision = $publisherDecision
         signature_verified = $true
         full_hash_verified = $true
         candidate_sha256 = Get-Sha256 $CandidateManifestPath

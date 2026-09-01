@@ -2,7 +2,7 @@
 title: 'Plan 5 B-08-T Witness SYSTEM Autostart'
 type: 'chore'
 created: '2026-09-01'
-status: 'in-progress'
+status: 'done'
 baseline_commit: '72608611a48d851cec207b22622ed177436c7e40'
 context:
   - 'docs/superpowers/specs/spec-plan-5-b08t-trust-root-freshness.md'
@@ -60,7 +60,7 @@ context:
 - [x] `tools/witness_system_autostart/install-witness-system-autostart.ps1` -- 创建固定最小 runtime、校验输入、备份旧任务、注册 SYSTEM/AtStartup 任务并实现持久化事务和回滚。
 - [x] `tools/witness_system_autostart/test-witness-system-autostart.ps1` -- 校验 principal、trigger、action、ACL、listener 归属、脚本/runtime 摘要和电池策略。
 - [x] 上一现场版本验收基线 -- 本机 15 项 SYSTEM 验收、目标机 cleared-env、publisher 和三组负向测试均通过；该结果仅作为回归基线。
-- [ ] 审查修复候选现场验收 -- 重新安装当前仓库候选，执行本机 SYSTEM/停启/最终复核和目标机联合验收后，方可恢复 `done`。
+- [x] 审查修复候选现场验收 -- 当前仓库候选已完成本机 SYSTEM 安装、停启、最终复核和目标机联合验收，规格恢复 `done`。
 
 **Acceptance Criteria:**
 - Given 当前用户任务可用，when 管理员执行迁移，then 新任务以 `NT AUTHORITY\SYSTEM` 在开机时启动，action 精确使用 `C:\Windows\System32\cmd.exe /d /s /c`，只启动受保护目录中的固定 runtime 和 witness 脚本，stdout 为 `NUL` 且 stderr 写入受保护 migration 日志。
@@ -92,6 +92,7 @@ context:
 
 ## Spec Change Log
 
+- 2026-09-01: 现场安装发现 Windows PowerShell 5.1 无法绑定未显式转换的 `HashSet.SetEquals()` 参数，且旧任务使用 `cmd.exe` wrapper 时回滚器错误地把 listener Python 与任务 Action 直接比较；已增加 5.1 类型转换、wrapper 进程链验收和可验证的幂等恢复。成功事务 `a11b9650b1774131b5bb7a8366d754d1` 及完整联合验收通过，规格恢复 `done`。
 - 2026-09-01: 修复代码审查提出的 19 项问题；实现迁入可发布路径，加入完整批准 runtime manifest、安全提升 bundle、持久化事务、显式回滚、联合验收和定向回归。当前候选尚未重新部署，规格状态改为 `in-progress`。
 - 2026-09-01: 经人工批准，将最终任务 Action 从直接 `python.exe` 改为已通过完整 SYSTEM 预检的固定 `cmd.exe /d /s /c` wrapper；直接 Action 会保持 Running 却不监听，wrapper 仍严格绑定受保护 Python/witness，并持久化 stderr。
 - 2026-09-01: 独立复核增加 listener Python 到固定 `cmd.exe` 的父子进程验证，并确保失败回滚不遗留本轮新建的 stderr 文件。
@@ -115,5 +116,7 @@ Windows `LocalSystem` 无法可靠使用用户 Profile 中的 Python，因此仅
 - target `docker ps` 与本机端口检查 -- expected: 生产容器正常，临时端口 `38477` 未监听。
 
 **Observed 2026-09-01 (reviewed candidate, local only):** 定向回归 `6 passed`；完整 `tests/tools` 回归 `889 passed, 9 skipped`，跳过项均为 POSIX、Docker E2E 或当前 Windows 符号链接条件；21 个 PowerShell 文件解析 0 错误；Ruff、格式和 Mypy 全部通过。固定哈希链已闭合，runtime manifest 含 1494 个文件且 SHA-256 为 `301172759e6269bcd1b04d7aed04c9b4df78f32150d34dd1a4c5d0cd7be329d0`。尚未对当前候选执行 UAC 安装或现场联合验收。
+
+**Observed 2026-09-01 (reviewed candidate, deployed):** 提交 `291cfe32cac9cc4dab1f070e25f376bde5767689`，部署包 SHA-256 `06220101deaef8f1a657a31f9a988b30c7486db7d7ce9ed832629ba3f1adb17e`，成功事务 `a11b9650b1774131b5bb7a8366d754d1`。SYSTEM 安装验收全通过；停启 PID `11224 -> 20296`，高水位 SHA-256 前后均为 `134b160de987a102518105ca0feb32876c0b6f0d315f0dee8ca8d8d652cbe9db`。目标机 cleared-env、publisher `2/BLOCKED` 和三组负向测试通过，五个生产容器 ID 不变且 `38477` 无 listener。最终证据 SHA-256 `3ac613df2f7cbc7c9b2042e0e38cee2b49724f241c8c287aebd1231b70096245`，基线 ID `49` 后新增 2 条成功 `/v1/attest`，最新 ID `59`；最终管理员复核 `passed=true`。
 
 **Observed 2026-09-01 (previous deployed baseline):** 成功事务 `6d7c1793d5f3411497f71fdab7751840`；SYSTEM 验收 15/15、停启与最终复核均通过；cleared-env `0`；publisher `2` 且输出签名/完整哈希 `VERIFIED`；freshness 8/8、replay、publisher 3/3 负向测试全部通过。高水位 SHA-256 保持 `134b160de987a102518105ca0feb32876c0b6f0d315f0dee8ca8d8d652cbe9db`，迁移后成功 audit 3 条，最新 ID `49`；五个 `ruisheng-prod` 容器 ID 前后不变，`38477` 未监听。该证据不替代当前修复候选的现场复验。

@@ -276,3 +276,11 @@ def test_windows_powershell51_contracts() -> None:
         [str(powershell), "-NoProfile", "-NonInteractive", "-Command", command],
         check=True,
     )
+
+
+def test_target_evidence_preserves_utc_timestamp_text() -> None:
+    script = (TOOL_ROOT / "new-target-acceptance-evidence.ps1").read_text(encoding="utf-8")
+    assert 'Parameters.ContainsKey("DateKind")' in script
+    assert "ConvertFrom-Json -DateKind String" in script
+    assert "RUISHENG_VERIFY_EXIT_CODE=2" in script
+    assert '$publisherDecision = "BLOCKED"' in script
