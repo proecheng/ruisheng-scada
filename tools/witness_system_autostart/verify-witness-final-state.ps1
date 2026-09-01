@@ -22,7 +22,7 @@ $auditReader = Join-Path $PSScriptRoot "read-witness-audit.py"
 $statusPath = Join-Path $PSScriptRoot "final-verification.status.json"
 $expectedHighWaterSha256 = "134b160de987a102518105ca0feb32876c0b6f0d315f0dee8ca8d8d652cbe9db"
 $expectedWitnessSha256 = "f441790914ce3d22e24d3ba78712bcac6cb2129f1b48beb27dcfaf53c56b15ca"
-$expectedTestScriptSha256 = "9eaead65b6a4308b482810697fdb49d4b812a739e55c9a620d551dbbf657d09f"
+$expectedTestScriptSha256 = "ca53b2127b31be87fea0d74ee405d7dc36354a33893b00a55bcf923a053dc0e2"
 $expectedAuditReaderSha256 = "a6ac1fbfce9a1bceb0e379e856c3744e559c8b043fe5d5391e20a872e1f4faff"
 
 function Get-Sha256([string]$Path) {

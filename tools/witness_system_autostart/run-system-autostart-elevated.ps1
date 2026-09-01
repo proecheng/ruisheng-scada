@@ -20,13 +20,13 @@ $bundleRoot = Join-Path $operationsRoot $bundleId
 $bundle = [ordered]@{
     "diagnose-witness-system-start.py" = "13f38fa3f9d60da94edff7ebfd8e480a0d9357a8967f4b1ad9a8913784c2a9da"
     "freshness_witness.py" = "f441790914ce3d22e24d3ba78712bcac6cb2129f1b48beb27dcfaf53c56b15ca"
-    "install-witness-system-autostart.ps1" = "1d81ef0d0826ce4f5fcd6161e116cfa669cc5493016a3a7825a3ad8168d483e5"
+    "install-witness-system-autostart.ps1" = "6adf6e202e4075445d42d2053e2f05203a7b062b41a87f21de12da06307e0db9"
     "read-witness-audit.py" = "a6ac1fbfce9a1bceb0e379e856c3744e559c8b043fe5d5391e20a872e1f4faff"
-    "rollback-witness-system-autostart.ps1" = "8dd3f09ff5199d14b67522e9ab7bbd29cfaaab9b1767cbddb403ca40c4ad0b55"
+    "rollback-witness-system-autostart.ps1" = "b964a4e052fecaf551e3ff4e8c7f3f2f8c8d13c46c6830329fdd2c86abc6f86a"
     "runtime-source-manifest.json" = "301172759e6269bcd1b04d7aed04c9b4df78f32150d34dd1a4c5d0cd7be329d0"
-    "test-witness-system-autostart.ps1" = "9eaead65b6a4308b482810697fdb49d4b812a739e55c9a620d551dbbf657d09f"
-    "verify-witness-final-state.ps1" = "53e541505be8350bd634f5c0f0df326381c0ece6789305c09913458c91dbf5a7"
-    "verify-witness-system-restart.ps1" = "6831b37afda8003345c5838595752887b945f7c695c250e725a9ab3515bd31c1"
+    "test-witness-system-autostart.ps1" = "ca53b2127b31be87fea0d74ee405d7dc36354a33893b00a55bcf923a053dc0e2"
+    "verify-witness-final-state.ps1" = "62c62485374a272bad17eba9ca9469da4225e12ff00d3e215a6f35c19e62dbad"
+    "verify-witness-system-restart.ps1" = "deb30fe97c5f8886c89931714c967e1e74de279b0a91d9ec448595db6ad85d2d"
 }
 
 function Assert-Administrator {

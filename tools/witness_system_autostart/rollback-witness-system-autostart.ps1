@@ -102,6 +102,80 @@ function Wait-TaskNotRunning([int]$Seconds) {
     throw "witness task did not stop during rollback"
 }
 
+function Get-ProcessCreationTime([object]$Process) {
+    if ($Process.CreationDate -is [DateTime]) { return [DateTime]$Process.CreationDate }
+    return [Management.ManagementDateTimeConverter]::ToDateTime(
+        [string]$Process.CreationDate
+    )
+}
+
+function Assert-RestoredTaskListener([int]$ProcessId, [object]$Task) {
+    $action = @($Task.Actions)[0]
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId"
+    if ($null -eq $process -or
+        ([string]$process.CommandLine).IndexOf(
+            $witness, [StringComparison]::OrdinalIgnoreCase
+        ) -lt 0 -or
+        ([string]$process.CommandLine) -notmatch '(?i)(?:^|\s)serve(?:\s|$)') {
+        throw "restored witness listener command is invalid"
+    }
+    $actionPath = [IO.Path]::GetFullPath([string]$action.Execute)
+    $owner = $process
+    if ([IO.Path]::GetFullPath([string]$process.ExecutablePath) -cne $actionPath) {
+        $owner = Get-CimInstance Win32_Process `
+            -Filter "ProcessId=$([int]$process.ParentProcessId)"
+        if ($null -eq $owner -or
+            [IO.Path]::GetFullPath([string]$owner.ExecutablePath) -cne $actionPath -or
+            ([string]$owner.CommandLine).IndexOf(
+                $witness, [StringComparison]::OrdinalIgnoreCase
+            ) -lt 0) {
+            throw "restored witness process tree does not match the task action"
+        }
+    }
+    $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName
+    if ($Task.State.ToString() -cne "Running" -or
+        (Get-ProcessCreationTime $owner) -lt $taskInfo.LastRunTime.AddSeconds(-2)) {
+        throw "restored witness process is not bound to the task run"
+    }
+}
+
+function Assert-RuntimeMatchesManifest([string]$RuntimePath, [string]$ManifestPath) {
+    $value = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
+    $entries = @($value.files)
+    if ($entries.Count -eq 0) { throw "previous runtime manifest is empty" }
+    $runtimePrefix = [IO.Path]::GetFullPath($RuntimePath).TrimEnd('\') + '\'
+    $expectedPaths = @()
+    foreach ($entry in $entries) {
+        $relativePath = [string]$entry.relative_path
+        $target = [IO.Path]::GetFullPath((Join-Path $RuntimePath $relativePath.Replace('/', '\')))
+        if ([IO.Path]::IsPathRooted($relativePath) -or
+            $target.IndexOf($runtimePrefix, [StringComparison]::OrdinalIgnoreCase) -ne 0) {
+            throw "previous runtime manifest path escaped runtime: $relativePath"
+        }
+        $expectedHash = if ($entry.PSObject.Properties.Name -contains "sha256") {
+            [string]$entry.sha256
+        } else {
+            [string]$entry.runtime_sha256
+        }
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or
+            (Get-Sha256 $target) -cne $expectedHash) {
+            throw "previous runtime hash mismatch: $relativePath"
+        }
+        if ($entry.PSObject.Properties.Name -contains "size" -and
+            [int64](Get-Item -LiteralPath $target).Length -ne [int64]$entry.size) {
+            throw "previous runtime size mismatch: $relativePath"
+        }
+        $expectedPaths += $relativePath
+    }
+    $actualPaths = @(Get-ChildItem -LiteralPath $RuntimePath -Recurse -File | ForEach-Object {
+        ([IO.Path]::GetFullPath($_.FullName).Substring($runtimePrefix.Length)).Replace('\', '/')
+    })
+    if (@(Compare-Object -ReferenceObject $expectedPaths -DifferenceObject $actualPaths `
+        -CaseSensitive).Count) {
+        throw "previous runtime inventory differs from its protected manifest"
+    }
+}
+
 Assert-Administrator
 $mutex = [Threading.Mutex]::new($false, $mutexName)
 $mutexAcquired = $false
@@ -160,6 +234,37 @@ try {
         throw "rollback state identity is invalid"
     }
 
+    $runtimeBackup = Join-Path $transaction "runtime.previous"
+    $witnessBackup = Join-Path $transaction "freshness_witness.previous.py"
+    $manifestBackup = Join-Path $transaction "runtime-manifest.previous.json"
+    $taskBackup = Join-Path $transaction "task.previous.xml"
+    $aclBackup = Join-Path $transaction "acl.previous.json"
+    $runtimeAlreadyRestored = $false
+    if ([bool]$state.previous_runtime_existed -and
+        -not (Test-Path -LiteralPath $runtimeBackup -PathType Container)) {
+        if (-not (Test-Path -LiteralPath $runtime -PathType Container) -or
+            -not (Test-Path -LiteralPath $manifestBackup -PathType Leaf)) {
+            throw "previous runtime backup is missing and restored runtime cannot be verified"
+        }
+        Assert-RuntimeMatchesManifest $runtime $manifestBackup
+        $runtimeAlreadyRestored = $true
+    }
+    if ([bool]$state.previous_witness_existed -and
+        -not (Test-Path -LiteralPath $witnessBackup -PathType Leaf)) {
+        throw "previous witness backup is missing"
+    }
+    if ([bool]$state.previous_manifest_existed -and
+        -not (Test-Path -LiteralPath $manifestBackup -PathType Leaf)) {
+        throw "previous runtime manifest backup is missing"
+    }
+    if ([bool]$state.old_task_existed -and
+        -not (Test-Path -LiteralPath $taskBackup -PathType Leaf)) {
+        throw "previous task definition is missing"
+    }
+    if (-not (Test-Path -LiteralPath $aclBackup -PathType Leaf)) {
+        throw "previous ACL snapshot is missing"
+    }
+
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($null -ne $task) {
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -170,36 +275,28 @@ try {
         throw "listener exists without the recoverable witness task"
     }
 
-    if (Test-Path -LiteralPath $runtime -PathType Container) {
-        Remove-Item -LiteralPath $runtime -Recurse -Force
-    }
-    $runtimeBackup = Join-Path $transaction "runtime.previous"
     if ([bool]$state.previous_runtime_existed) {
-        if (-not (Test-Path -LiteralPath $runtimeBackup -PathType Container)) {
-            throw "previous runtime backup is missing"
+        if (-not $runtimeAlreadyRestored) {
+            if (Test-Path -LiteralPath $runtime -PathType Container) {
+                Remove-Item -LiteralPath $runtime -Recurse -Force
+            }
+            Move-Item -LiteralPath $runtimeBackup -Destination $runtime
         }
-        Move-Item -LiteralPath $runtimeBackup -Destination $runtime
+    } elseif (Test-Path -LiteralPath $runtime -PathType Container) {
+        Remove-Item -LiteralPath $runtime -Recurse -Force
     }
 
     if (Test-Path -LiteralPath $witness -PathType Leaf) {
         Remove-Item -LiteralPath $witness -Force
     }
-    $witnessBackup = Join-Path $transaction "freshness_witness.previous.py"
     if ([bool]$state.previous_witness_existed) {
-        if (-not (Test-Path -LiteralPath $witnessBackup -PathType Leaf)) {
-            throw "previous witness backup is missing"
-        }
         Copy-Item -LiteralPath $witnessBackup -Destination $witness
     }
 
     if (Test-Path -LiteralPath $manifest -PathType Leaf) {
         Remove-Item -LiteralPath $manifest -Force
     }
-    $manifestBackup = Join-Path $transaction "runtime-manifest.previous.json"
     if ([bool]$state.previous_manifest_existed) {
-        if (-not (Test-Path -LiteralPath $manifestBackup -PathType Leaf)) {
-            throw "previous runtime manifest backup is missing"
-        }
         Copy-Item -LiteralPath $manifestBackup -Destination $manifest
     }
     if (-not [bool]$state.service_stderr_existed -and
@@ -209,28 +306,14 @@ try {
 
     Restore-AclSnapshot (Join-Path $transaction "acl.previous.json")
 
-    $taskBackup = Join-Path $transaction "task.previous.xml"
     if ([bool]$state.old_task_existed) {
-        if (-not (Test-Path -LiteralPath $taskBackup -PathType Leaf)) {
-            throw "previous task definition is missing"
-        }
         Register-ScheduledTask -TaskName $taskName `
             -Xml (Get-Content -Raw -LiteralPath $taskBackup) -Force | Out-Null
         if ([bool]$state.old_task_was_running) {
             Start-ScheduledTask -TaskName $taskName
             $listeners = @(Wait-Listener $true 60)
             $restoredTask = Get-ScheduledTask -TaskName $taskName
-            $action = @($restoredTask.Actions)[0]
-            $process = Get-CimInstance Win32_Process `
-                -Filter "ProcessId=$([int]$listeners[0].OwningProcess)"
-            if ($null -eq $process -or
-                [IO.Path]::GetFullPath([string]$process.ExecutablePath) -cne
-                    [IO.Path]::GetFullPath([string]$action.Execute) -or
-                ([string]$process.CommandLine).IndexOf(
-                    $witness, [StringComparison]::OrdinalIgnoreCase
-                ) -lt 0) {
-                throw "restored witness listener identity is invalid"
-            }
+            Assert-RestoredTaskListener ([int]$listeners[0].OwningProcess) $restoredTask
         }
     }
 

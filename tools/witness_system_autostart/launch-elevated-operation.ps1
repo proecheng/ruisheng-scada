@@ -12,7 +12,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $runnerPath = Join-Path $PSScriptRoot "run-system-autostart-elevated.ps1"
-$expectedRunnerSha256 = "47c35b436c09ab41553b29dde4af6c30b9fcd1d634baad982144745172732912"
+$expectedRunnerSha256 = "131e2e9712deb5492754d3f4bd6971069da8859cdaa88b1c49dfb55d38fbfa9d"
 $sourceRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $argumentMap = [ordered]@{
     Operation = $Operation

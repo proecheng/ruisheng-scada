@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -255,3 +256,23 @@ def test_reviewed_scripts_are_versionable() -> None:
     )
     assert result.returncode == 1
     assert (TOOL_ROOT / "target" / "run-target-acceptance.ps1").is_file()
+
+
+def test_windows_powershell51_contracts() -> None:
+    acceptance = (TOOL_ROOT / "test-witness-system-autostart.ps1").read_text(encoding="utf-8")
+    rollback = (TOOL_ROOT / "rollback-witness-system-autostart.ps1").read_text(encoding="utf-8")
+    assert "SetEquals([string[]]$allowed)" in acceptance
+    assert "Assert-RuntimeMatchesManifest $runtime $manifestBackup" in rollback
+    assert "Assert-RestoredTaskListener" in rollback
+    if sys.platform != "win32":
+        pytest.skip("Windows PowerShell 5.1 is Windows-specific")
+    powershell = Path(os.environ["SYSTEMROOT"]) / ("System32/WindowsPowerShell/v1.0/powershell.exe")
+    command = (
+        "$h=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);"
+        "[void]$h.Add('a');[void]$h.Add('b');$allowed=@('a','b');"
+        "if(-not $h.SetEquals([string[]]$allowed)){exit 1}"
+    )
+    subprocess.run(
+        [str(powershell), "-NoProfile", "-NonInteractive", "-Command", command],
+        check=True,
+    )

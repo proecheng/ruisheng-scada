@@ -12,7 +12,7 @@ $testScript = Join-Path $PSScriptRoot "test-witness-system-autostart.ps1"
 $statusPath = Join-Path $PSScriptRoot "restart-verification.status.json"
 $expectedHighWaterSha256 = "134b160de987a102518105ca0feb32876c0b6f0d315f0dee8ca8d8d652cbe9db"
 $expectedWitnessSha256 = "f441790914ce3d22e24d3ba78712bcac6cb2129f1b48beb27dcfaf53c56b15ca"
-$expectedTestScriptSha256 = "9eaead65b6a4308b482810697fdb49d4b812a739e55c9a620d551dbbf657d09f"
+$expectedTestScriptSha256 = "ca53b2127b31be87fea0d74ee405d7dc36354a33893b00a55bcf923a053dc0e2"
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()

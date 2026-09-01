@@ -65,7 +65,7 @@ function Test-ProtectedAcl([string]$Path) {
         }
         [void]$fullControlSids.Add($sid)
     }
-    return $fullControlSids.SetEquals($allowed)
+    return $fullControlSids.SetEquals([string[]]$allowed)
 }
 
 try {

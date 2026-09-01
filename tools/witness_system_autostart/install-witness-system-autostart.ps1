@@ -49,9 +49,9 @@ $taskReplaced = $false
 $diagnosticTaskRegistered = $false
 $serviceStderrExisted = Test-Path -LiteralPath $serviceStderr -PathType Leaf
 $aclSnapshot = @()
-$expectedTestScriptSha256 = "9eaead65b6a4308b482810697fdb49d4b812a739e55c9a620d551dbbf657d09f"
+$expectedTestScriptSha256 = "ca53b2127b31be87fea0d74ee405d7dc36354a33893b00a55bcf923a053dc0e2"
 $expectedProbeSha256 = "13f38fa3f9d60da94edff7ebfd8e480a0d9357a8967f4b1ad9a8913784c2a9da"
-$expectedRollbackScriptSha256 = "8dd3f09ff5199d14b67522e9ab7bbd29cfaaab9b1767cbddb403ca40c4ad0b55"
+$expectedRollbackScriptSha256 = "b964a4e052fecaf551e3ff4e8c7f3f2f8c8d13c46c6830329fdd2c86abc6f86a"
 $expectedApprovedRuntimeManifestSha256 = "301172759e6269bcd1b04d7aed04c9b4df78f32150d34dd1a4c5d0cd7be329d0"
 
 function Get-Sha256([string]$Path) {
@@ -280,16 +280,36 @@ function Get-Listener {
         -State Listen -ErrorAction SilentlyContinue)
 }
 
-function Assert-ListenerProcess([int]$ProcessId, [string]$PythonPath, [string]$ScriptPath) {
+function Assert-ListenerProcess([int]$ProcessId, [string]$ActionPath, [string]$ScriptPath) {
     $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId"
     if ($null -eq $process) { throw "listener process is unavailable" }
-    if ([IO.Path]::GetFullPath([string]$process.ExecutablePath) -cne [IO.Path]::GetFullPath($PythonPath)) {
-        throw "listener executable does not match task action"
-    }
     $commandLine = [string]$process.CommandLine
     if ($commandLine.IndexOf($ScriptPath, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
         $commandLine -notmatch '(?i)(?:^|\s)serve(?:\s|$)') {
         throw "listener command line does not match witness action"
+    }
+    $processPath = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
+    $expectedActionPath = [IO.Path]::GetFullPath($ActionPath)
+    if ($processPath -ceq $expectedActionPath) { return }
+
+    $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$process.ParentProcessId)"
+    if ($null -eq $parent -or
+        [IO.Path]::GetFullPath([string]$parent.ExecutablePath) -cne $expectedActionPath -or
+        ([string]$parent.CommandLine).IndexOf(
+            $ScriptPath, [StringComparison]::OrdinalIgnoreCase
+        ) -lt 0) {
+        throw "listener process tree does not match task action"
+    }
+    $task = Get-ScheduledTask -TaskName $taskName
+    $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName
+    $parentCreated = if ($parent.CreationDate -is [DateTime]) {
+        [DateTime]$parent.CreationDate
+    } else {
+        [Management.ManagementDateTimeConverter]::ToDateTime([string]$parent.CreationDate)
+    }
+    if ($task.State.ToString() -cne "Running" -or
+        $parentCreated -lt $taskInfo.LastRunTime.AddSeconds(-2)) {
+        throw "listener process tree is not bound to the restored task run"
     }
 }
 
