@@ -4,7 +4,7 @@ param(
   [ValidateSet("api", "gw", "web")]
   [string]$Service,
   [string]$Target = "lenovo@100.109.90.21",
-  [string]$CandidateRoot = "C:\Ruisheng\candidates\deploy-20260821.1",
+  [string]$CandidateRoot = "",
   [string]$SiteRoot = "C:\Ruisheng\candidates\site",
   [string]$RemoteHotfixRoot = "C:\Ruisheng\hotfix",
   [string]$Platform = "linux/amd64",
@@ -366,11 +366,64 @@ function Get-RemotePreflight {
   $template = @'
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$CandidateRoot = __CANDIDATE_ROOT__
+$RequestedCandidateRoot = __CANDIDATE_ROOT__
 $SiteRoot = __SITE_ROOT__
 $Service = __SERVICE__
 $EnvironmentKey = __ENVIRONMENT_KEY__
 
+$StateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
+$ActiveReleasePath = Join-Path $StateDirectory "active-release.json"
+function Assert-RestrictedFile {
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "restricted_file_missing" }
+  $item = Get-Item -LiteralPath $Path -Force
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "restricted_file_reparse_point"
+  }
+  $allowed = @{}
+  foreach ($sid in @(
+      [Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
+      "S-1-5-18", "S-1-5-32-544"
+  ) | Select-Object -Unique) { $allowed[$sid] = $false }
+  $acl = Get-Acl -LiteralPath $Path
+  $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  if (-not $allowed.ContainsKey($owner)) { throw "restricted_acl_owner_invalid" }
+  foreach ($rule in @($acl.Access)) {
+    $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        -not $allowed.ContainsKey($sid) -or
+        ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+          [Security.AccessControl.FileSystemRights]::FullControl) {
+      throw "restricted_acl_invalid"
+    }
+    $allowed[$sid] = $true
+  }
+  foreach ($sid in @($allowed.Keys)) { if (-not $allowed[$sid]) { throw "restricted_acl_invalid" } }
+}
+Assert-RestrictedFile $ActiveReleasePath
+if (-not (Test-Path -LiteralPath $ActiveReleasePath -PathType Leaf)) {
+  throw "active_release_pointer_missing"
+}
+try { $active = Get-Content -LiteralPath $ActiveReleasePath -Raw -Encoding UTF8 | ConvertFrom-Json }
+catch { throw "active_release_pointer_invalid" }
+$activeKeys = @(
+  "schema_version", "candidate_id", "logical_identity", "source_commit",
+  "candidate_root", "site_root", "committed_at", "operation_id"
+)
+$actualActiveKeys = @($active.PSObject.Properties.Name)
+if (
+  $actualActiveKeys.Count -ne $activeKeys.Count -or
+  @($activeKeys | Where-Object { $_ -notin $actualActiveKeys }).Count -ne 0 -or
+  [int]$active.schema_version -ne 1 -or
+  [string]$active.candidate_id -notmatch '^[a-z0-9][a-z0-9._-]{0,62}$' -or
+  [string]$active.logical_identity -notmatch '^sha256:[0-9a-f]{64}$' -or
+  [string]$active.source_commit -notmatch '^[0-9a-f]{40}$' -or
+  [string]$active.candidate_root -notmatch '^[A-Za-z]:\\[^\r\n]*$' -or
+  [string]$active.site_root -cne $SiteRoot -or
+  ($RequestedCandidateRoot -and [string]$active.candidate_root -cne $RequestedCandidateRoot) -or
+  (Split-Path -Leaf ([string]$active.candidate_root)) -cne [string]$active.candidate_id
+) { throw "active_release_pointer_invalid" }
+$CandidateRoot = [string]$active.candidate_root
 $ComposeFile = Join-Path $CandidateRoot "docker-compose.prod.yml"
 $OverrideFile = Join-Path $CandidateRoot "site-network.override.yml"
 $CandidateManifest = Join-Path $CandidateRoot "MANIFEST.json"
@@ -382,8 +435,12 @@ foreach ($path in @($ComposeFile, $OverrideFile, $CandidateManifest, $EnvFile)) 
 }
 
 $manifest = Get-Content -LiteralPath $CandidateManifest -Raw | ConvertFrom-Json
-if ([string]$manifest.source_commit -notmatch '^[0-9a-f]{40}$') {
-  throw "Candidate manifest has an invalid source commit."
+if (
+  [string]$manifest.candidate_id -cne [string]$active.candidate_id -or
+  [string]$manifest.logical_identity -cne [string]$active.logical_identity -or
+  [string]$manifest.source_commit -cne [string]$active.source_commit
+) {
+  throw "active_release_identity_drift"
 }
 $targetPlatform = "$($manifest.target_os)/$($manifest.target_architecture)"
 
@@ -424,6 +481,7 @@ if ($dockerPlatform -eq "linux/x86_64") { $dockerPlatform = "linux/amd64" }
   target_platform = $targetPlatform
   docker_platform = $dockerPlatform
   current_image   = $currentImage
+  active_identity = [string]$active.logical_identity
 } | ConvertTo-Json -Compress
 '@
   $remoteScript = $template
@@ -632,7 +690,7 @@ function Invoke-RemoteDeployment {
   $deploymentTemplate = @'
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$CandidateRoot = __CANDIDATE_ROOT__
+$RequestedCandidateRoot = __CANDIDATE_ROOT__
 $SiteRoot = __SITE_ROOT__
 $RemoteDirectory = __REMOTE_DIRECTORY__
 $Service = __SERVICE__
@@ -644,7 +702,63 @@ $ArchiveName = __ARCHIVE_NAME__
 $ManifestName = __MANIFEST_NAME__
 $ContainerName = __CONTAINER_NAME__
 $HealthUrl = __HEALTH_URL__
+$ExpectedActiveIdentity = __EXPECTED_ACTIVE_IDENTITY__
 
+$maintenanceStateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
+$activeReleasePath = Join-Path $maintenanceStateDirectory "active-release.json"
+function Assert-RestrictedFile {
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "restricted_file_missing" }
+  $item = Get-Item -LiteralPath $Path -Force
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "restricted_file_reparse_point"
+  }
+  $allowed = @{}
+  foreach ($sid in @(
+      [Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
+      "S-1-5-18", "S-1-5-32-544"
+  ) | Select-Object -Unique) { $allowed[$sid] = $false }
+  $acl = Get-Acl -LiteralPath $Path
+  $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  if (-not $allowed.ContainsKey($owner)) { throw "restricted_acl_owner_invalid" }
+  foreach ($rule in @($acl.Access)) {
+    $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        -not $allowed.ContainsKey($sid) -or
+        ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+          [Security.AccessControl.FileSystemRights]::FullControl) {
+      throw "restricted_acl_invalid"
+    }
+    $allowed[$sid] = $true
+  }
+  foreach ($sid in @($allowed.Keys)) { if (-not $allowed[$sid]) { throw "restricted_acl_invalid" } }
+}
+Assert-RestrictedFile $activeReleasePath
+try { $activeRelease = Get-Content -LiteralPath $activeReleasePath -Raw -Encoding UTF8 | ConvertFrom-Json }
+catch { throw "active_release_pointer_invalid" }
+$activeKeys = @(
+  "schema_version", "candidate_id", "logical_identity", "source_commit",
+  "candidate_root", "site_root", "committed_at", "operation_id"
+)
+$actualActiveKeys = @($activeRelease.PSObject.Properties.Name)
+if (
+  $actualActiveKeys.Count -ne $activeKeys.Count -or
+  @($activeKeys | Where-Object { $_ -notin $actualActiveKeys }).Count -ne 0 -or
+  [int]$activeRelease.schema_version -ne 1 -or
+  [string]$activeRelease.logical_identity -cne $ExpectedActiveIdentity -or
+  [string]$activeRelease.candidate_root -notmatch '^[A-Za-z]:\\[^\r\n]*$' -or
+  ($RequestedCandidateRoot -and [string]$activeRelease.candidate_root -cne $RequestedCandidateRoot)
+) { throw "active_release_identity_drift" }
+$CandidateRoot = [string]$activeRelease.candidate_root
+$candidateManifestPath = Join-Path $CandidateRoot "MANIFEST.json"
+Assert-RestrictedFile $candidateManifestPath
+try { $candidateManifest = Get-Content -LiteralPath $candidateManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+catch { throw "active_release_manifest_invalid" }
+if (
+  [string]$candidateManifest.candidate_id -cne [string]$activeRelease.candidate_id -or
+  [string]$candidateManifest.logical_identity -cne [string]$activeRelease.logical_identity -or
+  [string]$candidateManifest.source_commit -cne [string]$activeRelease.source_commit
+) { throw "active_release_identity_drift" }
 $ComposeFile = Join-Path $CandidateRoot "docker-compose.prod.yml"
 $OverrideFile = Join-Path $CandidateRoot "site-network.override.yml"
 $EnvFile = Join-Path $SiteRoot ".env.prod"
@@ -745,12 +859,24 @@ function Test-ServiceReady {
   if (-not [bool]$state.Running) { return $false }
   if ($null -ne $state.Health -and [string]$state.Health.Status -ne "healthy") { return $false }
   try {
-    if ($Service -eq "web") {
+    if ($Service -eq "api") {
+      try { Invoke-Docker -Arguments @("exec", $ContainerName, "python", "-m", "ruisheng_api.healthcheck") }
+      catch {
+        Invoke-Docker -Arguments @(
+          "exec", $ContainerName, "python", "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/meta/version',timeout=5).read(1)"
+        )
+      }
+    }
+    elseif ($Service -eq "web") {
       Invoke-Docker -Arguments @("exec", $ContainerName, "wget", "-q", "-O", "/dev/null", $HealthUrl)
     }
     else {
-      $pythonProbe = "import urllib.request; urllib.request.urlopen('$HealthUrl', timeout=5).read(1)"
-      Invoke-Docker -Arguments @("exec", $ContainerName, "python", "-c", $pythonProbe)
+      try { Invoke-Docker -Arguments @("exec", $ContainerName, "python", "-m", "ruisheng_gw.healthcheck") }
+      catch {
+        $pythonProbe = "import urllib.request,urllib.error; u='$HealthUrl'; ok=False; exec(`"try:\n r=urllib.request.urlopen(u,timeout=5); ok=r.status<500\nexcept urllib.error.HTTPError as e:\n ok=e.code in (401,403)`"); raise SystemExit(0 if ok else 1)"
+        Invoke-Docker -Arguments @("exec", $ContainerName, "python", "-c", $pythonProbe)
+      }
     }
     return $true
   }
@@ -773,7 +899,6 @@ function Wait-ServiceReady {
 foreach ($path in @($ComposeFile, $OverrideFile, $EnvFile, $ArchivePath, $ManifestPath)) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required file is missing: $path" }
 }
-$maintenanceStateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
 $sharedLockPath = Join-Path $maintenanceStateDirectory ".remote-maintenance.lock"
 $legacyLockPath = Join-Path $SiteRoot ".remote-hotfix.lock"
 $hotfixOperationId = __OPERATION_ID__
@@ -1054,6 +1179,7 @@ finally {
     "__MANIFEST_NAME__"    = [IO.Path]::GetFileName($Artifact.ManifestPath)
     "__CONTAINER_NAME__"   = [string]$Configuration.container_name
     "__HEALTH_URL__"       = [string]$Configuration.health_url
+    "__EXPECTED_ACTIVE_IDENTITY__" = [string]$preflight.active_identity
   }
   foreach ($replacement in $replacements.GetEnumerator()) {
     $remoteScript = $remoteScript.Replace(
@@ -1069,10 +1195,13 @@ if ($Target -notmatch '^[A-Za-z0-9._-]+@[A-Za-z0-9._:-]+$') {
 if ($Platform -notmatch '^linux/(amd64|arm64)$') {
   throw "Platform must be linux/amd64 or linux/arm64."
 }
-foreach ($remotePath in @($CandidateRoot, $SiteRoot, $RemoteHotfixRoot)) {
+foreach ($remotePath in @($SiteRoot, $RemoteHotfixRoot)) {
   if ($remotePath -notmatch '^[A-Za-z]:\\[^\r\n]*$') {
     throw "Remote paths must be absolute Windows paths."
   }
+}
+if ($CandidateRoot -and $CandidateRoot -notmatch '^[A-Za-z]:\\[^\r\n]*$') {
+  throw "Remote paths must be absolute Windows paths."
 }
 foreach ($command in @("git.exe", "docker.exe", "ssh.exe", "scp.exe")) {
   Assert-Command -Name $command

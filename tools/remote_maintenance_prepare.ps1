@@ -58,7 +58,12 @@ function Set-RestrictedDirectory {
     )
     [void]$directoryAcl.AddAccessRule($rule)
   }
-  Set-Acl -LiteralPath $Path -AclObject $directoryAcl
+  if ($null -ne [IO.Directory].GetMethod(
+      "SetAccessControl", [type[]]@([string], [Security.AccessControl.DirectorySecurity])
+  )) {
+    [IO.Directory]::SetAccessControl($Path, $directoryAcl)
+  }
+  else { Set-Acl -LiteralPath $Path -AclObject $directoryAcl }
 
   if ($CreateAuditMutex) {
     $mutexPath = Join-Path $Path ".remote-maintenance-audit.lock"
@@ -95,7 +100,17 @@ function Set-RestrictedDirectory {
       )
       [void]$itemAcl.AddAccessRule($rule)
     }
-    Set-Acl -LiteralPath $item.FullName -AclObject $itemAcl
+    if ($item.PSIsContainer -and $null -ne [IO.Directory].GetMethod(
+        "SetAccessControl", [type[]]@([string], [Security.AccessControl.DirectorySecurity])
+    )) {
+      [IO.Directory]::SetAccessControl($item.FullName, $itemAcl)
+    }
+    elseif (-not $item.PSIsContainer -and $null -ne [IO.File].GetMethod(
+        "SetAccessControl", [type[]]@([string], [Security.AccessControl.FileSecurity])
+    )) {
+      [IO.File]::SetAccessControl($item.FullName, $itemAcl)
+    }
+    else { Set-Acl -LiteralPath $item.FullName -AclObject $itemAcl }
   }
 }
 
@@ -202,7 +217,12 @@ function Set-RestrictedDirectory {
     )
     [void]$directoryAcl.AddAccessRule($rule)
   }
-  Set-Acl -LiteralPath $Path -AclObject $directoryAcl
+  if ($null -ne [IO.Directory].GetMethod(
+      "SetAccessControl", [type[]]@([string], [Security.AccessControl.DirectorySecurity])
+  )) {
+    [IO.Directory]::SetAccessControl($Path, $directoryAcl)
+  }
+  else { Set-Acl -LiteralPath $Path -AclObject $directoryAcl }
 
   if ($CreateAuditMutex) {
     $mutexPath = Join-Path $Path ".remote-maintenance-audit.lock"
@@ -239,7 +259,17 @@ function Set-RestrictedDirectory {
       )
       [void]$itemAcl.AddAccessRule($rule)
     }
-    Set-Acl -LiteralPath $item.FullName -AclObject $itemAcl
+    if ($item.PSIsContainer -and $null -ne [IO.Directory].GetMethod(
+        "SetAccessControl", [type[]]@([string], [Security.AccessControl.DirectorySecurity])
+    )) {
+      [IO.Directory]::SetAccessControl($item.FullName, $itemAcl)
+    }
+    elseif (-not $item.PSIsContainer -and $null -ne [IO.File].GetMethod(
+        "SetAccessControl", [type[]]@([string], [Security.AccessControl.FileSecurity])
+    )) {
+      [IO.File]::SetAccessControl($item.FullName, $itemAcl)
+    }
+    else { Set-Acl -LiteralPath $item.FullName -AclObject $itemAcl }
   }
 }
 

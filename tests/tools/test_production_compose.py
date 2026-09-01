@@ -491,15 +491,15 @@ def test_verifiers_preserve_integrity_before_load_and_authenticity_block() -> No
             "sudo /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash "
             "/usr/local/lib/ruisheng/verify-publisher.sh . ../site/.env.prod"
         )
-        == 2
+        == 1
     )
+    assert "remote_full_upgrade.ps1" in guide
     assert "verify-publisher.ps1 . ..\\site\\.env.prod" in guide
-    assert "verify-publisher.ps1 . $Site" in guide
+    assert "-Action Apply" in guide
     assert "不要从候选目录直接启动校验器" in guide
     assert "exit 2" in bash
     assert "exit 2" in powershell
-    assert "sorted(keys - seen)" in guide
-    assert "Where-Object { -not $Seen.ContainsKey($_) }" in guide
+    assert "只原子替换 `TARGET_PLATFORM` 和五个 `*_IMAGE`" in guide
     for line in guide.splitlines():
         if line.startswith("docker compose"):
             assert "--env-file" in line

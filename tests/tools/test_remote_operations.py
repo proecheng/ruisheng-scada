@@ -155,6 +155,7 @@ $path = {_ps_literal(path)}
 New-Item -ItemType Directory -Path $path -Force | Out-Null
 $security = New-Object Security.AccessControl.DirectorySecurity
 $security.SetAccessRuleProtection($true, $false)
+$security.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
 $sidValues = @(
   [Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
   'S-1-5-18',
@@ -197,6 +198,23 @@ def _remote_layout(tmp_path: Path) -> dict[str, Path]:
     manifest = _candidate_manifest()
     (candidate / "MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
     (site / ".env.prod").write_text("SECRET_FIXTURE=never-return\n", encoding="utf-8")
+    state = site / ".remote-maintenance-state"
+    _set_restricted_directory(state)
+    (state / "active-release.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "candidate_id": candidate.name,
+                "logical_identity": manifest["logical_identity"],
+                "source_commit": manifest["source_commit"],
+                "candidate_root": str(candidate),
+                "site_root": str(site),
+                "committed_at": "2026-09-01T00:00:00+00:00",
+                "operation_id": "00000000-0000-4000-8000-000000000099",
+            }
+        ),
+        encoding="utf-8",
+    )
     return {"candidate": candidate, "site": site, "audit": audit}
 
 
@@ -339,6 +357,9 @@ def _render_remote_script(
     }
     for key, value in replacements.items():
         rendered = rendered.replace(key, value)
+    rendered = rendered.replace(
+        '$CandidateRoot = ""', f"$CandidateRoot = {_ps_literal(layout['candidate'])}", 1
+    )
     if scenario:
         rendered = rendered.replace(
             "\n$identity = Get-RemoteIdentity\n$posture = Get-SshPosture",
@@ -881,7 +902,11 @@ def test_maintenance_status_and_dry_run_make_no_target_writes(tmp_path: Path) ->
     assert len(status_execs) == 3
     dry_run_execs = [command for command in dry_run_commands if "\texec\t" in f"\t{command}\t"]
     assert len(dry_run_execs) == 3
-    assert not (layout["site"] / ".remote-maintenance-state").exists()
+    assert sorted(
+        path.name
+        for path in (layout["site"] / ".remote-maintenance-state").iterdir()
+        if path.is_file()
+    ) == ["active-release.json"]
     assert not layout["audit"].exists()
 
 
@@ -1035,7 +1060,11 @@ def test_maintenance_password_auth_blocks_before_docker_or_state(tmp_path: Path)
     assert result["status"] == "rejected"
     assert result["error_code"] == "ssh_not_key_only"
     assert commands == []
-    assert not (layout["site"] / ".remote-maintenance-state").exists()
+    assert sorted(
+        path.name
+        for path in (layout["site"] / ".remote-maintenance-state").iterdir()
+        if path.is_file()
+    ) == ["active-release.json"]
     assert not layout["audit"].exists()
 
 
@@ -1047,7 +1076,11 @@ def test_maintenance_prepare_blocks_password_auth_then_provisions_restricted_acl
 
     assert blocked.returncode != 0
     assert "ssh_not_key_only" in blocked.stderr
-    assert not (layout["site"] / ".remote-maintenance-state").exists()
+    assert sorted(
+        path.name
+        for path in (layout["site"] / ".remote-maintenance-state").iterdir()
+        if path.is_file()
+    ) == ["active-release.json"]
     assert not layout["audit"].exists()
 
     prepared = _run_prepare_remote_template(tmp_path, layout, password_auth="no")
@@ -1072,7 +1105,21 @@ def test_maintenance_prepare_blocks_password_auth_then_provisions_restricted_acl
 
 def test_maintenance_rejects_unrestricted_state_without_docker(tmp_path: Path) -> None:
     layout = _remote_layout(tmp_path)
-    (layout["site"] / ".remote-maintenance-state").mkdir()
+    state = layout["site"] / ".remote-maintenance-state"
+    acl_script = f"""
+$path = {_ps_literal(state)}
+& icacls.exe $path /inheritance:e | Out-Null
+if ($LASTEXITCODE -ne 0) {{ throw 'failed to enable fixture ACL inheritance' }}
+"""
+    completed = subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", acl_script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_powershell_env(),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
     layout["audit"].mkdir()
     (layout["audit"] / ".remote-maintenance-audit.lock").write_text("", encoding="utf-8")
 
@@ -1084,7 +1131,10 @@ def test_maintenance_rejects_unrestricted_state_without_docker(tmp_path: Path) -
     )
 
     assert result["status"] == "rejected"
-    assert result["error_code"] == "restricted_acl_inheritance_enabled"
+    assert result["error_code"] in {
+        "restricted_acl_inheritance_enabled",
+        "restricted_acl_invalid",
+    }
     assert commands == []
 
 

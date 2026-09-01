@@ -93,6 +93,59 @@ dry-run 不创建远端锁、状态或审计记录；返回的 `snapshot_before`
 
 目标机 JSONL 审计与本机 `%LOCALAPPDATA%\Ruisheng\audit\remote-maintenance.jsonl` 镜像通过操作 ID 和审计 ID 关联，并使用前序哈希检测意外编辑。它们不提供对恶意管理员的防篡改保证。
 
+## 签名全量远程升级
+
+全量升级使用闭集入口 `tools\remote_full_upgrade.ps1`，不再远程执行人工 Compose 命令。先设置目标与站点根：
+
+```powershell
+$Target = "operator@100.x.y.z"
+$SiteRoot = "C:\Ruisheng\candidates\site-deploy-20260831.1"
+```
+
+如果目标机是首次接入受控升级且还没有 `active-release.json`，必须在 Plan 前对当前正在运行的签名候选执行一次显式初始化，因为 Plan 需要读取活动指针。初始化不扫描目录猜测版本、不上传文件，也不启停或重建服务；它在双锁内验签并交叉核对正式环境六字段、Compose、运行容器、平台、数据库 head 和网络边界，只在全部一致后写入活动指针和审计。相同操作和候选可补写中断的审计；不同操作或候选会拒绝，不能用它改写版本：
+
+```powershell
+$CurrentCandidateRoot = "C:\Ruisheng\candidates\deploy-20260831.1"
+$InitializationOperation = [Guid]::NewGuid().ToString("D")
+
+.\tools\remote_full_upgrade.ps1 -Action Initialize -Target $Target `
+  -SiteRoot $SiteRoot -CurrentCandidateRoot $CurrentCandidateRoot `
+  -OperationId $InitializationOperation `
+  -Reason "approved active release initialization" -Approved
+```
+
+活动指针存在后，生成升级操作 ID 并执行只读 Plan；Plan 不上传、不加载镜像、不获取锁、不写目标状态：
+
+```powershell
+$Candidate = "C:\ProtectedRelease\deploy-YYYYMMDD.N"
+$Operation = [Guid]::NewGuid().ToString("D")
+$Reason = "approved signed full release upgrade"
+
+.\tools\remote_full_upgrade.ps1 -Action Plan -Target $Target `
+  -CandidatePath $Candidate -SiteRoot $SiteRoot -OperationId $Operation -DryRun
+```
+
+首版只允许候选 Alembic head 与目标数据库 head 完全一致。Apply 前必须核对活动版本指针、候选逻辑身份、平台、资源与锁，并针对同一操作 ID、候选和原因取得当次批准：
+
+```powershell
+.\tools\remote_full_upgrade.ps1 -Action Apply -Target $Target `
+  -CandidatePath $Candidate -SiteRoot $SiteRoot -OperationId $Operation `
+  -Reason $Reason -Approved
+.\tools\remote_full_upgrade.ps1 -Action Status -Target $Target `
+  -SiteRoot $SiteRoot -OperationId $Operation
+```
+
+目标机固定 verifier 返回退出码 `2`、publisher `VERIFIED` 和 `B-04 remains BLOCKED` 是预期结果：它只证明签名与完整包通过，网络边界仍由 updater 独立检查，B-04 现场验收没有因此解除。切换前会生成数据库逻辑备份、角色备份和 SHA-256 回执；只修改六个发布字段，其他站点配置逐字保留。成功时最后提交受保护的 `active-release.json`，其候选 ID、逻辑身份、源码提交、候选根、站点根和操作 ID 是后续维护与热修的唯一版本来源。
+
+失败时状态机持锁恢复旧环境和旧服务；它不执行 `down`、不删卷，也不把镜像恢复称为数据库恢复。中断或锁丢失返回 `uncertain`，此时保留现场并使用相同操作 ID、完全相同的原因和新的当次批准执行 Recover：
+
+```powershell
+.\tools\remote_full_upgrade.ps1 -Action Recover -Target $Target `
+  -SiteRoot $SiteRoot -OperationId $Operation -Reason $Reason -Approved
+```
+
+`recovery_failed` 时不得手工改指针或删除 journal、候选、备份、锁和审计。该工具不会定时检测更新或自动拉取，也不替代 B-04、B-07、B-08 的现场验收。
+
 ## 当前门禁
 
 此工具不提供发布签名、站点审批、管理员交接、串口真机参数或备份恢复验收。因此当前部署的正式生产结论仍是 `BLOCKED`；不得把调试热修当作生产放行证据。

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import signal
 import sys
 from collections.abc import Callable, Coroutine
@@ -30,6 +31,15 @@ PollerFactory = Callable[[], Coroutine[Any, Any, None]]
 REQUIRED_SHARED_SCHEMA_VERSION: int = 20260415
 EXPECTED_ALEMBIC_HEAD: str = "0012_alarm_notification_runtime"
 _PEER_HOST_PORT_LEN = 2
+
+
+def _remove_socket(path: str) -> None:
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(path)
+
+
+def _restrict_socket(path: str) -> None:
+    os.chmod(path, 0o600)
 
 
 def check_shared_schema_version(required: int = REQUIRED_SHARED_SCHEMA_VERSION) -> None:
@@ -69,7 +79,11 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
 
     from ruisheng_gw.domain.registry import Registry  # noqa: PLC0415
-    from ruisheng_gw.health import HealthState, create_health_app  # noqa: PLC0415
+    from ruisheng_gw.health import (  # noqa: PLC0415
+        HealthState,
+        create_health_app,
+        create_internal_health_app,
+    )
     from ruisheng_gw.ingest import FrameIngestor  # noqa: PLC0415
     from ruisheng_gw.logging_setup import get_logger  # noqa: PLC0415
     from ruisheng_gw.persistence.batch_writer import BatchWriter  # noqa: PLC0415
@@ -101,6 +115,13 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     health_site = web.TCPSite(runner, config.health_host, config.health_port)
     await health_site.start()
     log.info("health endpoint started", port=config.health_port)
+    internal_socket = os.environ.get("GW_INTERNAL_HEALTH_SOCKET", "/tmp/ruisheng-gw-health.sock")
+    await asyncio.to_thread(_remove_socket, internal_socket)
+    internal_runner = web.AppRunner(create_internal_health_app(health_state))
+    await internal_runner.setup()
+    internal_site = web.UnixSite(internal_runner, internal_socket)
+    await internal_site.start()
+    await asyncio.to_thread(_restrict_socket, internal_socket)
 
     # 1. Engine + alembic check
     engine = create_async_engine(config.database_url)
@@ -418,6 +439,8 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await asyncio.wait_for(batch_task, timeout=5.0)
         await runner.cleanup()
+        await internal_runner.cleanup()
+        await asyncio.to_thread(_remove_socket, internal_socket)
         await redis.aclose()  # type: ignore[attr-defined]
         await engine.dispose()
         # suppress unused-var warnings from type checkers

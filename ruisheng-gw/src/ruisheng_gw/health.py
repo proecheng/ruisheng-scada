@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network, ip_address, ip_network
@@ -49,6 +51,21 @@ class HealthState:
             and self._batch_ok
             and self._outbox_consecutive_failures < OUTBOX_READINESS_FAILURE_THRESHOLD
         )
+
+    def internal_snapshot(self) -> dict[str, object]:
+        return {
+            "status": "ready" if self.is_ready() else "not_ready",
+            "database": "ready" if self._db_ok else "failed",
+            "redis": "ready" if self._redis_ok else "failed",
+            "batch": "ready" if self._batch_ok else "failed",
+            "outbox": (
+                "ready"
+                if self._outbox_consecutive_failures < OUTBOX_READINESS_FAILURE_THRESHOLD
+                else "failed"
+            ),
+            "pid": os.getpid(),
+            "observed_at": time.time(),
+        }
 
     def set_outbox_pending(self, count: int) -> None:
         self._outbox_pending = count
@@ -126,6 +143,12 @@ async def _ready_handler(request: web.Request) -> web.Response:
     return web.json_response({"ready": False}, status=503)
 
 
+async def _internal_ready_handler(request: web.Request) -> web.Response:
+    state = request.app[HEALTH_STATE_KEY]
+    snapshot = state.internal_snapshot()
+    return web.json_response(snapshot, status=200 if snapshot["status"] == "ready" else 503)
+
+
 async def _metrics_handler(request: web.Request) -> web.Response:
     state = request.app[HEALTH_STATE_KEY]
     body = (
@@ -160,4 +183,11 @@ def create_health_app(
     app.router.add_get("/health", _health_handler)
     app.router.add_get("/ready", _ready_handler)
     app.router.add_get("/metrics", _metrics_handler)
+    return app
+
+
+def create_internal_health_app(state: HealthState) -> web.Application:
+    app = web.Application()
+    app[HEALTH_STATE_KEY] = state
+    app.router.add_get("/ready", _internal_ready_handler)
     return app

@@ -6,7 +6,7 @@ param(
   [string]$Reason = "",
   [string]$OperationId = "",
   [string]$Target = "lenovo@100.109.90.21",
-  [string]$CandidateRoot = "C:\Ruisheng\candidates\deploy-20260821.1",
+  [string]$CandidateRoot = "",
   [string]$SiteRoot = "C:\Ruisheng\candidates\site",
   [ValidateRange(120, 3600)]
   [int]$LeaseSeconds = 900,
@@ -247,7 +247,7 @@ function Write-OperatorAudit {
 if ($Target -notmatch '^[A-Za-z0-9._-]+@[A-Za-z0-9._:-]+$') {
   throw "Target must use the user@host form without whitespace."
 }
-Assert-RemotePath -Path $CandidateRoot
+if ($CandidateRoot) { Assert-RemotePath -Path $CandidateRoot }
 Assert-RemotePath -Path $SiteRoot
 
 $isLifecycle = $Action -ne "Status"
@@ -283,7 +283,8 @@ $Action = __ACTION__
 $Reason = __REASON__
 $OperationId = __OPERATION_ID__
 $RequestedTarget = __TARGET__
-$CandidateRoot = __CANDIDATE_ROOT__
+$RequestedCandidateRoot = __CANDIDATE_ROOT__
+$CandidateRoot = ""
 $SiteRoot = __SITE_ROOT__
 $LeaseSeconds = __LEASE_SECONDS__
 $DryRun = __DRY_RUN__
@@ -293,15 +294,10 @@ $script:AuditMaxLineBytes = 64 * 1024
 $script:AuditMaxRecords = 50000
 $script:TargetAuditSnapshot = $null
 
-$ComposeFile = Join-Path $CandidateRoot "docker-compose.prod.yml"
-$OverrideFile = Join-Path $CandidateRoot "site-network.override.yml"
 $EnvFile = Join-Path $SiteRoot ".env.prod"
-$ManifestFile = Join-Path $CandidateRoot "MANIFEST.json"
-$SourceComposeFile = $ComposeFile
-$SourceOverrideFile = $OverrideFile
 $SourceEnvFile = $EnvFile
-$SourceManifestFile = $ManifestFile
 $StateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
+$ActiveReleasePath = Join-Path $StateDirectory "active-release.json"
 $SharedLockPath = Join-Path $StateDirectory ".remote-maintenance.lock"
 $LegacyLockPath = Join-Path $SiteRoot ".remote-hotfix.lock"
 $AuditDirectory = "C:\Ruisheng\audit"
@@ -318,9 +314,6 @@ $ContainerNames = [ordered]@{
   api      = "ruisheng-api"
   web      = "ruisheng-web"
 }
-$composeBase = @(
-  "compose", "-f", $ComposeFile, "-f", $OverrideFile, "--env-file", $EnvFile
-)
 $ProcessStartedAt = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime().ToString("o")
 $AcquiredLocks = New-Object System.Collections.ArrayList
 $ReclaimedLocks = New-Object System.Collections.ArrayList
@@ -597,7 +590,7 @@ function ConvertTo-ValidatedLockRecord {
       [int]$Record.schema_version -ne 1 -or
       [string]$Record.lock_name -ne $ExpectedName -or
       $operationId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$' -or
-      $action -notmatch '^(StopApp|StartApp|RestartApp|hotfix-(api|gw|web)|maintenance-security-prepare)$' -or
+      $action -notmatch '^(StopApp|StartApp|RestartApp|hotfix-(api|gw|web)|maintenance-security-prepare|full-upgrade)$' -or
       $pidValue -le 0 -or
       $target -notmatch '^[A-Za-z0-9._-]{1,255}$' -or
       $expires -le $acquired -or
@@ -863,6 +856,61 @@ function Assert-CandidateManifestSchema {
   foreach ($image in @($Manifest.images)) {
     if (-not (Test-ExactJsonObjectKeys -Value $image -ExpectedKeys $imageKeys)) {
       throw "manifest_schema_invalid"
+    }
+  }
+}
+
+function Resolve-ActiveRelease {
+  Assert-RestrictedFile -Path $ActiveReleasePath
+  try {
+    $active = Get-Content -LiteralPath $ActiveReleasePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  }
+  catch { throw "active_release_pointer_invalid" }
+  $keys = @(
+    "schema_version", "candidate_id", "logical_identity", "source_commit",
+    "candidate_root", "site_root", "committed_at", "operation_id"
+  )
+  if (
+    -not (Test-ExactJsonObjectKeys -Value $active -ExpectedKeys $keys) -or
+    $active.schema_version -is [bool] -or [int64]$active.schema_version -ne 1 -or
+    $active.candidate_id -isnot [string] -or
+    [string]$active.candidate_id -notmatch '^[a-z0-9][a-z0-9._-]{0,62}$' -or
+    $active.logical_identity -isnot [string] -or
+    [string]$active.logical_identity -notmatch '^sha256:[0-9a-f]{64}$' -or
+    $active.source_commit -isnot [string] -or
+    [string]$active.source_commit -notmatch '^[0-9a-f]{40}$' -or
+    $active.candidate_root -isnot [string] -or
+    [string]$active.candidate_root -notmatch '^[A-Za-z]:\\[^\r\n]*$' -or
+    $active.site_root -isnot [string] -or
+    [string]$active.site_root -cne $SiteRoot -or
+    $active.operation_id -isnot [string] -or
+    [string]$active.operation_id -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  ) { throw "active_release_pointer_invalid" }
+  if ($RequestedCandidateRoot -and [string]$active.candidate_root -cne $RequestedCandidateRoot) {
+    throw "active_release_candidate_drift"
+  }
+  if ((Split-Path -Leaf ([string]$active.candidate_root)) -cne [string]$active.candidate_id) {
+    throw "active_release_pointer_invalid"
+  }
+  $manifestPath = Join-Path ([string]$active.candidate_root) "MANIFEST.json"
+  try { $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+  catch { throw "active_release_manifest_invalid" }
+  if (
+    [string]$manifest.candidate_id -cne [string]$active.candidate_id -or
+    [string]$manifest.logical_identity -cne [string]$active.logical_identity -or
+    [string]$manifest.source_commit -cne [string]$active.source_commit
+  ) { throw "active_release_identity_drift" }
+  return $active
+}
+
+function Assert-ActiveReleaseUnchanged {
+  param([Parameter(Mandatory)]$Before, [Parameter(Mandatory)]$After)
+  foreach ($field in @(
+      "schema_version", "candidate_id", "logical_identity", "source_commit",
+      "candidate_root", "site_root", "committed_at", "operation_id"
+  )) {
+    if ([string]$Before.$field -cne [string]$After.$field) {
+      throw "active_release_identity_drift"
     }
   }
 }
@@ -1375,20 +1423,30 @@ function Get-HealthResult {
     if ($ActiveProbe -and $service -eq "api" -and $ready) {
       try {
         [void](Invoke-DockerText -Arguments @(
-          "exec", "ruisheng-api", "python", "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=5).read(1)"
+          "exec", "ruisheng-api", "python", "-m", "ruisheng_api.healthcheck"
         ))
       }
-      catch { $ready = $false }
+      catch {
+        try { [void](Invoke-DockerText -Arguments @(
+            "exec", "ruisheng-api", "python", "-c",
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/meta/version',timeout=5).read(1)"
+        )) }
+        catch { $ready = $false }
+      }
     }
     if ($ActiveProbe -and $service -eq "gw" -and $ready) {
       try {
         [void](Invoke-DockerText -Arguments @(
-          "exec", "ruisheng-gw", "python", "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/ready', timeout=5).read(1)"
+          "exec", "ruisheng-gw", "python", "-m", "ruisheng_gw.healthcheck"
         ))
       }
-      catch { $ready = $false }
+      catch {
+        try { [void](Invoke-DockerText -Arguments @(
+            "exec", "ruisheng-gw", "python", "-c",
+            "import urllib.request,urllib.error; u='http://127.0.0.1:9090/health'; ok=False; exec(`"try:\n r=urllib.request.urlopen(u,timeout=5); ok=r.status<500\nexcept urllib.error.HTTPError as e:\n ok=e.code in (401,403)`"); raise SystemExit(0 if ok else 1)"
+        )) }
+        catch { $ready = $false }
+      }
     }
     if ($ActiveProbe -and $service -eq "web" -and $ready) {
       try {
@@ -1502,6 +1560,18 @@ $operationStarted = $false
 $reasonHash = ""
 
 try {
+  $activeRelease = Resolve-ActiveRelease
+  $CandidateRoot = [string]$activeRelease.candidate_root
+  $ComposeFile = Join-Path $CandidateRoot "docker-compose.prod.yml"
+  $OverrideFile = Join-Path $CandidateRoot "site-network.override.yml"
+  $ManifestFile = Join-Path $CandidateRoot "MANIFEST.json"
+  $SourceComposeFile = $ComposeFile
+  $SourceOverrideFile = $OverrideFile
+  $SourceManifestFile = $ManifestFile
+  $composeBase = @(
+    "compose", "-f", $ComposeFile, "-f", $OverrideFile, "--env-file", $EnvFile
+  )
+
   if ($Action -ne "Status" -and -not $DryRun) {
     $reasonHash = Get-Sha256Text -Text $Reason
     if (Test-Path -LiteralPath $StateDirectory -PathType Container) {
@@ -1590,6 +1660,9 @@ try {
     Release-Locks
     throw
   }
+  $lockedActiveRelease = Resolve-ActiveRelease
+  Assert-ActiveReleaseUnchanged -Before $activeRelease -After $lockedActiveRelease
+  $activeRelease = $lockedActiveRelease
   $auditReady = $true
 
   $existingOperation = Read-ExistingOperation
