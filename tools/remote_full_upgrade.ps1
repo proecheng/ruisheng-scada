@@ -19,7 +19,7 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $script:LocalAuditMaxBytes = 16MB
 $script:LocalAuditMaxRecords = 50000
-$script:RemotePowerShellBootstrap = '$ErrorActionPreference=''Stop'';$ProgressPreference=''SilentlyContinue'';[Console]::InputEncoding=[Text.Encoding]::UTF8;[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))'
+$script:RemotePowerShellBootstrap = '$ErrorActionPreference=''Stop'';$ProgressPreference=''SilentlyContinue'';[Console]::InputEncoding=[Text.Encoding]::UTF8;[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);$encoded=[string]($input|Select-Object -First 1);if([string]::IsNullOrWhiteSpace($encoded)){throw ''stdin_payload_missing''};if($encoded.Length -gt 2097152){throw ''stdin_payload_exceeded''};if($encoded -notmatch ''^[A-Za-z0-9+/]+={0,2}$''){$invalid=[regex]::Match($encoded,''[^A-Za-z0-9+/=]'');throw "stdin_payload_alphabet_invalid_$([int][char]$invalid.Value)_$($invalid.Index)_$($encoded.Length)"};try{$bytes=[Convert]::FromBase64String($encoded)}catch{throw ''stdin_payload_decode_invalid''};if([Convert]::ToBase64String($bytes) -cne $encoded){throw ''stdin_payload_noncanonical''};$source=[Text.Encoding]::UTF8.GetString($bytes);& ([ScriptBlock]::Create($source))'
 
 function ConvertTo-PowerShellUtf8Expression {
   param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
@@ -141,7 +141,10 @@ function Get-CandidateMetadata {
 }
 
 function Invoke-SshScript {
-  param([Parameter(Mandatory)][string]$Script)
+  param(
+    [Parameter(Mandatory)][string]$Script,
+    [ValidateRange(10, 7200)][int]$TimeoutSeconds = 120
+  )
   $encodedBootstrap = [Convert]::ToBase64String(
     [Text.Encoding]::Unicode.GetBytes($script:RemotePowerShellBootstrap)
   )
@@ -156,20 +159,48 @@ function Invoke-SshScript {
     "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
     "-OutputFormat", "Text", "-EncodedCommand", $encodedBootstrap
   )
-  $previousOutputEncoding = $global:OutputEncoding
-  $previousConsoleOutputEncoding = [Console]::OutputEncoding
+  $process = New-Object Diagnostics.Process
+  $process.StartInfo = New-Object Diagnostics.ProcessStartInfo
+  $process.StartInfo.FileName = (Get-Command ssh.exe -ErrorAction Stop).Source
+  $process.StartInfo.Arguments = $sshArguments -join " "
+  $process.StartInfo.UseShellExecute = $false
+  $process.StartInfo.CreateNoWindow = $true
+  $process.StartInfo.RedirectStandardInput = $true
+  $process.StartInfo.RedirectStandardOutput = $true
+  $process.StartInfo.RedirectStandardError = $true
+  $utf8 = New-Object Text.UTF8Encoding($false)
+  $process.StartInfo.StandardOutputEncoding = $utf8
+  $process.StartInfo.StandardErrorEncoding = $utf8
+  $started = $false
   try {
-    $global:OutputEncoding = New-Object Text.UTF8Encoding($false)
-    [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
-    $output = $Script | & ssh.exe @sshArguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $started = $process.Start()
+    if (-not $started) { throw "Remote upgrade transport failed to start." }
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $encodedScript = [Convert]::ToBase64String(
+      $utf8.GetBytes($Script)
+    )
+    $stdinBytes = [Text.Encoding]::ASCII.GetBytes($encodedScript + "`n")
+    $process.StandardInput.BaseStream.Write($stdinBytes, 0, $stdinBytes.Length)
+    $process.StandardInput.BaseStream.Close()
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+      try { $process.Kill() } catch { }
+      try { [void]$process.WaitForExit(5000) } catch { }
+      throw "Remote upgrade transport timed out."
+    }
+    [Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 10000) | Out-Null
+    $exitCode = $process.ExitCode
+    $text = [string]$stdoutTask.Result
+    $errorText = [string]$stderrTask.Result
   }
   finally {
-    $global:OutputEncoding = $previousOutputEncoding
-    [Console]::OutputEncoding = $previousConsoleOutputEncoding
+    if ($started -and -not $process.HasExited) {
+      try { $process.Kill() } catch { }
+    }
+    $process.Dispose()
   }
-  $text = (($output | ForEach-Object { "$_" }) -join [Environment]::NewLine)
   if ($exitCode -ne 0) { throw "Remote upgrade transport failed with exit code $exitCode." }
+  if ($errorText) { throw "Remote upgrade transport returned stderr." }
   return $text
 }
 
@@ -206,7 +237,9 @@ $UpdaterSource
 }
 & `$updater @parameters
 "@
-  $text = Invoke-SshScript -Script $transport
+  $timeoutSeconds = if ($Action -in @("Apply", "Recover")) { 3600 } `
+    elseif ($Action -eq "Initialize") { 1800 } else { 120 }
+  $text = Invoke-SshScript -Script $transport -TimeoutSeconds $timeoutSeconds
   if (-not $text) { throw "Remote upgrade returned no data." }
   try { $result = $text | ConvertFrom-Json }
   catch { throw "Remote upgrade returned invalid or non-allowlisted data." }
@@ -452,7 +485,7 @@ foreach (`$value in @(`$sid.Value, "S-1-5-18", "S-1-5-32-544") | Select-Object -
   [void]`$acl.AddAccessRule(`$rule)
 }
 Set-Acl -LiteralPath `$path -AclObject `$acl
-"prepared"
+[Console]::Out.Write("prepared")
 "@
     $prepareResult = Invoke-SshScript -Script $prepare
     if ($prepareResult -cne "prepared") {
