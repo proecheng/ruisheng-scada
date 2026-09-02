@@ -19,6 +19,7 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $script:LocalAuditMaxBytes = 16MB
 $script:LocalAuditMaxRecords = 50000
+$script:RemotePowerShellBootstrap = '$ErrorActionPreference=''Stop'';$ProgressPreference=''SilentlyContinue'';[Console]::InputEncoding=[Text.Encoding]::UTF8;[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))'
 
 function ConvertTo-PowerShellUtf8Expression {
   param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
@@ -141,6 +142,9 @@ function Get-CandidateMetadata {
 
 function Invoke-SshScript {
   param([Parameter(Mandatory)][string]$Script)
+  $encodedBootstrap = [Convert]::ToBase64String(
+    [Text.Encoding]::Unicode.GetBytes($script:RemotePowerShellBootstrap)
+  )
   $sshArguments = @(
     "-T",
     "-o", "BatchMode=yes",
@@ -149,11 +153,22 @@ function Invoke-SshScript {
     "-o", "ServerAliveInterval=15",
     "-o", "ServerAliveCountMax=3",
     $Target,
-    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"
+    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+    "-OutputFormat", "Text", "-EncodedCommand", $encodedBootstrap
   )
-  $output = $Script | & ssh.exe @sshArguments 2>&1
-  $exitCode = $LASTEXITCODE
-  $text = (($output | ForEach-Object { "$_" }) -join [Environment]::NewLine).Trim()
+  $previousOutputEncoding = $global:OutputEncoding
+  $previousConsoleOutputEncoding = [Console]::OutputEncoding
+  try {
+    $global:OutputEncoding = New-Object Text.UTF8Encoding($false)
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+    $output = $Script | & ssh.exe @sshArguments 2>&1
+    $exitCode = $LASTEXITCODE
+  }
+  finally {
+    $global:OutputEncoding = $previousOutputEncoding
+    [Console]::OutputEncoding = $previousConsoleOutputEncoding
+  }
+  $text = (($output | ForEach-Object { "$_" }) -join [Environment]::NewLine)
   if ($exitCode -ne 0) { throw "Remote upgrade transport failed with exit code $exitCode." }
   return $text
 }
@@ -171,19 +186,25 @@ function Invoke-Updater {
   $expectedPlatform = if ($null -eq $Metadata) { "" } else { [string]$Metadata.platform }
   $packageBytes = if ($null -eq $Metadata) { 0 } else { [long]$Metadata.package_bytes }
   $transport = @"
-& {
+`$updater = {
 $UpdaterSource
-} -Action $(ConvertTo-PowerShellUtf8Expression $Action) `
-  -CandidateRoot $(ConvertTo-PowerShellUtf8Expression $RemoteCandidateRoot) `
-  -SiteRoot $(ConvertTo-PowerShellUtf8Expression $SiteRoot) `
-  -OperationId $(ConvertTo-PowerShellUtf8Expression $OperationId.ToLowerInvariant()) `
-  -Reason $(ConvertTo-PowerShellUtf8Expression $Reason) `
-  -ExpectedCandidateId $(ConvertTo-PowerShellUtf8Expression $expectedCandidateId) `
-  -ExpectedLogicalIdentity $(ConvertTo-PowerShellUtf8Expression $expectedIdentity) `
-  -ExpectedSourceCommit $(ConvertTo-PowerShellUtf8Expression $expectedCommit) `
-  -ExpectedAlembicHead $(ConvertTo-PowerShellUtf8Expression $expectedHead) `
-  -ExpectedPlatform $(ConvertTo-PowerShellUtf8Expression $expectedPlatform) `
-  -PackageBytes $packageBytes -LeaseSeconds $LeaseSeconds -Approved:`$$([bool]$Approved)
+}
+`$parameters = @{
+  Action = $(ConvertTo-PowerShellUtf8Expression $Action)
+  CandidateRoot = $(ConvertTo-PowerShellUtf8Expression $RemoteCandidateRoot)
+  SiteRoot = $(ConvertTo-PowerShellUtf8Expression $SiteRoot)
+  OperationId = $(ConvertTo-PowerShellUtf8Expression $OperationId.ToLowerInvariant())
+  Reason = $(ConvertTo-PowerShellUtf8Expression $Reason)
+  ExpectedCandidateId = $(ConvertTo-PowerShellUtf8Expression $expectedCandidateId)
+  ExpectedLogicalIdentity = $(ConvertTo-PowerShellUtf8Expression $expectedIdentity)
+  ExpectedSourceCommit = $(ConvertTo-PowerShellUtf8Expression $expectedCommit)
+  ExpectedAlembicHead = $(ConvertTo-PowerShellUtf8Expression $expectedHead)
+  ExpectedPlatform = $(ConvertTo-PowerShellUtf8Expression $expectedPlatform)
+  PackageBytes = $packageBytes
+  LeaseSeconds = $LeaseSeconds
+  Approved = `$$([bool]$Approved)
+}
+& `$updater @parameters
 "@
   $text = Invoke-SshScript -Script $transport
   if (-not $text) { throw "Remote upgrade returned no data." }
@@ -433,7 +454,10 @@ foreach (`$value in @(`$sid.Value, "S-1-5-18", "S-1-5-32-544") | Select-Object -
 Set-Acl -LiteralPath `$path -AclObject `$acl
 "prepared"
 "@
-    [void](Invoke-SshScript -Script $prepare)
+    $prepareResult = Invoke-SshScript -Script $prepare
+    if ($prepareResult -cne "prepared") {
+      throw "Remote upgrade preparation returned invalid data."
+    }
     $scpRoot = $incomingOperationRoot.Replace("\", "/") + "/"
     $scpArguments = @(
       "-r",

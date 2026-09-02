@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -15,6 +16,163 @@ import pytest
 ROOT = Path(__file__).parents[2]
 CONTROLLER = ROOT / "tools" / "remote_full_upgrade.ps1"
 UPDATER = ROOT / "tools" / "remote_full_upgrade" / "target-updater.ps1"
+REMOTE_BOOTSTRAP = (
+    "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';"
+    "[Console]::InputEncoding=[Text.Encoding]::UTF8;"
+    "[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);"
+    "& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))"
+)
+RESULT_KEYS = {
+    "schema_version",
+    "ok",
+    "status",
+    "action",
+    "operation_id",
+    "error_code",
+    "active_release",
+    "candidate",
+    "locks",
+    "backup",
+}
+
+SSH_STUB_SOURCE = r"""
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+public static class SshStub
+{
+    private static string RequiredEnvironment(string name)
+    {
+        string value = Environment.GetEnvironmentVariable(name);
+        if (String.IsNullOrEmpty(value))
+        {
+            throw new InvalidOperationException("missing environment variable: " + name);
+        }
+        return value;
+    }
+
+    private static void Record(string[] args, string payload)
+    {
+        string arguments = Convert.ToBase64String(
+            Encoding.UTF8.GetBytes(String.Join("\0", args))
+        );
+        string stdin = Convert.ToBase64String(Encoding.UTF8.GetBytes(payload));
+        File.AppendAllText(
+            RequiredEnvironment("SSH_STUB_LOG"),
+            "ssh|1|" + arguments + "|" + stdin + Environment.NewLine,
+            new UTF8Encoding(false)
+        );
+    }
+
+    public static int Main(string[] args)
+    {
+        Console.InputEncoding = new UTF8Encoding(false);
+        string payload = Console.In.ReadToEnd();
+        Record(args, payload);
+        string mode = RequiredEnvironment("SSH_STUB_MODE");
+        if (mode == "empty")
+        {
+            return 0;
+        }
+        if (mode == "invalid")
+        {
+            Console.Out.Write("not-json");
+            return 0;
+        }
+        if (mode == "clixml")
+        {
+            Console.Out.Write("#< CLIXML\r\n<Objs />");
+            return 0;
+        }
+        if (mode == "prompt")
+        {
+            Console.Out.Write("PS C:\\> ");
+            return 0;
+        }
+        if (mode == "unicode")
+        {
+            Console.OutputEncoding = new UTF8Encoding(false);
+            Console.Out.Write("传输正常");
+            return 0;
+        }
+        if (mode == "failed")
+        {
+            Console.Error.Write("injected ssh failure");
+            return 23;
+        }
+
+        int commandIndex = Array.IndexOf(args, "powershell.exe");
+        if (commandIndex < 0)
+        {
+            Console.Error.Write("remote powershell command is missing");
+            return 24;
+        }
+        string childPayload = payload;
+        if (mode == "truncate")
+        {
+            childPayload = payload.Substring(0, payload.Length / 2);
+        }
+        else if (mode == "apply" || mode == "apply-extra" || mode == "apply-whitespace")
+        {
+            string preamble = payload.StartsWith("\uFEFF", StringComparison.Ordinal)
+                ? "\uFEFF"
+                : "";
+            string body = preamble.Length == 0 ? payload : payload.Substring(1);
+            childPayload = preamble + @"
+function Test-Path { param([string]$LiteralPath) return $false }
+function New-Item {
+  param([string]$ItemType, [string]$Path)
+  $script:CreatedPath = $Path
+  [pscustomobject]@{ FullName = $Path }
+}
+function Set-Acl {
+  param([string]$LiteralPath, $AclObject)
+  if ($LiteralPath -cne $script:CreatedPath) { throw 'unexpected prepare path' }
+}
+" + body;
+        }
+
+        Process child = new Process();
+        child.StartInfo.FileName = RequiredEnvironment("SSH_STUB_REMOTE_PS");
+        child.StartInfo.Arguments = String.Join(
+            " ",
+            args.Skip(commandIndex + 1).Select(
+                value => "\"" + value.Replace("\"", "\\\"") + "\""
+            ).ToArray()
+        );
+        child.StartInfo.UseShellExecute = false;
+        child.StartInfo.CreateNoWindow = true;
+        child.StartInfo.RedirectStandardInput = true;
+        child.StartInfo.RedirectStandardOutput = true;
+        child.StartInfo.RedirectStandardError = true;
+        child.StartInfo.StandardOutputEncoding = new UTF8Encoding(false);
+        child.StartInfo.StandardErrorEncoding = new UTF8Encoding(false);
+        child.Start();
+        Task<string> stdout = child.StandardOutput.ReadToEndAsync();
+        Task<string> stderr = child.StandardError.ReadToEndAsync();
+        byte[] childBytes = new UTF8Encoding(false).GetBytes(childPayload);
+        child.StandardInput.BaseStream.Write(childBytes, 0, childBytes.Length);
+        child.StandardInput.BaseStream.Close();
+        child.WaitForExit();
+        Task.WaitAll(stdout, stderr);
+        Console.Out.Write(stdout.Result);
+        Console.Error.Write(stderr.Result);
+        if (mode == "execute-extra" || mode == "apply-extra")
+        {
+            Console.Out.Write("\r\nextra-output");
+        }
+        else if (mode == "apply-whitespace")
+        {
+            Console.Out.Write(" ");
+        }
+        return child.ExitCode;
+    }
+}
+"""
 
 
 def _read(path: Path) -> str:
@@ -39,6 +197,286 @@ def _function(source: str, name: str, next_name: str) -> str:
     )
 
 
+@pytest.fixture(scope="session")
+def native_ssh_stub(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    stub_dir = tmp_path_factory.mktemp("native-ssh-stub")
+    output = stub_dir / "ssh.exe"
+    compile_command = (
+        "$ErrorActionPreference='Stop';"
+        "$source=[Console]::In.ReadToEnd();"
+        f"Add-Type -TypeDefinition $source -OutputAssembly {_ps_literal(output)} "
+        "-OutputType ConsoleApplication"
+    )
+    completed = subprocess.run(
+        [
+            _powershell(),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            compile_command,
+        ],
+        input=SSH_STUB_SOURCE,
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    assert completed.returncode == 0, (completed.stdout or "") + (completed.stderr or "")
+    assert output.is_file()
+    return stub_dir
+
+
+def _stub_environment(
+    stub_dir: Path,
+    remote_powershell: str,
+    log_path: Path,
+    mode: str,
+) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["PATH"] = f"{stub_dir}{os.pathsep}{environment['PATH']}"
+    environment["SSH_STUB_LOG"] = str(log_path)
+    environment["SSH_STUB_MODE"] = mode
+    environment["SSH_STUB_REMOTE_PS"] = remote_powershell
+    return environment
+
+
+def _read_stub_calls(log_path: Path) -> list[dict[str, object]]:
+    calls = []
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        kind, read_count, encoded_args, encoded_stdin = line.split("|", 3)
+        calls.append(
+            {
+                "kind": kind,
+                "read_count": int(read_count),
+                "args": base64.b64decode(encoded_args).decode("utf-8").split("\0"),
+                "stdin": base64.b64decode(encoded_stdin).decode("utf-8"),
+            }
+        )
+    return calls
+
+
+def _assert_transport_call(call: dict[str, object]) -> None:
+    args = call["args"]
+    assert isinstance(args, list)
+    assert call["kind"] == "ssh"
+    assert call["read_count"] == 1
+    assert args == [
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
+        "operator@100.64.0.1",
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-OutputFormat",
+        "Text",
+        "-EncodedCommand",
+        base64.b64encode(REMOTE_BOOTSTRAP.encode("utf-16-le")).decode("ascii"),
+    ]
+    assert "-Command" not in args
+
+
+def _status_harness() -> str:
+    source = _read(CONTROLLER)
+    bootstrap = next(
+        line for line in source.splitlines() if line.startswith("$script:RemotePowerShellBootstrap")
+    )
+    convert = _function(source, "ConvertTo-PowerShellUtf8Expression", "Get-Sha256Text")
+    exact_keys = _function(source, "Test-ExactKeys", "Get-CandidateMetadata")
+    transport = _function(source, "Invoke-SshScript", "Invoke-Updater")
+    updater = _function(source, "Invoke-Updater", "Set-RestrictedDirectory")
+    return f"""
+$ErrorActionPreference = "Stop"
+$Target = "operator@100.64.0.1"
+$Action = "Status"
+$SiteRoot = "C:\\Ruisheng\\candidates\\missing-transport-test"
+$OperationId = "c5a62e0e-98d9-4a9a-8150-c3c8abad719b"
+$Reason = ""
+$LeaseSeconds = 900
+$Approved = $false
+{bootstrap}
+{convert}
+{exact_keys}
+{transport}
+{updater}
+$updaterSource = (Get-Content -LiteralPath {_ps_literal(UPDATER)} -Raw -Encoding UTF8) + "`n# stdin-编码"
+$result = Invoke-Updater -UpdaterSource $updaterSource -RemoteCandidateRoot ""
+$result | ConvertTo-Json -Depth 10 -Compress
+"""
+
+
+def _run_status(
+    executable: str,
+    stub_dir: Path,
+    tmp_path: Path,
+    mode: str = "execute",
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    log_path = tmp_path / f"ssh-{mode}.log"
+    completed = subprocess.run(
+        [
+            executable,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            _status_harness(),
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        env=_stub_environment(stub_dir, executable, log_path, mode),
+    )
+    return completed, log_path
+
+
+def _apply_prepare_harness() -> str:
+    source = _read(CONTROLLER)
+    bootstrap = next(
+        line for line in source.splitlines() if line.startswith("$script:RemotePowerShellBootstrap")
+    )
+    convert = _function(source, "ConvertTo-PowerShellUtf8Expression", "Get-Sha256Text")
+    transport = _function(source, "Invoke-SshScript", "Invoke-Updater")
+    start = source.index('    $prepare = @"')
+    end = source.index("    $scpRoot =", start)
+    prepare = source[start:end]
+    return f"""
+$ErrorActionPreference = "Stop"
+$Target = "operator@100.64.0.1"
+$incomingOperationRoot = "C:\\Ruisheng\\incoming\\c5a62e0e-98d9-4a9a-8150-c3c8abad719b"
+{bootstrap}
+{convert}
+{transport}
+{prepare}
+"""
+
+
+def _run_apply_prepare(
+    executable: str,
+    stub_dir: Path,
+    tmp_path: Path,
+    mode: str,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    log_path = tmp_path / f"ssh-prepare-{mode}.log"
+    completed = subprocess.run(
+        [
+            executable,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            _apply_prepare_harness(),
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        env=_stub_environment(stub_dir, executable, log_path, mode),
+    )
+    return completed, log_path
+
+
+def _unicode_transport_harness() -> str:
+    source = _read(CONTROLLER)
+    bootstrap = next(
+        line for line in source.splitlines() if line.startswith("$script:RemotePowerShellBootstrap")
+    )
+    transport = _function(source, "Invoke-SshScript", "Invoke-Updater")
+    return f"""
+$ErrorActionPreference = "Stop"
+$Target = "operator@100.64.0.1"
+{bootstrap}
+{transport}
+$before = [Console]::OutputEncoding.CodePage
+$result = Invoke-SshScript -Script '"ignored"'
+if ($result -cne "传输正常") {{ throw "unicode_transport_corrupted" }}
+if ([Console]::OutputEncoding.CodePage -ne $before) {{ throw "console_encoding_not_restored" }}
+"ok"
+"""
+
+
+def _binding_harness() -> str:
+    source = _read(CONTROLLER)
+    bootstrap = next(
+        line for line in source.splitlines() if line.startswith("$script:RemotePowerShellBootstrap")
+    )
+    convert = _function(source, "ConvertTo-PowerShellUtf8Expression", "Get-Sha256Text")
+    exact_keys = _function(source, "Test-ExactKeys", "Get-CandidateMetadata")
+    transport = _function(source, "Invoke-SshScript", "Invoke-Updater")
+    updater = _function(source, "Invoke-Updater", "Set-RestrictedDirectory")
+    return f"""
+$ErrorActionPreference = "Stop"
+$Target = "operator@100.64.0.1"
+$Action = "Apply"
+$SiteRoot = "C:\\Ruisheng\\candidates\\site-current"
+$OperationId = "76fdbb4f-eaf0-4483-9300-e632bd5eb472"
+$Reason = "批准升级测试"
+$LeaseSeconds = 321
+$Approved = $true
+{bootstrap}
+{convert}
+{exact_keys}
+{transport}
+{updater}
+$bindingUpdaterSource = @'
+[CmdletBinding()]
+param(
+  [string]$Action, [string]$CandidateRoot, [string]$SiteRoot,
+  [string]$OperationId, [string]$Reason, [string]$ExpectedCandidateId,
+  [string]$ExpectedLogicalIdentity, [string]$ExpectedSourceCommit,
+  [string]$ExpectedAlembicHead, [string]$ExpectedPlatform,
+  [long]$PackageBytes, [int]$LeaseSeconds, [switch]$Approved
+)
+$candidate = [ordered]@{{
+  candidate_root = $CandidateRoot; site_root = $SiteRoot; reason = $Reason
+  candidate_id = $ExpectedCandidateId; logical_identity = $ExpectedLogicalIdentity
+  source_commit = $ExpectedSourceCommit; alembic_head = $ExpectedAlembicHead
+  platform = $ExpectedPlatform; package_bytes = $PackageBytes
+  lease_seconds = $LeaseSeconds; approved = [bool]$Approved
+}}
+[ordered]@{{
+  schema_version = 1; ok = $true; status = "committed"; action = $Action
+  operation_id = $OperationId; error_code = ""; active_release = $null
+  candidate = $candidate; locks = $null; backup = $null
+}} | ConvertTo-Json -Depth 10 -Compress
+'@
+$metadata = [pscustomobject]@{{
+  candidate_id = "candidate-a"; logical_identity = "sha256:$('a' * 64)"
+  source_commit = "$('b' * 40)"; alembic_head = "0012_alarm_notification_runtime"
+  platform = "linux/amd64"; package_bytes = 123456
+}}
+$result = Invoke-Updater -UpdaterSource $bindingUpdaterSource `
+  -RemoteCandidateRoot "C:\\Ruisheng\\incoming\\candidate-a" -Metadata $metadata
+$expected = @{{
+  candidate_root = "C:\\Ruisheng\\incoming\\candidate-a"
+  site_root = $SiteRoot; reason = $Reason; candidate_id = $metadata.candidate_id
+  logical_identity = $metadata.logical_identity; source_commit = $metadata.source_commit
+  alembic_head = $metadata.alembic_head; platform = $metadata.platform
+  package_bytes = [long]$metadata.package_bytes; lease_seconds = $LeaseSeconds
+  approved = $true
+}}
+foreach ($key in $expected.Keys) {{
+  if ([string]$result.candidate.$key -cne [string]$expected[$key]) {{
+    throw "binding_mismatch_$key"
+  }}
+}}
+"ok"
+"""
+
+
 def test_controller_has_closed_approved_transport_workflow() -> None:
     script = _read(CONTROLLER)
 
@@ -48,7 +486,16 @@ def test_controller_has_closed_approved_transport_workflow() -> None:
     assert 'if ($Action -eq "Plan" -and -not $DryRun)' in script
     assert '"-o", "BatchMode=yes"' in script
     assert '"-o", "StrictHostKeyChecking=yes"' in script
-    assert '"powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"' in script
+    assert (
+        "$script:RemotePowerShellBootstrap = "
+        "'$ErrorActionPreference=''Stop'';$ProgressPreference=''SilentlyContinue'';"
+        "[Console]::InputEncoding=[Text.Encoding]::UTF8;"
+        "[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);"
+        "& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))'"
+    ) in script
+    assert '"-OutputFormat", "Text", "-EncodedCommand", $encodedBootstrap' in script
+    assert '"-Command", "-"' not in script
+    assert "Invoke-Expression" not in script
     assert "target-updater.ps1" in script
     assert "scp.exe" in script
     assert 'if ($Action -eq "Plan")' in script
@@ -63,6 +510,201 @@ def test_controller_has_closed_approved_transport_workflow() -> None:
     assert "scp.exe" not in initialize
     assert "Remove-Item Env:" not in script
     assert "MANAGEMENT_TOKEN" not in script
+
+
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+def test_native_ssh_executes_the_complete_updater_with_fixed_bootstrap(
+    executable: str,
+    native_ssh_stub: Path,
+    tmp_path: Path,
+) -> None:
+    resolved = shutil.which(executable)
+    if resolved is None:
+        pytest.skip(f"{executable} is unavailable")
+    completed, log_path = _run_status(resolved, native_ssh_stub, tmp_path)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stderr == ""
+    output = completed.stdout.strip()
+    assert "#< CLIXML" not in output
+    assert "PS C:\\>" not in output
+    result, end = json.JSONDecoder().raw_decode(output)
+    assert output[end:].strip() == ""
+    assert set(result) == RESULT_KEYS
+    assert result == {
+        "schema_version": 1,
+        "ok": False,
+        "status": "rejected",
+        "action": "Status",
+        "operation_id": "c5a62e0e-98d9-4a9a-8150-c3c8abad719b",
+        "error_code": "restricted_directory_missing",
+        "active_release": None,
+        "candidate": None,
+        "locks": None,
+        "backup": None,
+    }
+    calls = _read_stub_calls(log_path)
+    assert len(calls) == 1
+    _assert_transport_call(calls[0])
+    payload = calls[0]["stdin"]
+    assert isinstance(payload, str)
+    updater = _read(UPDATER)
+    assert len(payload.encode("utf-8")) > 60_000
+    assert payload.count(updater) == 1
+    assert "# stdin-编码" in payload
+    assert "CandidateRoot = [Text.Encoding]::UTF8.GetString(" in payload
+    assert "& $updater @parameters" in payload
+
+
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+def test_native_ssh_executes_apply_prepare_and_requires_exact_output(
+    executable: str,
+    native_ssh_stub: Path,
+    tmp_path: Path,
+) -> None:
+    resolved = shutil.which(executable)
+    if resolved is None:
+        pytest.skip(f"{executable} is unavailable")
+    completed, log_path = _run_apply_prepare(
+        resolved,
+        native_ssh_stub,
+        tmp_path,
+        "apply",
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+    calls = _read_stub_calls(log_path)
+    assert len(calls) == 1
+    _assert_transport_call(calls[0])
+    payload = calls[0]["stdin"]
+    assert isinstance(payload, str)
+    assert payload.count('"prepared"') == 1
+    assert "Set-Acl -LiteralPath $path -AclObject $acl" in payload
+    assert _read(UPDATER) not in payload
+
+
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+def test_native_transport_preserves_unicode_output_and_restores_encoding(
+    executable: str,
+    native_ssh_stub: Path,
+    tmp_path: Path,
+) -> None:
+    resolved = shutil.which(executable)
+    if resolved is None:
+        pytest.skip(f"{executable} is unavailable")
+    log_path = tmp_path / f"ssh-unicode-{executable}.log"
+    completed = subprocess.run(
+        [
+            resolved,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            _unicode_transport_harness(),
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        env=_stub_environment(native_ssh_stub, resolved, log_path, "unicode"),
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stdout.strip() == "ok"
+    assert completed.stderr == ""
+    calls = _read_stub_calls(log_path)
+    assert len(calls) == 1
+    _assert_transport_call(calls[0])
+
+
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+def test_native_transport_binds_nonempty_upgrade_parameters(
+    executable: str,
+    native_ssh_stub: Path,
+    tmp_path: Path,
+) -> None:
+    resolved = shutil.which(executable)
+    if resolved is None:
+        pytest.skip(f"{executable} is unavailable")
+    log_path = tmp_path / f"ssh-binding-{executable}.log"
+    completed = subprocess.run(
+        [resolved, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", _binding_harness()],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        env=_stub_environment(native_ssh_stub, resolved, log_path, "execute"),
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stdout.strip() == "ok"
+    assert completed.stderr == ""
+    calls = _read_stub_calls(log_path)
+    assert len(calls) == 1
+    _assert_transport_call(calls[0])
+    args = calls[0]["args"]
+    assert isinstance(args, list)
+    assert not any("candidate-a" in value or "批准升级测试" in value for value in args)
+
+
+@pytest.mark.parametrize("mode", ["empty", "apply-extra", "apply-whitespace", "failed"])
+def test_apply_prepare_output_and_execution_fail_closed(
+    mode: str,
+    native_ssh_stub: Path,
+    tmp_path: Path,
+) -> None:
+    completed, log_path = _run_apply_prepare(
+        _powershell(),
+        native_ssh_stub,
+        tmp_path,
+        mode,
+    )
+
+    assert completed.returncode != 0
+    combined = completed.stdout + completed.stderr
+    if mode == "failed":
+        assert "injected ssh failure" in combined
+    else:
+        assert "Remote upgrade preparation returned invalid data." in combined
+    calls = _read_stub_calls(log_path)
+    assert len(calls) == 1
+    _assert_transport_call(calls[0])
+
+
+@pytest.mark.parametrize(
+    "mode, expected_error",
+    [
+        ("empty", "returned no data"),
+        ("invalid", "invalid or non-allowlisted data"),
+        ("clixml", "CliXmlError"),
+        ("prompt", "invalid or non-allowlisted data"),
+        ("execute-extra", "invalid or non-allowlisted data"),
+        ("truncate", "NativeCommandError"),
+        ("failed", "injected ssh failure"),
+    ],
+)
+def test_updater_transport_anomalies_fail_closed(
+    mode: str,
+    expected_error: str,
+    native_ssh_stub: Path,
+    tmp_path: Path,
+) -> None:
+    completed, log_path = _run_status(
+        _powershell(),
+        native_ssh_stub,
+        tmp_path,
+        mode,
+    )
+
+    assert completed.returncode != 0
+    assert expected_error in completed.stdout + completed.stderr
+    calls = _read_stub_calls(log_path)
+    assert len(calls) == 1
+    _assert_transport_call(calls[0])
 
 
 @pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
@@ -122,7 +764,7 @@ function ssh.exe {{
   $received = @($input)
   if ($received.Count -ne 1) {{ throw 'unexpected updater payload count' }}
   $payload = [string]$received[0]
-  if ($payload.IndexOf("-CandidateRoot [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(''))") -lt 0) {{
+  if ($payload.IndexOf("CandidateRoot = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(''))") -lt 0) {{
     throw 'empty candidate root was not transported'
   }}
   $global:LASTEXITCODE = 0

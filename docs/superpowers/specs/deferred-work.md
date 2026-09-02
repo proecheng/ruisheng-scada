@@ -13,3 +13,7 @@
 - 修复生产首次启动的 PostgreSQL 健康竞态：TimescaleDB 初始化服务会短暂通过 `pg_isready`，随后为调优重启，导致 `migrate` 可能在窗口内因 `ConnectionRefusedError` 失败；需加固正式 readiness/迁移重试契约并补新卷启动回归测试。
 - 为生产 GW 串口访问增加跨进程协调排他锁：当前串口打开路径未建立主机级所有权协议，后续需统一 GW、维护探测器及其他串口工具的锁语义、崩溃恢复和竞争回归测试。
 - 加固 POSIX authenticated qualification 的完整后代收容：当前基线仅终止原进程组，后代调用 `setsid` 后可逃逸；需像 freshness provider 一样启用 child subreaper、按 `/proc` 进程身份追踪并有界终止/回收，增加重命名 `comm`、脱离 session、正常/异常/超时全出口回归。
+- 为远程升级 SSH 传输增加独立于 keepalive 的总执行超时和受控终止，避免远端 PowerShell 保持连接但永久阻塞时本机操作无限悬挂。
+- 为远程升级 SSH stdout/stderr 增加字节上限和有界读取，避免失控远端输出在 JSON 白名单校验前耗尽本机内存。
+- 为全量升级 `Apply` 的远端 incoming 目录准备阶段增加可验证、幂等的失败清理/恢复协议，避免目录已创建但 `prepared` 回执丢失后阻断同操作重试。
+- 审核并显式限定所有远程维护入口的 SSH 认证算法；不能只以 `BatchMode=yes` 代替 public-key-only 策略，需结合部署密钥、`IdentitiesOnly`、允许认证方式和目标端 `authorized_keys` 限权形成可测试契约。
