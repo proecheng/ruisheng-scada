@@ -20,7 +20,19 @@ REMOTE_BOOTSTRAP = (
     "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';"
     "[Console]::InputEncoding=[Text.Encoding]::UTF8;"
     "[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);"
-    "& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))"
+    "$encoded=[string]($input|Select-Object -First 1);"
+    "if([string]::IsNullOrWhiteSpace($encoded)){throw 'stdin_payload_missing'};"
+    "if($encoded.Length -gt 2097152){throw 'stdin_payload_exceeded'};"
+    "if($encoded -notmatch '^[A-Za-z0-9+/]+={0,2}$')"
+    "{$invalid=[regex]::Match($encoded,'[^A-Za-z0-9+/=]');"
+    'throw "stdin_payload_alphabet_invalid_$([int][char]$invalid.Value)_'
+    '$($invalid.Index)_$($encoded.Length)"};'
+    "try{$bytes=[Convert]::FromBase64String($encoded)}"
+    "catch{throw 'stdin_payload_decode_invalid'};"
+    "if([Convert]::ToBase64String($bytes) -cne $encoded)"
+    "{throw 'stdin_payload_noncanonical'};"
+    "$source=[Text.Encoding]::UTF8.GetString($bytes);"
+    "& ([ScriptBlock]::Create($source))"
 )
 RESULT_KEYS = {
     "schema_version",
@@ -71,6 +83,7 @@ public static class SshStub
     public static int Main(string[] args)
     {
         Console.InputEncoding = new UTF8Encoding(false);
+        Console.OutputEncoding = new UTF8Encoding(false);
         string payload = Console.In.ReadToEnd();
         Record(args, payload);
         string mode = RequiredEnvironment("SSH_STUB_MODE");
@@ -104,6 +117,19 @@ public static class SshStub
             Console.Error.Write("injected ssh failure");
             return 23;
         }
+        if (mode == "response-observed" || mode == "response-planned")
+        {
+            string status = mode == "response-observed" ? "observed" : "planned";
+            string action = mode == "response-observed" ? "Status" : "Plan";
+            Console.Out.Write(
+                "{\"schema_version\":1,\"ok\":true,\"status\":\"" + status
+                + "\",\"action\":\"" + action
+                + "\",\"operation_id\":\"c5a62e0e-98d9-4a9a-8150-c3c8abad719b\""
+                + ",\"error_code\":\"\",\"active_release\":null,\"candidate\":null"
+                + ",\"locks\":null,\"backup\":null}"
+            );
+            return 0;
+        }
 
         int commandIndex = Array.IndexOf(args, "powershell.exe");
         if (commandIndex < 0)
@@ -111,18 +137,24 @@ public static class SshStub
             Console.Error.Write("remote powershell command is missing");
             return 24;
         }
-        string childPayload = payload;
-        if (mode == "truncate")
+        string encodedPayload = payload.Trim().TrimStart('\uFEFF');
+        string childPayload = encodedPayload;
+        if (mode == "bad-base64")
         {
-            childPayload = payload.Substring(0, payload.Length / 2);
+            childPayload = "not base64!";
+        }
+        else if (mode == "truncate")
+        {
+            childPayload = encodedPayload.Substring(0, encodedPayload.Length / 2);
         }
         else if (mode == "apply" || mode == "apply-extra" || mode == "apply-whitespace")
         {
-            string preamble = payload.StartsWith("\uFEFF", StringComparison.Ordinal)
+            string source = Encoding.UTF8.GetString(Convert.FromBase64String(encodedPayload));
+            string preamble = source.StartsWith("\uFEFF", StringComparison.Ordinal)
                 ? "\uFEFF"
                 : "";
-            string body = preamble.Length == 0 ? payload : payload.Substring(1);
-            childPayload = preamble + @"
+            string body = preamble.Length == 0 ? source : source.Substring(1);
+            string childSource = preamble + @"
 function Test-Path { param([string]$LiteralPath) return $false }
 function New-Item {
   param([string]$ItemType, [string]$Path)
@@ -134,6 +166,9 @@ function Set-Acl {
   if ($LiteralPath -cne $script:CreatedPath) { throw 'unexpected prepare path' }
 }
 " + body;
+            childPayload = Convert.ToBase64String(
+                new UTF8Encoding(false).GetBytes(childSource)
+            );
         }
 
         Process child = new Process();
@@ -255,6 +290,12 @@ def _read_stub_calls(log_path: Path) -> list[dict[str, object]]:
             }
         )
     return calls
+
+
+def _decode_transport_payload(call: dict[str, object]) -> str:
+    encoded = call["stdin"]
+    assert isinstance(encoded, str)
+    return base64.b64decode(encoded.strip().lstrip("\ufeff"), validate=True).decode("utf-8")
 
 
 def _assert_transport_call(call: dict[str, object]) -> None:
@@ -486,15 +527,13 @@ def test_controller_has_closed_approved_transport_workflow() -> None:
     assert 'if ($Action -eq "Plan" -and -not $DryRun)' in script
     assert '"-o", "BatchMode=yes"' in script
     assert '"-o", "StrictHostKeyChecking=yes"' in script
-    assert (
-        "$script:RemotePowerShellBootstrap = "
-        "'$ErrorActionPreference=''Stop'';$ProgressPreference=''SilentlyContinue'';"
-        "[Console]::InputEncoding=[Text.Encoding]::UTF8;"
-        "[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);"
-        "& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))'"
-    ) in script
+    expected_bootstrap = (
+        "$script:RemotePowerShellBootstrap = '" + REMOTE_BOOTSTRAP.replace("'", "''") + "'"
+    )
+    assert expected_bootstrap in script
     assert '"-OutputFormat", "Text", "-EncodedCommand", $encodedBootstrap' in script
     assert '"-Command", "-"' not in script
+    assert "[Console]::In.ReadToEnd()" not in script
     assert "Invoke-Expression" not in script
     assert "target-updater.ps1" in script
     assert "scp.exe" in script
@@ -546,8 +585,10 @@ def test_native_ssh_executes_the_complete_updater_with_fixed_bootstrap(
     calls = _read_stub_calls(log_path)
     assert len(calls) == 1
     _assert_transport_call(calls[0])
-    payload = calls[0]["stdin"]
-    assert isinstance(payload, str)
+    encoded_payload = calls[0]["stdin"]
+    assert isinstance(encoded_payload, str)
+    assert "\n" not in encoded_payload.strip()
+    payload = _decode_transport_payload(calls[0])
     updater = _read(UPDATER)
     assert len(payload.encode("utf-8")) > 60_000
     assert payload.count(updater) == 1
@@ -578,9 +619,8 @@ def test_native_ssh_executes_apply_prepare_and_requires_exact_output(
     calls = _read_stub_calls(log_path)
     assert len(calls) == 1
     _assert_transport_call(calls[0])
-    payload = calls[0]["stdin"]
-    assert isinstance(payload, str)
-    assert payload.count('"prepared"') == 1
+    payload = _decode_transport_payload(calls[0])
+    assert payload.count('[Console]::Out.Write("prepared")') == 1
     assert "Set-Acl -LiteralPath $path -AclObject $acl" in payload
     assert _read(UPDATER) not in payload
 
@@ -667,7 +707,7 @@ def test_apply_prepare_output_and_execution_fail_closed(
     assert completed.returncode != 0
     combined = completed.stdout + completed.stderr
     if mode == "failed":
-        assert "injected ssh failure" in combined
+        assert "transport failed with exit code 23" in combined
     else:
         assert "Remote upgrade preparation returned invalid data." in combined
     calls = _read_stub_calls(log_path)
@@ -680,11 +720,12 @@ def test_apply_prepare_output_and_execution_fail_closed(
     [
         ("empty", "returned no data"),
         ("invalid", "invalid or non-allowlisted data"),
-        ("clixml", "CliXmlError"),
+        ("clixml", "invalid or non-allowlisted data"),
         ("prompt", "invalid or non-allowlisted data"),
         ("execute-extra", "invalid or non-allowlisted data"),
-        ("truncate", "NativeCommandError"),
-        ("failed", "injected ssh failure"),
+        ("bad-base64", "transport failed with exit code"),
+        ("truncate", "transport failed with exit code"),
+        ("failed", "transport failed with exit code 23"),
     ],
 )
 def test_updater_transport_anomalies_fail_closed(
@@ -713,6 +754,7 @@ def test_read_only_dispatch_accepts_an_empty_remote_candidate_root(
     executable: str,
     action: str,
     expected_status: str,
+    native_ssh_stub: Path,
     tmp_path: Path,
 ) -> None:
     resolved = shutil.which(executable)
@@ -756,35 +798,51 @@ def test_read_only_dispatch_accepts_an_empty_remote_candidate_root(
         },
         separators=(",", ":"),
     )
-    action_arguments = (
-        "" if action == "Status" else f"-CandidatePath {_ps_literal(candidate)} -DryRun"
-    )
-    command = rf"""
-function ssh.exe {{
-  $received = @($input)
-  if ($received.Count -ne 1) {{ throw 'unexpected updater payload count' }}
-  $payload = [string]$received[0]
-  if ($payload.IndexOf("CandidateRoot = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(''))") -lt 0) {{
-    throw 'empty candidate root was not transported'
-  }}
-  $global:LASTEXITCODE = 0
-  {_ps_literal(response)}
-}}
-& {_ps_literal(CONTROLLER)} -Action {action} -Target 'operator@100.64.0.1' `
-  -SiteRoot 'C:\Ruisheng\candidates\site-current' -OperationId '{operation_id}' `
-  {action_arguments}
-"""
+    arguments = [
+        resolved,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        str(CONTROLLER),
+        "-Action",
+        action,
+        "-Target",
+        "operator@100.64.0.1",
+        "-SiteRoot",
+        r"C:\Ruisheng\candidates\site-current",
+        "-OperationId",
+        operation_id,
+    ]
+    if action == "Plan":
+        arguments.extend(["-CandidatePath", str(candidate), "-DryRun"])
+    log_path = tmp_path / f"ssh-read-only-{action}-{executable}.log"
     completed = subprocess.run(
-        [resolved, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+        arguments,
         check=False,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
+        env=_stub_environment(
+            native_ssh_stub,
+            resolved,
+            log_path,
+            f"response-{expected_status}",
+        ),
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert completed.stderr == ""
     assert json.loads(completed.stdout) == json.loads(response)
+    calls = _read_stub_calls(log_path)
+    assert len(calls) == 1
+    _assert_transport_call(calls[0])
+    payload = _decode_transport_payload(calls[0])
+    assert (
+        "CandidateRoot = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(''))"
+        in payload
+    )
 
 
 def test_target_updater_enforces_supply_chain_schema_and_boundary_gates() -> None:
