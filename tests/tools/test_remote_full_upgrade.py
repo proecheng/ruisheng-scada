@@ -221,6 +221,29 @@ def _powershell() -> str:
     return executable
 
 
+def _windows_powershell_env() -> dict[str, str]:
+    if os.name != "nt":
+        pytest.skip("Windows PowerShell environment is Windows-only")
+    env = os.environ.copy()
+    user_profile = env.get("USERPROFILE") or str(Path.home())
+    env["PSModulePath"] = os.pathsep.join(
+        (
+            str(Path(user_profile) / "Documents" / "WindowsPowerShell" / "Modules"),
+            str(
+                Path(env.get("ProgramFiles", r"C:\Program Files")) / "WindowsPowerShell" / "Modules"
+            ),
+            str(
+                Path(env.get("SystemRoot", r"C:\Windows"))
+                / "System32"
+                / "WindowsPowerShell"
+                / "v1.0"
+                / "Modules"
+            ),
+        )
+    )
+    return env
+
+
 def _ps_literal(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
@@ -853,6 +876,7 @@ def test_target_updater_enforces_supply_chain_schema_and_boundary_gates() -> Non
     assert '"[publisher] VERIFIED:"' in script
     assert '"B-04 remains BLOCKED"' in script
     assert "Assert-CandidateManifest" in script
+    assert "Assert-ProtectedVerifierFile -Path $VerifierPath" in script
     assert 'throw "schema_head_changed"' in script
     assert "Assert-NetworkBoundary" in script
     assert 'pull_policy -ne "never"' in script
@@ -861,6 +885,74 @@ def test_target_updater_enforces_supply_chain_schema_and_boundary_gates() -> Non
     assert '"-m", "ruisheng_gw.healthcheck"' in script
     assert "SSH_CONNECTION" in script
     assert "-T -C $connectionContext" in script
+
+
+def test_publisher_verifier_keeps_the_admin_system_only_trust_boundary() -> None:
+    script = _read(UPDATER)
+    verifier_acl = _function(
+        script,
+        "Assert-ProtectedVerifierFile",
+        "Set-RestrictedFileAcl",
+    )
+
+    assert '"S-1-5-18" = $false' in verifier_acl
+    assert '"S-1-5-32-544" = $false' in verifier_acl
+    assert "AreAccessRulesProtected" in verifier_acl
+    assert "WindowsIdentity]::GetCurrent" not in verifier_acl
+    assert "Get-AllowedSids" not in verifier_acl
+    assert 'throw "publisher_verifier_acl_invalid"' in verifier_acl
+
+
+def test_rejection_audit_accepts_empty_identity_and_preserves_primary_error() -> None:
+    script = _read(UPDATER)
+
+    assert "[Parameter(Mandatory)][AllowEmptyString()][string]$CandidateIdentity" in script
+    assert "$auditCandidateIdentity = $ExpectedLogicalIdentity" in script
+    assert "$auditCandidateIdentity = [string]$manifest.logical_identity" in script
+    assert (
+        'try { Write-Audit "upgrade_rejected" $finalStatus $auditCandidateIdentity $errorCode }'
+    ) in script
+    assert '$errorCode = "rejection_audit_failed"' not in script
+
+
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+def test_rejection_audit_writes_an_empty_candidate_identity(
+    executable: str, tmp_path: Path
+) -> None:
+    resolved = shutil.which(executable)
+    if resolved is None:
+        pytest.skip(f"{executable} is unavailable")
+    source = _read(UPDATER)
+    get_hash = _function(source, "Get-Sha256Text", "Assert-AbsoluteRemotePath")
+    write_audit = _function(source, "Write-Audit", "Assert-NetworkBoundary")
+    audit_path = tmp_path / f"rejection-audit-{executable}.jsonl"
+    lock_path = tmp_path / f"rejection-audit-{executable}.lock"
+    lock_path.write_bytes(b"")
+    invocation = f"""
+$ErrorActionPreference = 'Stop'
+$AuditPath = {_ps_literal(audit_path)}
+$AuditLockPath = {_ps_literal(lock_path)}
+$OperationId = '32712215-01fb-4bd1-bbfd-299ac211ef88'
+$Reason = 'approved test reason'
+{get_hash}
+{write_audit}
+Write-Audit 'upgrade_rejected' 'rejected' '' 'publisher_verification_failed'
+Write-Audit 'upgrade_rejected_again' 'rejected' '' 'network_boundary_failed'
+"""
+    completed = subprocess.run(
+        [resolved, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", invocation],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 2
+    assert records[0]["candidate_identity"] == ""
+    assert records[0]["error_code"] == "publisher_verification_failed"
+    assert records[1]["previous_hash"] == records[0]["record_hash"]
+    assert records[1]["error_code"] == "network_boundary_failed"
 
 
 def test_target_updater_uses_shared_locks_journal_backup_and_recovery() -> None:
@@ -1354,6 +1446,41 @@ exit 0
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
+def test_network_gate_accepts_null_or_absent_ports_as_unpublished() -> None:
+    source = _read(UPDATER)
+    function = (
+        "function Assert-NetworkBoundary"
+        + source.split("function Assert-NetworkBoundary", 1)[1].split(
+            "function Assert-ComposeManifestImages", 1
+        )[0]
+    )
+    services = {}
+    for name in ("postgres", "redis", "migrate", "gw", "api", "web"):
+        services[name] = {
+            "image": f"candidate/{name}:immutable",
+            "pull_policy": "never",
+            "ports": None,
+        }
+    del services["migrate"]["ports"]
+    services["gw"]["ports"] = [{"host_ip": "127.0.0.1", "target": 5020, "published": "5020"}]
+    services["web"]["ports"] = [{"host_ip": "127.0.0.1", "target": 80, "published": "80"}]
+    invocation = f"""
+$ErrorActionPreference = 'Stop'
+$PolicyServices = @('postgres','redis','migrate','gw','api','web')
+{function}
+$model = ConvertFrom-Json {_ps_literal(json.dumps({"services": services}))}
+Assert-NetworkBoundary $model
+"""
+    completed = subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", invocation],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_final_container_image_id_mismatch_is_executably_rejected() -> None:
     source = _read(UPDATER)
     function = (
@@ -1413,6 +1540,94 @@ $fileAcl = New-Object Security.AccessControl.FileSecurity
 $fileAcl.SetOwner($sid)
 Set-DirectoryAccessControl -Path {_ps_literal(directory)} -Acl $directoryAcl
 Set-FileAccessControl -Path {_ps_literal(file_path)} -Acl $fileAcl
+"""
+    completed = subprocess.run(
+        [resolved, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", invocation],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+def test_local_audit_acl_is_idempotent_in_both_editions(executable: str, tmp_path: Path) -> None:
+    resolved = shutil.which(executable)
+    if resolved is None:
+        pytest.skip(f"{executable} is unavailable")
+    source = _read(CONTROLLER)
+    functions = (
+        "function Test-RestrictedAccessControl"
+        + source.split("function Test-RestrictedAccessControl", 1)[1].split(
+            "function Write-LocalAudit", 1
+        )[0]
+    )
+    directory = tmp_path / f"local-audit-{executable}"
+    audit_file = directory / "remote-full-upgrade.jsonl"
+    invocation = f"""
+$ErrorActionPreference = 'Stop'
+{functions}
+Set-RestrictedDirectory -Path {_ps_literal(directory)} -CreateAuditMutex
+Set-RestrictedFile -Path {_ps_literal(audit_file)} -Create
+function Set-Acl {{ throw 'unexpected_acl_rewrite' }}
+Set-RestrictedDirectory -Path {_ps_literal(directory)} -CreateAuditMutex
+Set-RestrictedFile -Path {_ps_literal(audit_file)}
+"""
+    completed = subprocess.run(
+        [resolved, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", invocation],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_windows_powershell_env() if executable == "powershell.exe" else os.environ.copy(),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+def test_local_audit_hash_uses_original_json_bytes(executable: str) -> None:
+    resolved = shutil.which(executable)
+    if resolved is None:
+        pytest.skip(f"{executable} is unavailable")
+    source = _read(CONTROLLER)
+    function = (
+        "function Get-AuditLineHashMaterial"
+        + source.split("function Get-AuditLineHashMaterial", 1)[1].split(
+            "function Assert-RemotePath", 1
+        )[0]
+    )
+    raw_payload = (
+        '{"schema_version":1,"recorded_at":"2026-09-02T07:11:29.5362646+00:00",'
+        '"operation_id":"32712215-01fb-4bd1-bbfd-299ac211ef88"}'
+    )
+    invocation = f"""
+$ErrorActionPreference = 'Stop'
+{function}
+$raw = {_ps_literal(raw_payload)}
+$sha = [Security.Cryptography.SHA256]::Create()
+try {{
+  $hash = ([BitConverter]::ToString(
+    $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($raw))
+  )).Replace('-', '').ToLowerInvariant()
+}}
+finally {{ $sha.Dispose() }}
+$line = $raw.Substring(0, $raw.Length - 1) + ',"record_hash":"' + $hash + '"}}'
+$material = Get-AuditLineHashMaterial -Line $line
+if ($null -eq $material -or $material.payload -cne $raw -or $material.record_hash -cne $hash) {{
+  throw 'audit_hash_material_changed'
+}}
+$altered = $line.Replace('07:11:29.5362646+00:00', '15:11:29.5362646+08:00')
+$alteredMaterial = Get-AuditLineHashMaterial -Line $altered
+if ($alteredMaterial.payload -ceq $raw) {{ throw 'audit_timestamp_edit_was_normalized' }}
+$alteredSha = [Security.Cryptography.SHA256]::Create()
+try {{
+  $alteredHash = ([BitConverter]::ToString(
+    $alteredSha.ComputeHash([Text.Encoding]::UTF8.GetBytes($alteredMaterial.payload))
+  )).Replace('-', '').ToLowerInvariant()
+}}
+finally {{ $alteredSha.Dispose() }}
+if ($alteredHash -ceq $hash) {{ throw 'audit_timestamp_edit_was_accepted' }}
 """
     completed = subprocess.run(
         [resolved, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", invocation],

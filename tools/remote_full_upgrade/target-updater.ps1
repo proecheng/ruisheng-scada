@@ -52,6 +52,18 @@ function Get-Sha256Text {
   finally { $sha.Dispose() }
 }
 
+function Get-AuditLineHashMaterial {
+  param([Parameter(Mandatory)][string]$Line)
+  $match = [regex]::Match(
+    $Line, '^(?<payload>\{.*),"record_hash":"(?<hash>[0-9a-f]{64})"\}$'
+  )
+  if (-not $match.Success) { return $null }
+  return [pscustomobject]@{
+    payload = $match.Groups["payload"].Value + "}"
+    record_hash = $match.Groups["hash"].Value
+  }
+}
+
 function Assert-AbsoluteRemotePath {
   param([Parameter(Mandatory)][string]$Path)
   if ($Path -notmatch '^[A-Za-z]:\\[^\r\n]*$') { throw "remote_path_invalid" }
@@ -210,6 +222,40 @@ function Assert-RestrictedFile {
   foreach ($sid in @($allowed.Keys)) {
     if (-not $allowed[$sid]) { throw "restricted_acl_required_identity_missing" }
   }
+}
+
+function Assert-ProtectedVerifierFile {
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "publisher_verifier_missing"
+  }
+  $item = Get-Item -LiteralPath $Path -Force
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "publisher_verifier_acl_invalid"
+  }
+  $allowed = @{
+    "S-1-5-18" = $false
+    "S-1-5-32-544" = $false
+  }
+  $acl = Get-Acl -LiteralPath $Path
+  if (-not $acl.AreAccessRulesProtected) { throw "publisher_verifier_acl_invalid" }
+  try { $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value }
+  catch { throw "publisher_verifier_acl_invalid" }
+  if (-not $allowed.ContainsKey($ownerSid)) { throw "publisher_verifier_acl_invalid" }
+  foreach ($rule in @($acl.Access)) {
+    try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }
+    catch { throw "publisher_verifier_acl_invalid" }
+    if ($rule.IsInherited -or $rule.AccessControlType -ne
+        [Security.AccessControl.AccessControlType]::Allow -or
+        -not $allowed.ContainsKey($sid) -or $allowed[$sid] -or
+        $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+        $rule.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None -or
+        $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+      throw "publisher_verifier_acl_invalid"
+    }
+    $allowed[$sid] = $true
+  }
+  if ($allowed.Values -contains $false) { throw "publisher_verifier_acl_invalid" }
 }
 
 function Set-RestrictedFileAcl {
@@ -577,7 +623,8 @@ function Release-Locks {
 
 function Write-Audit {
   param([Parameter(Mandatory)][string]$Event, [Parameter(Mandatory)][string]$Result,
-    [Parameter(Mandatory)][string]$CandidateIdentity, [string]$ErrorCode = "")
+    [Parameter(Mandatory)][AllowEmptyString()][string]$CandidateIdentity,
+    [string]$ErrorCode = "")
   $stream = [IO.File]::Open($AuditLockPath, "Open", "ReadWrite", "None")
   try {
     $previousHash = "0" * 64
@@ -594,12 +641,11 @@ function Write-Audit {
         try {
           $existing = $line | ConvertFrom-Json
           if ([string]$existing.previous_hash -cne $previousHash) { throw "invalid" }
-          $payload = [ordered]@{}
-          foreach ($property in $existing.PSObject.Properties) {
-            if ($property.Name -ne "record_hash") { $payload[$property.Name] = $property.Value }
-          }
-          if ((Get-Sha256Text ($payload | ConvertTo-Json -Depth 8 -Compress)) -cne
-              [string]$existing.record_hash) { throw "invalid" }
+          $hashMaterial = Get-AuditLineHashMaterial -Line $line
+          if ($null -eq $hashMaterial -or
+              [string]$existing.record_hash -cne [string]$hashMaterial.record_hash -or
+              (Get-Sha256Text ([string]$hashMaterial.payload)) -cne
+                [string]$hashMaterial.record_hash) { throw "invalid" }
           if (
             [string]$existing.operation_id -ceq $OperationId -and
             [string]$existing.event -ceq $Event -and
@@ -646,7 +692,9 @@ function Assert-NetworkBoundary {
     }
     if ([string]$value.pull_policy -ne "never") { throw "network_boundary_pull_policy_invalid" }
     if ([string]$value.image -match ':latest$') { throw "mutable_image_reference" }
-    foreach ($port in @($value.ports)) {
+    $portsProperty = $value.PSObject.Properties["ports"]
+    if ($null -eq $portsProperty -or $null -eq $portsProperty.Value) { continue }
+    foreach ($port in @($portsProperty.Value)) {
       if ($null -eq $port -or $null -eq $port.PSObject.Properties["published"] -or
           [int]$port.published -le 0) {
         throw "network_boundary_published_port_invalid"
@@ -692,7 +740,7 @@ function Invoke-PublisherVerification {
     [Parameter(Mandatory)][string]$Root,
     [Parameter(Mandatory)][string]$EnvironmentPath
   )
-  Assert-RestrictedFile -Path $VerifierPath
+  Assert-ProtectedVerifierFile -Path $VerifierPath
   $startInfo = New-Object Diagnostics.ProcessStartInfo
   $startInfo.FileName = (Get-Command pwsh.exe -ErrorAction Stop).Source
   $startInfo.Arguments = @(
@@ -1115,6 +1163,7 @@ function New-SafeResult {
 
 $active = $null
 $locks = $null
+$auditCandidateIdentity = $ExpectedLogicalIdentity
 try {
   if ($OperationId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') {
     throw "operation_id_invalid"
@@ -1249,6 +1298,7 @@ try {
     try { $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json }
     catch { throw "manifest_invalid" }
     $images = Assert-CandidateManifest $manifest $CandidateRoot
+    $auditCandidateIdentity = [string]$manifest.logical_identity
     $expectedValues = Get-ReleaseValues -Manifest $manifest -Images $images
     $actualValues = Get-EnvironmentReleaseValues -Path $EnvFile
     foreach ($field in $AllowedFields) {
@@ -1534,8 +1584,8 @@ catch {
   elseif ($Action -eq "Apply" -and (Test-SafeIncomingCandidateCleanup $CandidateRoot)) {
     $SafeToRemoveIncoming = $true
   }
-  try { Write-Audit "upgrade_rejected" $finalStatus $ExpectedLogicalIdentity $errorCode }
-  catch { $errorCode = "rejection_audit_failed" }
+  try { Write-Audit "upgrade_rejected" $finalStatus $auditCandidateIdentity $errorCode }
+  catch { }
   New-SafeResult $false $finalStatus -ErrorCode $errorCode -Active $active -Locks $locks |
     ConvertTo-Json -Depth 10 -Compress
 }
