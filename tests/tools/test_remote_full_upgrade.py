@@ -65,6 +65,86 @@ def test_controller_has_closed_approved_transport_workflow() -> None:
     assert "MANAGEMENT_TOKEN" not in script
 
 
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("action, expected_status", [("Status", "observed"), ("Plan", "planned")])
+def test_read_only_dispatch_accepts_an_empty_remote_candidate_root(
+    executable: str,
+    action: str,
+    expected_status: str,
+    tmp_path: Path,
+) -> None:
+    resolved = shutil.which(executable)
+    if resolved is None:
+        pytest.skip(f"{executable} is unavailable")
+    operation_id = "c5a62e0e-98d9-4a9a-8150-c3c8abad719b"
+    candidate = tmp_path / "candidate-a"
+    candidate.mkdir()
+    manifest = {
+        "schema_version": 2,
+        "candidate_id": candidate.name,
+        "source_commit": "a" * 40,
+        "generated_at": "2026-09-02T00:00:00+00:00",
+        "target_os": "linux",
+        "target_architecture": "amd64",
+        "alembic_head": "0012_alarm_notification_runtime",
+        "logical_identity": f"sha256:{'b' * 64}",
+        "tools": {},
+        "authenticity": {},
+        "images": [
+            {"component": component} for component in ("postgres", "redis", "api", "gw", "web")
+        ],
+    }
+    (candidate / "MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (candidate / "SHA256SUMS").write_text("", encoding="ascii")
+    (candidate / "SHA256SUMS.sig").write_text(
+        "-----BEGIN SSH SIGNATURE-----\n-----END SSH SIGNATURE-----\n", encoding="ascii"
+    )
+    response = json.dumps(
+        {
+            "schema_version": 1,
+            "ok": True,
+            "status": expected_status,
+            "action": action,
+            "operation_id": operation_id,
+            "error_code": "",
+            "active_release": None,
+            "candidate": None,
+            "locks": None,
+            "backup": None,
+        },
+        separators=(",", ":"),
+    )
+    action_arguments = (
+        "" if action == "Status" else f"-CandidatePath {_ps_literal(candidate)} -DryRun"
+    )
+    command = rf"""
+function ssh.exe {{
+  $received = @($input)
+  if ($received.Count -ne 1) {{ throw 'unexpected updater payload count' }}
+  $payload = [string]$received[0]
+  if ($payload.IndexOf("-CandidateRoot [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(''))") -lt 0) {{
+    throw 'empty candidate root was not transported'
+  }}
+  $global:LASTEXITCODE = 0
+  {_ps_literal(response)}
+}}
+& {_ps_literal(CONTROLLER)} -Action {action} -Target 'operator@100.64.0.1' `
+  -SiteRoot 'C:\Ruisheng\candidates\site-current' -OperationId '{operation_id}' `
+  {action_arguments}
+"""
+    completed = subprocess.run(
+        [resolved, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stderr == ""
+    assert json.loads(completed.stdout) == json.loads(response)
+
+
 def test_target_updater_enforces_supply_chain_schema_and_boundary_gates() -> None:
     script = _read(UPDATER)
 

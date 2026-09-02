@@ -161,7 +161,7 @@ function Invoke-SshScript {
 function Invoke-Updater {
   param(
     [Parameter(Mandatory)][string]$UpdaterSource,
-    [Parameter(Mandatory)][string]$RemoteCandidateRoot,
+    [Parameter(Mandatory)][AllowEmptyString()][string]$RemoteCandidateRoot,
     $Metadata = $null
   )
   $expectedCandidateId = if ($null -eq $Metadata) { "" } else { [string]$Metadata.candidate_id }
