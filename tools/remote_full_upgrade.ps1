@@ -11,6 +11,8 @@ param(
   [string]$Reason = "",
   [ValidateRange(120, 3600)][int]$LeaseSeconds = 900,
   [ValidateRange(1, 68719476736)][long]$MaxCandidateBytes = 34359738368,
+  [ValidateRange(1, 20)][int]$UploadAttempts = 8,
+  [switch]$ResumeUpload,
   [switch]$DryRun,
   [switch]$Approved
 )
@@ -214,6 +216,168 @@ function Invoke-SshScript {
   if ($exitCode -ne 0) { throw "Remote upgrade transport failed with exit code $exitCode." }
   if ($errorText) { throw "Remote upgrade transport returned stderr." }
   return $text
+}
+
+function ConvertTo-SftpPath {
+  param([Parameter(Mandatory)][string]$Path)
+  if ($Path -match '["\r\n\x00-\x1f\x7f]') {
+    throw "SFTP paths must not contain quotes or control characters."
+  }
+  return '"' + $Path.Replace("\", "/") + '"'
+}
+
+function Invoke-ResumableCandidateUpload {
+  param(
+    [Parameter(Mandatory)][string]$LocalRoot,
+    [Parameter(Mandatory)][string]$RemoteRoot
+  )
+  Assert-RemotePath -Path $RemoteRoot
+  $resolvedLocalRoot = [IO.Path]::GetFullPath($LocalRoot).TrimEnd('\')
+  $files = @(Get-ChildItem -LiteralPath $resolvedLocalRoot -Recurse -Force -File |
+    Sort-Object FullName)
+  if ($files.Count -eq 0) { throw "Candidate upload contains no files." }
+  $commands = New-Object Collections.Generic.List[string]
+  foreach ($file in $files) {
+    if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "Candidate upload contains a linked file."
+    }
+    $relative = $file.FullName.Substring($resolvedLocalRoot.Length + 1)
+    $remoteFile = Join-Path $RemoteRoot $relative
+    $commands.Add(
+      "-reput $(ConvertTo-SftpPath $file.FullName) $(ConvertTo-SftpPath $remoteFile)"
+    )
+  }
+  $expectedLengths = [ordered]@{}
+  foreach ($file in $files) {
+    $relative = $file.FullName.Substring($resolvedLocalRoot.Length + 1)
+    $expectedLengths[$relative] = [long]$file.Length
+  }
+  $expectedJson = $expectedLengths | ConvertTo-Json -Compress
+  $placeholderPreparation = @"
+`$ErrorActionPreference = "Stop"
+`$root = [IO.Path]::GetFullPath($(ConvertTo-PowerShellUtf8Expression $RemoteRoot)).TrimEnd('\')
+`$expected = $(ConvertTo-PowerShellUtf8Expression $expectedJson) | ConvertFrom-Json
+if (-not (Test-Path -LiteralPath `$root -PathType Container)) {
+  throw "candidate_upload_root_missing"
+}
+foreach (`$property in `$expected.PSObject.Properties) {
+  `$relative = [string]`$property.Name
+  if (`$relative -notmatch '^[A-Za-z0-9._-]+(?:\\[A-Za-z0-9._-]+)*$') {
+    throw "candidate_upload_relative_path_invalid"
+  }
+  `$path = [IO.Path]::GetFullPath((Join-Path `$root `$relative))
+  if (-not `$path.StartsWith(`$root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw "candidate_upload_path_escape"
+  }
+  `$parent = Split-Path -Parent `$path
+  if (-not (Test-Path -LiteralPath `$parent)) {
+    New-Item -ItemType Directory -Path `$parent -Force | Out-Null
+  }
+  `$parentItem = Get-Item -LiteralPath `$parent -Force
+  if (-not `$parentItem.PSIsContainer -or
+      (`$parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "candidate_upload_parent_invalid"
+  }
+  if (Test-Path -LiteralPath `$path) {
+    `$item = Get-Item -LiteralPath `$path -Force
+    if (`$item.PSIsContainer -or
+        (`$item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        [long]`$item.Length -gt [long]`$property.Value) {
+      throw "candidate_upload_file_invalid"
+    }
+  }
+  else {
+    `$stream = [IO.File]::Open(`$path, "CreateNew", "Write", "None")
+    `$stream.Dispose()
+  }
+}
+[Console]::Out.Write("prepared")
+"@
+  $placeholderResult = Invoke-SshScript -Script $placeholderPreparation
+  if ($placeholderResult -cne "prepared") {
+    throw "Candidate resumable upload placeholder preparation returned invalid data."
+  }
+  $completionProbe = @"
+`$ErrorActionPreference = "Stop"
+`$root = $(ConvertTo-PowerShellUtf8Expression $RemoteRoot)
+`$expected = $(ConvertTo-PowerShellUtf8Expression $expectedJson) | ConvertFrom-Json
+`$state = "complete"
+if (-not (Test-Path -LiteralPath `$root -PathType Container)) { `$state = "incomplete" }
+`$actual = if (`$state -eq "complete") {
+  @(Get-ChildItem -LiteralPath `$root -Recurse -Force -File)
+} else { @() }
+`$linked = @(Get-ChildItem -LiteralPath `$root -Recurse -Force | Where-Object {
+  (`$_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+})
+if (`$linked.Count -ne 0) { `$state = "incomplete" }
+`$expectedNames = @(`$expected.PSObject.Properties.Name)
+if (`$actual.Count -ne `$expectedNames.Count) { `$state = "incomplete" }
+foreach (`$file in `$actual) {
+  `$relative = `$file.FullName.Substring(`$root.TrimEnd('\').Length + 1)
+  `$property = `$expected.PSObject.Properties[`$relative]
+  if (`$null -eq `$property -or [long]`$property.Value -ne [long]`$file.Length -or
+      (`$file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    `$state = "incomplete"
+  }
+}
+[Console]::Out.Write(`$state)
+"@
+  $commands.Add("quit")
+  $batch = ($commands -join "`n") + "`n"
+  $sftp = (Get-Command sftp.exe -ErrorAction Stop).Source
+  $arguments = @(
+    "-b", "-",
+    "-o", "BatchMode=yes",
+    "-o", "StrictHostKeyChecking=yes",
+    "-o", "ConnectTimeout=10",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=3",
+    $Target
+  )
+  $lastExitCode = -1
+  for ($attempt = 1; $attempt -le $UploadAttempts; $attempt++) {
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = New-Object Diagnostics.ProcessStartInfo
+    $process.StartInfo.FileName = $sftp
+    $process.StartInfo.Arguments = $arguments -join " "
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $true
+    $process.StartInfo.RedirectStandardInput = $true
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    $process.StartInfo.StandardOutputEncoding = $utf8
+    $process.StartInfo.StandardErrorEncoding = $utf8
+    $started = $false
+    try {
+      $started = $process.Start()
+      if (-not $started) { throw "Candidate resumable upload failed to start." }
+      $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+      $stderrTask = $process.StandardError.ReadToEndAsync()
+      $batchBytes = $utf8.GetBytes($batch)
+      $process.StandardInput.BaseStream.Write($batchBytes, 0, $batchBytes.Length)
+      $process.StandardInput.BaseStream.Close()
+      [void]$process.WaitForExit()
+      [Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 10000) | Out-Null
+      $lastExitCode = $process.ExitCode
+      if ($lastExitCode -eq 0) {
+        try { $uploadState = Invoke-SshScript -Script $completionProbe }
+        catch {
+          $lastExitCode = -2
+          continue
+        }
+        if ($uploadState -ceq "complete") { return }
+        $lastExitCode = -3
+      }
+    }
+    finally {
+      if ($started -and -not $process.HasExited) {
+        try { $process.Kill() } catch { }
+      }
+      $process.Dispose()
+    }
+  }
+  throw "Candidate resumable upload failed after $UploadAttempts attempts with exit code $lastExitCode."
 }
 
 function Invoke-Updater {
@@ -444,6 +608,9 @@ if ($Action -in @("Initialize", "Apply", "Recover") -and -not $Approved) {
 if ($Action -eq "Plan" -and -not $DryRun) {
   throw "Plan requires -DryRun."
 }
+if ($ResumeUpload -and $Action -ne "Apply") {
+  throw "ResumeUpload is only valid for Apply."
+}
 if ($Action -in @("Initialize", "Apply", "Recover") -and
     ($Reason.Length -lt 8 -or $Reason.Length -gt 200 -or $Reason -match '[\x00-\x1f\x7f]')) {
   throw "Reason must contain 8-200 characters without control characters."
@@ -475,8 +642,11 @@ foreach ($command in @("ssh.exe")) {
     throw "Required command was not found: $command"
   }
 }
-if ($Action -eq "Apply" -and $null -eq (Get-Command "scp.exe" -ErrorAction SilentlyContinue)) {
-  throw "Required command was not found: scp.exe"
+if ($Action -eq "Apply") {
+  $uploadCommand = if ($ResumeUpload) { "sftp.exe" } else { "scp.exe" }
+  if ($null -eq (Get-Command $uploadCommand -ErrorAction SilentlyContinue)) {
+    throw "Required command was not found: $uploadCommand"
+  }
 }
 $updaterPath = Join-Path $PSScriptRoot "remote_full_upgrade\target-updater.ps1"
 if (-not (Test-Path -LiteralPath $updaterPath -PathType Leaf)) {
@@ -527,41 +697,94 @@ try {
     $prepare = @"
 `$ErrorActionPreference = "Stop"
 `$path = $(ConvertTo-PowerShellUtf8Expression $incomingOperationRoot)
-if (Test-Path -LiteralPath `$path) { throw "incoming_operation_conflict" }
-New-Item -ItemType Directory -Path `$path | Out-Null
+`$candidatePath = $(ConvertTo-PowerShellUtf8Expression $remoteCandidateRoot)
+`$resumeAllowed = `$$([bool]$ResumeUpload)
 `$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-`$acl = New-Object Security.AccessControl.DirectorySecurity
-`$acl.SetOwner(`$sid)
-`$acl.SetAccessRuleProtection(`$true, `$false)
-foreach (`$value in @(`$sid.Value, "S-1-5-18", "S-1-5-32-544") | Select-Object -Unique) {
-  `$identity = New-Object Security.Principal.SecurityIdentifier(`$value)
-  `$rule = New-Object Security.AccessControl.FileSystemAccessRule(
-    `$identity, [Security.AccessControl.FileSystemRights]::FullControl,
-    ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
-      [Security.AccessControl.InheritanceFlags]::ObjectInherit),
-    [Security.AccessControl.PropagationFlags]::None,
-    [Security.AccessControl.AccessControlType]::Allow
-  )
-  [void]`$acl.AddAccessRule(`$rule)
+if (Test-Path -LiteralPath `$path) {
+  if (-not `$resumeAllowed) { throw "incoming_operation_conflict" }
+  `$item = Get-Item -LiteralPath `$path -Force
+  `$existingAcl = Get-Acl -LiteralPath `$path
+  if (-not `$item.PSIsContainer -or
+      (`$item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      -not `$existingAcl.AreAccessRulesProtected -or
+      `$existingAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne `$sid.Value) {
+    throw "incoming_operation_resume_invalid"
+  }
+  `$allowed = @{}
+  foreach (`$value in @(`$sid.Value, "S-1-5-18", "S-1-5-32-544") | Select-Object -Unique) {
+    `$allowed[`$value] = `$false
+  }
+  `$rules = @(`$existingAcl.Access)
+  if (`$rules.Count -ne `$allowed.Count) { throw "incoming_operation_resume_invalid" }
+  foreach (`$rule in `$rules) {
+    `$value = `$rule.IdentityReference.Translate(
+      [Security.Principal.SecurityIdentifier]
+    ).Value
+    if (-not `$allowed.ContainsKey(`$value) -or `$allowed[`$value] -or `$rule.IsInherited -or
+        `$rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        `$rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+        `$rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+      throw "incoming_operation_resume_invalid"
+    }
+    `$allowed[`$value] = `$true
+  }
+  if (`$allowed.Values -contains `$false) { throw "incoming_operation_resume_invalid" }
+  `$prepareState = "resumed"
 }
-Set-Acl -LiteralPath `$path -AclObject `$acl
-[Console]::Out.Write("prepared")
+else {
+  New-Item -ItemType Directory -Path `$path | Out-Null
+  `$acl = New-Object Security.AccessControl.DirectorySecurity
+  `$acl.SetOwner(`$sid)
+  `$acl.SetAccessRuleProtection(`$true, `$false)
+  foreach (`$value in @(`$sid.Value, "S-1-5-18", "S-1-5-32-544") | Select-Object -Unique) {
+    `$identity = New-Object Security.Principal.SecurityIdentifier(`$value)
+    `$rule = New-Object Security.AccessControl.FileSystemAccessRule(
+      `$identity, [Security.AccessControl.FileSystemRights]::FullControl,
+      ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit),
+      [Security.AccessControl.PropagationFlags]::None,
+      [Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]`$acl.AddAccessRule(`$rule)
+  }
+  Set-Acl -LiteralPath `$path -AclObject `$acl
+  `$prepareState = "prepared"
+}
+foreach (`$directory in @(`$candidatePath, (Join-Path `$candidatePath "images"))) {
+  if (Test-Path -LiteralPath `$directory) {
+    `$item = Get-Item -LiteralPath `$directory -Force
+    if (-not `$item.PSIsContainer -or
+        (`$item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "incoming_operation_resume_invalid"
+    }
+  }
+  else { New-Item -ItemType Directory -Path `$directory | Out-Null }
+}
+[Console]::Out.Write(`$prepareState)
 "@
     $prepareResult = Invoke-SshScript -Script $prepare
-    if ($prepareResult -cne "prepared") {
+    if ($prepareResult -notin @("prepared", "resumed")) {
       throw "Remote upgrade preparation returned invalid data."
     }
-    $scpRoot = $incomingOperationRoot.Replace("\", "/") + "/"
-    $scpArguments = @(
-      "-r",
-      "-o", "BatchMode=yes",
-      "-o", "StrictHostKeyChecking=yes",
-      "-o", "ConnectTimeout=10",
-      $script:CandidateMetadata.root,
-      "${Target}:$scpRoot"
-    )
-    & scp.exe @scpArguments
-    if ($LASTEXITCODE -ne 0) { throw "Candidate upload failed with exit code $LASTEXITCODE." }
+    if ($ResumeUpload) {
+      Invoke-ResumableCandidateUpload -LocalRoot $script:CandidateMetadata.root `
+        -RemoteRoot $remoteCandidateRoot
+    }
+    else {
+      $scpRoot = $incomingOperationRoot.Replace("\", "/") + "/"
+      $scpArguments = @(
+        "-r",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", "ConnectTimeout=10",
+        $script:CandidateMetadata.root,
+        "${Target}:$scpRoot"
+      )
+      & scp.exe @scpArguments
+      if ($LASTEXITCODE -ne 0) {
+        throw "Candidate upload failed with exit code $LASTEXITCODE."
+      }
+    }
     $result = Invoke-Updater -UpdaterSource $updaterSource `
       -RemoteCandidateRoot $remoteCandidateRoot -Metadata $script:CandidateMetadata
   }
