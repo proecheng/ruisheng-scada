@@ -243,7 +243,7 @@ function Test-RemoteHealth {
   $remoteScript = @'
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-docker exec ruisheng-api python -c "import urllib.request; print('api=' + str(urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=5).status))"
+docker exec ruisheng-api python -m ruisheng_api.healthcheck
 if ($LASTEXITCODE -ne 0) { throw "API health check failed." }
 docker exec ruisheng-gw python -c "import urllib.request; print('gw=' + str(urllib.request.urlopen('http://127.0.0.1:9090/ready', timeout=5).status))"
 if ($LASTEXITCODE -ne 0) { throw "GW health check failed." }

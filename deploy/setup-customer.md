@@ -290,101 +290,67 @@ docker exec ruisheng-postgres pg_dump -U ruisheng_admin ruisheng > backup_$(date
 
 ## 升级
 
-先在新候选目录中完成候选校验，再只把六个发布方管理字段（`TARGET_PLATFORM` 和五个 `*_IMAGE`）从新候选模板合并到既有站点环境文件。不得用旧候选标签启动新包，也不得覆盖站点密码和运行参数。
+Windows 客户机的正式全量升级从发布机仓库根目录调用受控入口，不再在目标机上手工选择目录、修改 `.env.prod` 或执行 Compose。目标机必须已完成公钥 SSH、固定 host key、维护安全目录和包外发布者校验器准备。首版只接受 Manifest v2/v3、不可变五镜像以及与目标数据库完全相同的 Alembic head；需要 schema 变化的版本保持阻断，必须另行设计和批准数据库恢复流程。
 
-**Linux/Mac：**
-
-```bash
-set -euo pipefail
-
-# 校验并加载新候选
-sudo /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash /usr/local/lib/ruisheng/verify-publisher.sh .
-
-# 原子更新六个发布字段，保留站点密码和运行参数
-python3 - .env.prod.example ../site/.env.prod <<'PY'
-import os, pathlib, shutil, sys
-keys = {"TARGET_PLATFORM", "POSTGRES_IMAGE", "REDIS_IMAGE", "API_IMAGE", "GW_IMAGE", "WEB_IMAGE"}
-source, target = map(pathlib.Path, sys.argv[1:])
-release = {k: v for line in source.read_text(encoding="utf-8").splitlines()
-           for k, sep, v in [line.partition("=")] if sep and k in keys}
-lines, seen = [], set()
-for line in target.read_text(encoding="utf-8").splitlines():
-    key, sep, _ = line.partition("=")
-    if sep and key in keys:
-        line, seen = f"{key}={release[key]}", seen | {key}
-    lines.append(line)
-if set(release) != keys:
-    raise SystemExit("release field set mismatch")
-lines.extend(f"{key}={release[key]}" for key in sorted(keys - seen))
-temporary = target.with_name(target.name + ".tmp")
-temporary.touch(mode=0o600, exist_ok=False)
-try:
-    metadata = target.stat()
-    os.chown(temporary, metadata.st_uid, metadata.st_gid)
-    shutil.copystat(target, temporary, follow_symlinks=False)
-    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.replace(temporary, target)
-finally:
-    temporary.unlink(missing_ok=True)
-PY
-
-# 用最终站点环境再次闭环候选标签和平台，然后停止旧版本
-sudo /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash /usr/local/lib/ruisheng/verify-publisher.sh . ../site/.env.prod
-python3 ./validate-network-boundary.py \
-  --compose ./docker-compose.prod.yml \
-  --compose ./site-network.override.yml \
-  --env-file ../site/.env.prod \
-  --profile ../site/site-acceptance-profile.md \
-  --nginx-config ./nginx.conf \
-  --acl-file ../site/site-health-acl.conf
-docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file ../site/.env.prod down
-
-# 重启（会自动运行新的数据库迁移）
-docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file ../site/.env.prod up -d
-```
-
-**Windows PowerShell：**
+先设置目标与站点根：
 
 ```powershell
-$ErrorActionPreference = "Stop"
-C:\ProgramData\Ruisheng\bin\verify-publisher.ps1 .
-$Keys = @("TARGET_PLATFORM", "POSTGRES_IMAGE", "REDIS_IMAGE", "API_IMAGE", "GW_IMAGE", "WEB_IMAGE")
-$Release = @{}
-Get-Content .env.prod.example | ForEach-Object {
-    $Key, $Value = $_ -split "=", 2
-    if ($Keys -contains $Key) { $Release[$Key] = $Value }
-}
-$Site = "..\site\.env.prod"
-$Seen = @{}
-$Lines = Get-Content $Site | ForEach-Object {
-    $Key, $Value = $_ -split "=", 2
-    if ($Keys -contains $Key) { $Seen[$Key] = $true; "$Key=$($Release[$Key])" } else { $_ }
-}
-if ($Release.Count -ne 6) { throw "release field set mismatch" }
-$Keys | Where-Object { -not $Seen.ContainsKey($_) } | ForEach-Object {
-    $Lines += "$_=$($Release[$_])"
-}
-$SiteAcl = Get-Acl -LiteralPath $Site
-$TemporarySite = "$Site.tmp"
-New-Item -ItemType File -Path $TemporarySite -ErrorAction Stop | Out-Null
-try {
-    Set-Acl -LiteralPath $TemporarySite -AclObject $SiteAcl
-    [IO.File]::WriteAllLines($TemporarySite, $Lines, [Text.UTF8Encoding]::new($false))
-    Move-Item -Force $TemporarySite $Site
-} finally {
-    Remove-Item -LiteralPath $TemporarySite -Force -ErrorAction SilentlyContinue
-}
-C:\ProgramData\Ruisheng\bin\verify-publisher.ps1 . $Site
-py -3 .\validate-network-boundary.py `
-  --compose .\docker-compose.prod.yml `
-  --compose .\site-network.override.yml `
-  --env-file $Site `
-  --profile ..\site\site-acceptance-profile.md `
-  --nginx-config .\nginx.conf `
-  --acl-file ..\site\site-health-acl.conf
-docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file $Site down
-docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-file $Site up -d
+$Target = "operator@100.x.y.z"
+$SiteRoot = "C:\Ruisheng\candidates\site-deploy-20260831.1"
 ```
+
+目标机首次纳入受控升级且尚无 `active-release.json` 时，必须在 Plan 前执行显式初始化，因为 Plan 需要读取活动指针。必须提供当前正在运行的签名候选根和站点根；工具不会扫描或猜测最新目录，不会上传候选，也不会启停或重建服务。它在双锁内验签并核对正式环境六字段、Compose、运行容器、平台、数据库 head 和网络边界，全部一致后只写活动指针和审计；相同操作和候选可补写中断审计，不同操作或候选会拒绝：
+
+```powershell
+$CurrentCandidateRoot = "C:\Ruisheng\candidates\deploy-20260831.1"
+$InitializationOperation = [Guid]::NewGuid().ToString("D")
+
+.\tools\remote_full_upgrade.ps1 -Action Initialize -Target $Target `
+  -SiteRoot $SiteRoot -CurrentCandidateRoot $CurrentCandidateRoot `
+  -OperationId $InitializationOperation `
+  -Reason "approved active release initialization" -Approved
+```
+
+活动指针存在后，为本次升级生成 UUID 并执行只读 Plan。Plan 不上传候选、不加载镜像、不获取锁，也不写目标状态或审计：
+
+```powershell
+$Candidate = "C:\ProtectedRelease\deploy-YYYYMMDD.N"
+$Operation = [Guid]::NewGuid().ToString("D")
+$Reason = "approved signed full release upgrade"
+
+.\tools\remote_full_upgrade.ps1 -Action Plan -Target $Target `
+  -CandidatePath $Candidate -SiteRoot $SiteRoot -OperationId $Operation -DryRun
+```
+
+核对返回的活动版本、候选逻辑身份、平台、数据库 head、磁盘资源和两把维护锁。真实性在 Apply 时由目标机固定路径 `C:\ProgramData\Ruisheng\bin\verify-publisher.ps1` 重新验证；校验器返回 `2` 且同时输出 publisher `VERIFIED` 与 `B-04 remains BLOCKED` 是预期边界，只证明签名包真实性，不代表现场网络验收通过。
+
+获得针对该操作 ID、候选身份和原因的当次人工批准后，才执行 Apply：
+
+```powershell
+.\tools\remote_full_upgrade.ps1 -Action Apply -Target $Target `
+  -CandidatePath $Candidate -SiteRoot $SiteRoot -OperationId $Operation `
+  -Reason $Reason -Approved
+```
+
+Apply 把候选上传到按操作 ID 隔离的 incoming 目录。目标状态机验签后再次检查平台、同 head、Compose 服务闭集、不可变镜像和宿主端口边界，再按 `shared-maintenance -> legacy-hotfix` 顺序持有并续租双锁。切换前生成 `pg_dump`、角色备份及 SHA-256 回执，只原子替换 `TARGET_PLATFORM` 和五个 `*_IMAGE`；密码、网络和其他站点字段逐字保留。它不执行 Compose `down`，不删除卷、旧候选、备份或审计。API、GW 和 Web 的容器内探针以及 PostgreSQL、Redis 健康全部通过后，才原子提交 `active-release.json`。
+
+用相同操作 ID 查询结果：
+
+```powershell
+.\tools\remote_full_upgrade.ps1 -Action Status -Target $Target `
+  -SiteRoot $SiteRoot -OperationId $Operation
+```
+
+若结果为 `uncertain`，不要手工删锁、改环境或重跑新的 Apply。先确认无人正在维护，再使用完全相同的操作 ID 和原因，获得新的当次批准后重放 Recover：
+
+```powershell
+.\tools\remote_full_upgrade.ps1 -Action Recover -Target $Target `
+  -SiteRoot $SiteRoot -OperationId $Operation -Reason $Reason -Approved
+```
+
+失败恢复只恢复旧六字段和旧镜像服务，不把它称作数据库恢复。`recovery_failed` 必须保留现场、journal、备份和双端哈希链审计，由管理员检查后另行批准处理。升级工具不定时检测、不自动拉取、不自动续费，也不替代 B-04 网络边界、B-07 管理员交接或 B-08 备份恢复的现场验收。
+
+Linux 客户机当前没有等价的远程全量状态机；不得照搬 Windows 命令或把旧手工流程作为正式放行证据。
 
 ## 故障排查
 
