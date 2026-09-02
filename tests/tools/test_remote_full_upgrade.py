@@ -414,12 +414,14 @@ def _apply_prepare_harness() -> str:
     convert = _function(source, "ConvertTo-PowerShellUtf8Expression", "Get-Sha256Text")
     transport = _function(source, "Invoke-SshScript", "Invoke-Updater")
     start = source.index('    $prepare = @"')
-    end = source.index("    $scpRoot =", start)
+    end = source.index("    if ($ResumeUpload) {", start)
     prepare = source[start:end]
     return f"""
 $ErrorActionPreference = "Stop"
 $Target = "operator@100.64.0.1"
 $incomingOperationRoot = "C:\\Ruisheng\\incoming\\c5a62e0e-98d9-4a9a-8150-c3c8abad719b"
+$remoteCandidateRoot = "$incomingOperationRoot\\candidate-a"
+$ResumeUpload = $false
 {bootstrap}
 {convert}
 {transport}
@@ -560,6 +562,20 @@ def test_controller_has_closed_approved_transport_workflow() -> None:
     assert "Invoke-Expression" not in script
     assert "target-updater.ps1" in script
     assert "scp.exe" in script
+    assert "[switch]$ResumeUpload" in script
+    assert "ResumeUpload is only valid for Apply." in script
+    assert "sftp.exe" in script
+    assert '"-reput $(ConvertTo-SftpPath $file.FullName)' in script
+    assert '"ServerAliveInterval=15"' in script
+    assert '"ServerAliveCountMax=3"' in script
+    assert "$uploadState = Invoke-SshScript -Script $completionProbe" in script
+    assert "$placeholderResult = Invoke-SshScript -Script $placeholderPreparation" in script
+    assert "candidate_upload_relative_path_invalid" in script
+    assert "candidate_upload_path_escape" in script
+    assert "candidate_upload_file_invalid" in script
+    assert "`$actual.Count -ne `$expectedNames.Count" in script
+    assert "[long]`$property.Value -ne [long]`$file.Length" in script
+    assert "incoming_operation_resume_invalid" in script
     assert 'if ($Action -eq "Plan")' in script
     plan = script.split('if ($Action -eq "Plan")', 1)[1].split('if ($Action -eq "Apply")', 1)[0]
     assert "scp.exe" not in plan
@@ -643,8 +659,10 @@ def test_native_ssh_executes_apply_prepare_and_requires_exact_output(
     assert len(calls) == 1
     _assert_transport_call(calls[0])
     payload = _decode_transport_payload(calls[0])
-    assert payload.count('[Console]::Out.Write("prepared")') == 1
+    assert payload.count('$prepareState = "prepared"') == 1
+    assert payload.count("[Console]::Out.Write($prepareState)") == 1
     assert "Set-Acl -LiteralPath $path -AclObject $acl" in payload
+    assert 'Join-Path $candidatePath "images"' in payload
     assert _read(UPDATER) not in payload
 
 

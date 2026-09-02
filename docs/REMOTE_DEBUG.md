@@ -135,6 +135,16 @@ $Reason = "approved signed full release upgrade"
   -SiteRoot $SiteRoot -OperationId $Operation
 ```
 
+如果 Apply 在候选上传阶段因网络或 Tailscale 中继切换失败，且 Status 证明活动版本未变、双锁为空、目标端尚未进入升级事务，可使用完全相同的操作 ID、候选和原因断点续传。该模式会先验证既有 incoming 目录的所有者和 ACL，拒绝链接、越界路径、超长文件及额外文件；每次 SFTP 中断后从已有长度继续，并在完整文件集合和长度通过后才调用目标 updater。`UploadAttempts` 只控制本次自动重连次数，不放宽候选签名、SHA-256、镜像身份、schema、网络边界或健康门禁：
+
+```powershell
+.\tools\remote_full_upgrade.ps1 -Action Apply -ResumeUpload -UploadAttempts 8 `
+  -Target $Target -CandidatePath $Candidate -SiteRoot $SiteRoot `
+  -OperationId $Operation -Reason $Reason -Approved
+```
+
+不要对不同候选或原因复用 incoming 操作目录。若 Status 显示 journal 已进入 `uncertain`、`rolled_back` 或 `recovery_failed`，不要继续上传，应按下方 Recover 流程处理。
+
 目标机固定 verifier 返回退出码 `2`、publisher `VERIFIED` 和 `B-04 remains BLOCKED` 是预期结果：它只证明签名与完整包通过，网络边界仍由 updater 独立检查，B-04 现场验收没有因此解除。切换前会生成数据库逻辑备份、角色备份和 SHA-256 回执；只修改六个发布字段，其他站点配置逐字保留。成功时最后提交受保护的 `active-release.json`，其候选 ID、逻辑身份、源码提交、候选根、站点根和操作 ID 是后续维护与热修的唯一版本来源。
 
 失败时状态机持锁恢复旧环境和旧服务；它不执行 `down`、不删卷，也不把镜像恢复称为数据库恢复。中断或锁丢失返回 `uncertain`，此时保留现场并使用相同操作 ID、完全相同的原因和新的当次批准执行 Recover：
