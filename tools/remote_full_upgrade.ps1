@@ -37,6 +37,18 @@ function Get-Sha256Text {
   finally { $sha.Dispose() }
 }
 
+function Get-AuditLineHashMaterial {
+  param([Parameter(Mandatory)][string]$Line)
+  $match = [regex]::Match(
+    $Line, '^(?<payload>\{.*),"record_hash":"(?<hash>[0-9a-f]{64})"\}$'
+  )
+  if (-not $match.Success) { return $null }
+  return [pscustomobject]@{
+    payload = $match.Groups["payload"].Value + "}"
+    record_hash = $match.Groups["hash"].Value
+  }
+}
+
 function Assert-RemotePath {
   param([Parameter(Mandatory)][string]$Path)
   if ($Path -notmatch '^[A-Za-z]:\\[^\r\n]*$') {
@@ -258,6 +270,44 @@ $UpdaterSource
   return $result
 }
 
+function Test-RestrictedAccessControl {
+  param(
+    [Parameter(Mandatory)][Security.AccessControl.FileSystemSecurity]$Acl,
+    [Parameter(Mandatory)][Security.Principal.SecurityIdentifier]$OwnerSid,
+    [Parameter(Mandatory)][Security.AccessControl.InheritanceFlags]$InheritanceFlags
+  )
+  if (-not $Acl.AreAccessRulesProtected) { return $false }
+  try {
+    if ($Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $OwnerSid.Value) {
+      return $false
+    }
+  }
+  catch { return $false }
+  $allowed = @{}
+  foreach ($value in @($OwnerSid.Value, "S-1-5-18", "S-1-5-32-544") | Select-Object -Unique) {
+    $allowed[$value] = $false
+  }
+  $rules = @($Acl.Access)
+  if ($rules.Count -ne $allowed.Count) { return $false }
+  foreach ($rule in $rules) {
+    try {
+      $sid = $rule.IdentityReference.Translate(
+        [Security.Principal.SecurityIdentifier]
+      ).Value
+    }
+    catch { return $false }
+    if (-not $allowed.ContainsKey($sid) -or $allowed[$sid] -or $rule.IsInherited -or
+        $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+        $rule.InheritanceFlags -ne $InheritanceFlags -or
+        $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+      return $false
+    }
+    $allowed[$sid] = $true
+  }
+  return -not ($allowed.Values -contains $false)
+}
+
 function Set-RestrictedDirectory {
   param([Parameter(Mandatory)][string]$Path, [switch]$CreateAuditMutex)
   if (-not (Test-Path -LiteralPath $Path)) {
@@ -269,21 +319,26 @@ function Set-RestrictedDirectory {
     throw "Local audit directory is invalid."
   }
   $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-  $directoryAcl = New-Object Security.AccessControl.DirectorySecurity
-  $directoryAcl.SetOwner($currentSid)
-  $directoryAcl.SetAccessRuleProtection($true, $false)
-  foreach ($sidValue in @($currentSid.Value, "S-1-5-18", "S-1-5-32-544") | Select-Object -Unique) {
-    $sid = New-Object Security.Principal.SecurityIdentifier($sidValue)
-    $rule = New-Object Security.AccessControl.FileSystemAccessRule(
-      $sid, [Security.AccessControl.FileSystemRights]::FullControl,
-      ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
-        [Security.AccessControl.InheritanceFlags]::ObjectInherit),
-      [Security.AccessControl.PropagationFlags]::None,
-      [Security.AccessControl.AccessControlType]::Allow
-    )
-    [void]$directoryAcl.AddAccessRule($rule)
+  $inheritanceFlags = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [Security.AccessControl.InheritanceFlags]::ObjectInherit
+  $existingAcl = Get-Acl -LiteralPath $Path
+  if (-not (Test-RestrictedAccessControl -Acl $existingAcl -OwnerSid $currentSid `
+      -InheritanceFlags $inheritanceFlags)) {
+    $directoryAcl = New-Object Security.AccessControl.DirectorySecurity
+    $directoryAcl.SetOwner($currentSid)
+    $directoryAcl.SetAccessRuleProtection($true, $false)
+    foreach ($sidValue in @($currentSid.Value, "S-1-5-18", "S-1-5-32-544") | Select-Object -Unique) {
+      $sid = New-Object Security.Principal.SecurityIdentifier($sidValue)
+      $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+        $sid, [Security.AccessControl.FileSystemRights]::FullControl,
+        $inheritanceFlags,
+        [Security.AccessControl.PropagationFlags]::None,
+        [Security.AccessControl.AccessControlType]::Allow
+      )
+      [void]$directoryAcl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $Path -AclObject $directoryAcl
   }
-  Set-Acl -LiteralPath $Path -AclObject $directoryAcl
   if ($CreateAuditMutex) {
     $mutex = Join-Path $Path ".full-upgrade-audit.lock"
     $stream = [IO.File]::Open($mutex, "OpenOrCreate", "ReadWrite", "None")
@@ -304,18 +359,22 @@ function Set-RestrictedFile {
     throw "Local audit file is invalid."
   }
   $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-  $acl = New-Object Security.AccessControl.FileSecurity
-  $acl.SetOwner($currentSid)
-  $acl.SetAccessRuleProtection($true, $false)
-  foreach ($sidValue in @($currentSid.Value, "S-1-5-18", "S-1-5-32-544") | Select-Object -Unique) {
-    $sid = New-Object Security.Principal.SecurityIdentifier($sidValue)
-    $rule = New-Object Security.AccessControl.FileSystemAccessRule(
-      $sid, [Security.AccessControl.FileSystemRights]::FullControl,
-      [Security.AccessControl.AccessControlType]::Allow
-    )
-    [void]$acl.AddAccessRule($rule)
+  $existingAcl = Get-Acl -LiteralPath $Path
+  if (-not (Test-RestrictedAccessControl -Acl $existingAcl -OwnerSid $currentSid `
+      -InheritanceFlags ([Security.AccessControl.InheritanceFlags]::None))) {
+    $acl = New-Object Security.AccessControl.FileSecurity
+    $acl.SetOwner($currentSid)
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sidValue in @($currentSid.Value, "S-1-5-18", "S-1-5-32-544") | Select-Object -Unique) {
+      $sid = New-Object Security.Principal.SecurityIdentifier($sidValue)
+      $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+        $sid, [Security.AccessControl.FileSystemRights]::FullControl,
+        [Security.AccessControl.AccessControlType]::Allow
+      )
+      [void]$acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $Path -AclObject $acl
   }
-  Set-Acl -LiteralPath $Path -AclObject $acl
 }
 
 function Write-LocalAudit {
@@ -340,12 +399,13 @@ function Write-LocalAudit {
         if ($count -gt $script:LocalAuditMaxRecords) { throw "Local upgrade audit is too large." }
         try { $existing = $line | ConvertFrom-Json } catch { throw "Local upgrade audit is invalid." }
         if ([string]$existing.previous_hash -cne $previousHash) { throw "Local upgrade audit chain is invalid." }
-        $payload = [ordered]@{}
-        foreach ($property in $existing.PSObject.Properties) {
-          if ($property.Name -ne "record_hash") { $payload[$property.Name] = $property.Value }
+        $hashMaterial = Get-AuditLineHashMaterial -Line $line
+        if ($null -eq $hashMaterial -or
+            [string]$existing.record_hash -cne [string]$hashMaterial.record_hash -or
+            (Get-Sha256Text ([string]$hashMaterial.payload)) -cne
+              [string]$hashMaterial.record_hash) {
+          throw "Local upgrade audit chain is invalid."
         }
-        if ((Get-Sha256Text ($payload | ConvertTo-Json -Depth 8 -Compress)) -cne
-            [string]$existing.record_hash) { throw "Local upgrade audit chain is invalid." }
         $previousHash = [string]$existing.record_hash
       }
     }
