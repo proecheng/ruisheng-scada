@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -449,7 +450,8 @@ def _render_remote_script(
     if scenario:
         scenario_marker = (
             "  $composeBase = @(\n"
-            '    "compose", "-f", $ComposeFile, "-f", $OverrideFile, "--env-file", $EnvFile\n'
+            '    "compose", "--project-directory", $CandidateRoot,\n'
+            '    "-f", $ComposeFile, "-f", $OverrideFile, "--env-file", $EnvFile\n'
             "  )\n\n"
             '  if ($Action -ne "Status" -and -not $DryRun) {'
         )
@@ -457,7 +459,8 @@ def _render_remote_script(
         rendered = rendered.replace(
             scenario_marker,
             "  $composeBase = @(\n"
-            '    "compose", "-f", $ComposeFile, "-f", $OverrideFile, "--env-file", $EnvFile\n'
+            '    "compose", "--project-directory", $CandidateRoot,\n'
+            '    "-f", $ComposeFile, "-f", $OverrideFile, "--env-file", $EnvFile\n'
             f"  )\n{scenario}\n\n"
             '  if ($Action -ne "Status" -and -not $DryRun) {',
             1,
@@ -635,12 +638,27 @@ def test_remote_debug_gw_probe_accepts_only_ready_or_known_bounded_acl_denial(
             'HTTPConnection("127.0.0.1", 9090, timeout=5)',
             f'HTTPConnection("127.0.0.1", {server.server_port}, timeout=5)',
         )
+        probe_encoded = base64.b64encode(probe.encode()).decode()
+        python_path = _ps_literal(sys.executable)
+        powershell_script = f"""
+$probeEncoded = '{probe_encoded}'
+$probeBootstrap = "import base64;exec(base64.b64decode('$probeEncoded'))"
+& {python_path} -c $probeBootstrap
+exit $LASTEXITCODE
+"""
         completed = subprocess.run(
-            [sys.executable, "-c", probe],
+            [
+                _powershell(),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                powershell_script,
+            ],
             check=False,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,
         )
     finally:
         server.shutdown()
@@ -1629,6 +1647,29 @@ def test_maintenance_stop_verification_fails_closed_on_inspect_error(tmp_path: P
     assert stops == ["web"]
 
 
+def test_maintenance_start_keeps_relative_mounts_bound_to_candidate_root(tmp_path: Path) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StartApp",
+        operation_id="00000000-0000-4000-8000-000000000055",
+        scenario=_restricted_scenario(),
+    )
+
+    compose_commands = [
+        command.split("\t") for command in commands if command.startswith("compose\t")
+    ]
+    assert result["status"] == "succeeded"
+    assert result["started"] == ["postgres", "redis", "gw", "api", "web"]
+    assert compose_commands
+    for arguments in compose_commands:
+        project_index = arguments.index("--project-directory")
+        assert arguments[project_index + 1] == str(layout["candidate"])
+
+
 def test_maintenance_reconciles_abandoned_executing_operation_as_uncertain(tmp_path: Path) -> None:
     layout = _remote_layout(tmp_path)
     _prepare_restricted_layout(layout)
@@ -1889,6 +1930,41 @@ Write-OperatorAudit -Result $result -RequestedAction 'StopApp' `
         assert process.returncode == 0, stdout + stderr
 
     _assert_jsonl_hash_chain(audit / "remote-maintenance.jsonl", expected_lines=8)
+
+
+def test_operator_audit_preserves_iso_dates_when_pwsh_revalidates_chain(tmp_path: Path) -> None:
+    powershell = shutil.which("pwsh.exe")
+    if powershell is None:
+        pytest.skip("PowerShell 7 is unavailable")
+    audit = tmp_path / "operator-audit-pwsh"
+    _set_restricted_directory(audit, audit_mutex=True)
+    function_source = _read(MAINTENANCE_SCRIPT).split("if ($Target -notmatch", 1)[0]
+    invocation = f"""
+foreach ($index in 1..2) {{
+  $result = [pscustomobject]@{{
+    operation_id=('00000000-0000-4000-8000-' + $index.ToString('000000000000'));
+    audit_id=('10000000-0000-4000-8000-' + $index.ToString('000000000000'));
+    status='succeeded';
+    identity=[pscustomobject]@{{user='fixture-user';computer='fixture-host'}}
+  }}
+  Write-OperatorAudit -Result $result -RequestedAction 'StartApp' `
+    -RequestedTarget 'fixture@100.64.0.20' -AuditDirectory {_ps_literal(audit)}
+}}
+"""
+    script_path = tmp_path / "operator-audit-pwsh.ps1"
+    script_path.write_text(function_source + invocation, encoding="utf-8")
+
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script_path],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_powershell_env(),
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    _assert_jsonl_hash_chain(audit / "remote-maintenance.jsonl", expected_lines=2)
 
 
 @pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])

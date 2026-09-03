@@ -36,7 +36,7 @@ function toSession(payload: BackendSession | Session): Session {
 }
 
 export async function login(req: LoginRequest): Promise<Session> {
-  const { data } = await apiClient.post('/auth/login', req)
+  const { data } = await apiClient.post('/auth/login', req, { ruishengAuthRequest: true })
   return toSession(data.data as BackendSession | Session)
 }
 

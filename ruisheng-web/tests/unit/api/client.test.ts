@@ -38,6 +38,21 @@ describe('apiClient', () => {
     await expect(apiClient.get('/fail')).rejects.toThrow(/设备离线|offline/)
   })
 
+  it('preserves the live backend msg/transid error shape', async () => {
+    mock.onGet('/backend-shape').reply(400, {
+      code: -999,
+      msg: 'backend detail',
+      transid: 'tx-live-1',
+      data: null,
+    })
+
+    await expect(apiClient.get('/backend-shape')).rejects.toMatchObject({
+      code: -999,
+      message: 'backend detail',
+      traceId: 'tx-live-1',
+    })
+  })
+
   it.each([
     '/auth/login',
     'auth/login/',
@@ -67,6 +82,30 @@ describe('apiClient', () => {
       await expect(apiClient.post('/auth/login/', {})).rejects.toMatchObject({
         code: -101,
         message: '用户名或密码错误',
+      })
+      expect(onAuthExpired).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('ruisheng:auth-expired', onAuthExpired)
+    }
+  })
+
+  it('uses the explicit auth marker when an intermediary rewrites the login URL', async () => {
+    const onAuthExpired = vi.fn()
+    window.addEventListener('ruisheng:auth-expired', onAuthExpired)
+    mock.onPost('/rewritten/login-endpoint').reply(401, {
+      code: -101,
+      msg: 'invalid credentials',
+      transid: 'tx-login-1',
+      data: null,
+    })
+
+    try {
+      await expect(
+        apiClient.post('/rewritten/login-endpoint', {}, { ruishengAuthRequest: true }),
+      ).rejects.toMatchObject({
+        code: -101,
+        message: '用户名或密码错误',
+        traceId: 'tx-login-1',
       })
       expect(onAuthExpired).not.toHaveBeenCalled()
     } finally {

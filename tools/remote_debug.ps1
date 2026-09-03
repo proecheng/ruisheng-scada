@@ -272,7 +272,9 @@ if status == 403 and len(body) <= 512:
 print("gw=" + str(status))
 raise SystemExit(0 if status == 200 or acl_denial else 1)
 "@
-docker exec ruisheng-gw python -c $gwProbe
+$gwProbeEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($gwProbe))
+$gwProbeBootstrap = "import base64;exec(base64.b64decode('$gwProbeEncoded'))"
+docker exec ruisheng-gw python -c $gwProbeBootstrap
 if ($LASTEXITCODE -ne 0) { throw "GW health check failed." }
 $web = Invoke-WebRequest -Uri "http://127.0.0.1/" -UseBasicParsing -TimeoutSec 5
 Write-Output "web=$([int]$web.StatusCode)"

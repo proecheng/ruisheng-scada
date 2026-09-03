@@ -129,6 +129,15 @@ function Open-ExclusiveAuditLock {
   } while ($true)
 }
 
+function ConvertFrom-JsonPreservingDateStrings {
+  param([Parameter(Mandatory)][string]$Json)
+  $convertCommand = Get-Command ConvertFrom-Json -ErrorAction Stop
+  if ($convertCommand.Parameters.ContainsKey("DateKind")) {
+    return $Json | ConvertFrom-Json -DateKind String
+  }
+  return $Json | ConvertFrom-Json
+}
+
 function Write-OperatorAudit {
   param(
     [Parameter(Mandatory)]$Result,
@@ -167,7 +176,7 @@ function Write-OperatorAudit {
           throw "operator_audit_record_limit_exceeded"
         }
         try {
-          $previous = $existingLine | ConvertFrom-Json
+          $previous = ConvertFrom-JsonPreservingDateStrings -Json $existingLine
           if ([string]$previous.previous_hash -ne $previousHash) { throw "invalid link" }
           $verifiedPayload = [ordered]@{}
           foreach ($property in $previous.PSObject.Properties) {
@@ -1041,7 +1050,8 @@ function Initialize-VerifiedInputs {
     Set-Variable -Name EnvFile -Value $copies.env[1] -Scope 1
     Set-Variable -Name ManifestFile -Value $copies.manifest[1] -Scope 1
     Set-Variable -Name composeBase -Scope 1 -Value @(
-      "compose", "-f", $copies.compose[1], "-f", $copies.override[1],
+      "compose", "--project-directory", $CandidateRoot,
+      "-f", $copies.compose[1], "-f", $copies.override[1],
       "--env-file", $copies.env[1]
     )
     $verifiedModel = Get-ComposeModel
@@ -1627,7 +1637,8 @@ try {
   $SourceOverrideFile = $OverrideFile
   $SourceManifestFile = $ManifestFile
   $composeBase = @(
-    "compose", "-f", $ComposeFile, "-f", $OverrideFile, "--env-file", $EnvFile
+    "compose", "--project-directory", $CandidateRoot,
+    "-f", $ComposeFile, "-f", $OverrideFile, "--env-file", $EnvFile
   )
 
   if ($Action -ne "Status" -and -not $DryRun) {

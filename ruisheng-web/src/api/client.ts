@@ -22,7 +22,8 @@ function notifyAuthExpired(): void {
 
 type ApiClientError = Error & { code: number; hint?: string; traceId?: string }
 
-function isLoginRequest(config?: { url?: string }): boolean {
+function isLoginRequest(config?: { url?: string; ruishengAuthRequest?: boolean }): boolean {
+  if (config?.ruishengAuthRequest) return true
   if (!config?.url) return false
   try {
     const path = new URL(config.url, 'http://ruisheng.invalid').pathname.replace(/\/+$/, '')
@@ -40,12 +41,13 @@ function toLoginCredentialsError(traceId?: string): ApiClientError {
 }
 
 function toApiError(body: ApiResponse, loginRequest: boolean): ApiClientError {
-  if (loginRequest && body.code === -101) return toLoginCredentialsError(body.trace_id)
-  const err = mapErrCode(body.code, body.message)
+  const traceId = body.trace_id ?? body.transid
+  if (loginRequest && body.code === -101) return toLoginCredentialsError(traceId)
+  const err = mapErrCode(body.code, body.message ?? body.msg ?? '请求失败')
   const error = new Error(err.headline) as ApiClientError
   error.code = body.code
   error.hint = err.hint
-  error.traceId = body.trace_id
+  error.traceId = traceId
   return error
 }
 

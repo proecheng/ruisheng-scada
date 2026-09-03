@@ -21,6 +21,7 @@ describe('auth api', () => {
     })
     const s = await login({ user_name: 'u', password: 'p' })
     expect(s.access_token).toBe('j1')
+    expect(mock.history.post[0]?.ruishengAuthRequest).toBe(true)
   })
 
   it('refresh posts refresh_token and returns new session', async () => {
