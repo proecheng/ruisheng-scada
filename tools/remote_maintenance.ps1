@@ -7,7 +7,7 @@ param(
   [string]$OperationId = "",
   [string]$Target = "lenovo@100.109.90.21",
   [string]$CandidateRoot = "",
-  [string]$SiteRoot = "C:\Ruisheng\candidates\site",
+  [string]$SiteRoot = "",
   [ValidateRange(120, 3600)]
   [int]$LeaseSeconds = 900,
   [switch]$DryRun,
@@ -248,7 +248,7 @@ if ($Target -notmatch '^[A-Za-z0-9._-]+@[A-Za-z0-9._:-]+$') {
   throw "Target must use the user@host form without whitespace."
 }
 if ($CandidateRoot) { Assert-RemotePath -Path $CandidateRoot }
-Assert-RemotePath -Path $SiteRoot
+if ($SiteRoot) { Assert-RemotePath -Path $SiteRoot }
 
 $isLifecycle = $Action -ne "Status"
 if ($isLifecycle) {
@@ -284,8 +284,10 @@ $Reason = __REASON__
 $OperationId = __OPERATION_ID__
 $RequestedTarget = __TARGET__
 $RequestedCandidateRoot = __CANDIDATE_ROOT__
+$RequestedSiteRoot = __SITE_ROOT__
 $CandidateRoot = ""
-$SiteRoot = __SITE_ROOT__
+$SiteRoot = ""
+$CandidateSitesRoot = "C:\Ruisheng\candidates"
 $LeaseSeconds = __LEASE_SECONDS__
 $DryRun = __DRY_RUN__
 $Approved = __APPROVED__
@@ -294,16 +296,16 @@ $script:AuditMaxLineBytes = 64 * 1024
 $script:AuditMaxRecords = 50000
 $script:TargetAuditSnapshot = $null
 
-$EnvFile = Join-Path $SiteRoot ".env.prod"
-$SourceEnvFile = $EnvFile
-$StateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
-$ActiveReleasePath = Join-Path $StateDirectory "active-release.json"
-$SharedLockPath = Join-Path $StateDirectory ".remote-maintenance.lock"
-$LegacyLockPath = Join-Path $SiteRoot ".remote-hotfix.lock"
+$EnvFile = ""
+$SourceEnvFile = ""
+$StateDirectory = ""
+$ActiveReleasePath = ""
+$SharedLockPath = ""
+$LegacyLockPath = ""
 $AuditDirectory = "C:\Ruisheng\audit"
 $AuditPath = Join-Path $AuditDirectory "remote-maintenance.jsonl"
-$OperationPath = Join-Path $StateDirectory "$OperationId.json"
-$VerifiedInputDirectory = Join-Path $StateDirectory "$OperationId.inputs"
+$OperationPath = ""
+$VerifiedInputDirectory = ""
 $PersistentServices = @("postgres", "redis", "gw", "api", "web")
 $PolicyServices = @("postgres", "redis", "migrate", "gw", "api", "web")
 $StopOrder = @("web", "api", "gw", "redis", "postgres")
@@ -401,6 +403,46 @@ function Assert-RestrictedFile {
   foreach ($sid in @($allowed.Keys)) {
     if (-not $allowed[$sid]) { throw "restricted_acl_required_identity_missing" }
   }
+}
+
+function Assert-SiteRootTrust {
+  param([Parameter(Mandatory)][string]$Path)
+  Assert-RestrictedDirectory -Path $Path
+  $statePath = Join-Path $Path ".remote-maintenance-state"
+  Assert-RestrictedDirectory -Path $statePath
+  Assert-RestrictedFile -Path (Join-Path $statePath "active-release.json")
+}
+
+function Resolve-SiteRoot {
+  if ($RequestedSiteRoot) {
+    Assert-SiteRootTrust -Path $RequestedSiteRoot
+    return $RequestedSiteRoot
+  }
+  if (-not (Test-Path -LiteralPath $CandidateSitesRoot -PathType Container)) {
+    throw "site_root_discovery_root_missing"
+  }
+  try { $root = Get-Item -LiteralPath $CandidateSitesRoot -Force }
+  catch { throw "site_root_discovery_failed" }
+  if (($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "site_root_discovery_root_linked"
+  }
+
+  $siteMatches = New-Object System.Collections.ArrayList
+  try { $entries = @(Get-ChildItem -LiteralPath $CandidateSitesRoot -Directory -Force) }
+  catch { throw "site_root_discovery_failed" }
+  foreach ($entry in $entries) {
+    if ([string]$entry.Name -notmatch '^site(?:-[a-z0-9][a-z0-9._-]{0,57})?$') { continue }
+    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "active_site_root_reparse_point"
+    }
+    $pointer = Join-Path $entry.FullName ".remote-maintenance-state\active-release.json"
+    if (Test-Path -LiteralPath $pointer -PathType Leaf) { [void]$siteMatches.Add($entry) }
+  }
+  if ($siteMatches.Count -eq 0) { throw "active_site_root_not_found" }
+  if ($siteMatches.Count -ne 1) { throw "active_site_root_ambiguous" }
+  $resolvedSiteRoot = [string]$siteMatches[0].FullName
+  Assert-SiteRootTrust -Path $resolvedSiteRoot
+  return $resolvedSiteRoot
 }
 
 function Open-ExclusiveAuditLock {
@@ -1501,6 +1543,12 @@ function New-SafeResult {
     [string]$SnapshotBefore = "",
     [string]$SnapshotAfter = ""
   )
+  $candidateId = if ([string]::IsNullOrWhiteSpace($CandidateRoot)) {
+    ""
+  }
+  else {
+    Split-Path -Leaf $CandidateRoot
+  }
   return [ordered]@{
     schema_version  = 1
     ok              = $Ok
@@ -1508,7 +1556,7 @@ function New-SafeResult {
     operation_id    = $OperationId
     audit_id        = $auditId
     action          = $Action
-    site            = (Split-Path -Leaf $CandidateRoot)
+    site            = $candidateId
     identity        = $Identity
     ssh_posture     = $Posture
     locks           = $Locks
@@ -1551,15 +1599,25 @@ function Get-AllowlistedPlan {
 
 $identity = Get-RemoteIdentity
 $posture = Get-SshPosture
-$locks = [ordered]@{
-  shared = Get-LockInfo -Path $SharedLockPath -Name "shared-maintenance"
-  legacy = Get-LockInfo -Path $LegacyLockPath -Name "legacy-hotfix"
-}
+$locks = $null
 $auditReady = $false
 $operationStarted = $false
 $reasonHash = ""
 
 try {
+  $SiteRoot = Resolve-SiteRoot
+  $EnvFile = Join-Path $SiteRoot ".env.prod"
+  $SourceEnvFile = $EnvFile
+  $StateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
+  $ActiveReleasePath = Join-Path $StateDirectory "active-release.json"
+  $SharedLockPath = Join-Path $StateDirectory ".remote-maintenance.lock"
+  $LegacyLockPath = Join-Path $SiteRoot ".remote-hotfix.lock"
+  $OperationPath = Join-Path $StateDirectory "$OperationId.json"
+  $VerifiedInputDirectory = Join-Path $StateDirectory "$OperationId.inputs"
+  $locks = [ordered]@{
+    shared = Get-LockInfo -Path $SharedLockPath -Name "shared-maintenance"
+    legacy = Get-LockInfo -Path $LegacyLockPath -Name "legacy-hotfix"
+  }
   $activeRelease = Resolve-ActiveRelease
   $CandidateRoot = [string]$activeRelease.candidate_root
   $ComposeFile = Join-Path $CandidateRoot "docker-compose.prod.yml"
@@ -1617,6 +1675,8 @@ try {
 
     if ($Action -eq "Status") {
       $health = Get-HealthResult -ActiveProbe
+      $observedActiveRelease = Resolve-ActiveRelease
+      Assert-ActiveReleaseUnchanged -Before $activeRelease -After $observedActiveRelease
       $result = New-SafeResult -Ok $true -Status "observed" -Identity $identity -Posture $posture `
         -Services $health -Locks $locks -Preflight $preflight `
         -SnapshotBefore $before.identity -SnapshotAfter $before.identity
@@ -1862,11 +1922,17 @@ catch {
   }
   if ($operationStarted) { $auditId = "" }
   Release-Locks
+  if ($SharedLockPath -and $LegacyLockPath) {
+    try {
+      $locks = [ordered]@{
+        shared = Get-LockInfo -Path $SharedLockPath -Name "shared-maintenance"
+        legacy = Get-LockInfo -Path $LegacyLockPath -Name "legacy-hotfix"
+      }
+    }
+    catch { $locks = $null }
+  }
   $result = New-SafeResult -Ok $false -Status "rejected" -Identity $identity -Posture $posture `
-    -ErrorCode $errorCode -Locks ([ordered]@{
-      shared = Get-LockInfo -Path $SharedLockPath -Name "shared-maintenance"
-      legacy = Get-LockInfo -Path $LegacyLockPath -Name "legacy-hotfix"
-    })
+    -ErrorCode $errorCode -Locks $locks
   Write-Output ($result | ConvertTo-Json -Depth 10 -Compress)
   exit 0
 }

@@ -66,7 +66,10 @@ export async function mockLoginFailure(page: Page): Promise<void> {
   await page.route(
     (url) => url.pathname === '/api/auth/login',
     (route) =>
-      route.fulfill({ json: { code: 40101, message: '用户名或密码错误', data: null } }),
+      route.fulfill({
+        status: 401,
+        json: { code: -101, message: 'invalid credentials', data: null },
+      }),
   )
 }
 

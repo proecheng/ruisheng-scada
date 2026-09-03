@@ -245,7 +245,34 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 docker exec ruisheng-api python -m ruisheng_api.healthcheck
 if ($LASTEXITCODE -ne 0) { throw "API health check failed." }
-docker exec ruisheng-gw python -c "import urllib.request; print('gw=' + str(urllib.request.urlopen('http://127.0.0.1:9090/ready', timeout=5).status))"
+$gwProbe = @"
+import http.client
+import json
+
+connection = http.client.HTTPConnection("127.0.0.1", 9090, timeout=5)
+try:
+    connection.request("GET", "/ready")
+    response = connection.getresponse()
+    try:
+        status = response.status
+        body = response.read(513)
+    finally:
+        response.close()
+finally:
+    connection.close()
+
+acl_denial = False
+if status == 403 and len(body) <= 512:
+    try:
+        acl_denial = json.loads(body.decode("utf-8")) == {
+            "detail": "health source is not approved"
+        }
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        pass
+print("gw=" + str(status))
+raise SystemExit(0 if status == 200 or acl_denial else 1)
+"@
+docker exec ruisheng-gw python -c $gwProbe
 if ($LASTEXITCODE -ne 0) { throw "GW health check failed." }
 $web = Invoke-WebRequest -Uri "http://127.0.0.1/" -UseBasicParsing -TimeoutSec 5
 Write-Output "web=$([int]$web.StatusCode)"

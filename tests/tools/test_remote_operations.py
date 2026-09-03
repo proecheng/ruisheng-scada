@@ -8,6 +8,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +146,12 @@ def _remote_template() -> str:
     return match.group(1)
 
 
+def _remote_debug_gw_probe() -> str:
+    match = re.search(r'\$gwProbe = @"\r?\n(.*?)\r?\n"@', _read(DEBUG_SCRIPT), re.DOTALL)
+    assert match is not None
+    return match.group(1)
+
+
 def _set_restricted_directory(path: Path, *, audit_mutex: bool = False) -> None:
     mutex = (
         "[IO.File]::WriteAllText((Join-Path $path '.remote-maintenance-audit.lock'), '')"
@@ -187,12 +196,85 @@ foreach ($sidValue in $sidValues) {{
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
+def _enable_acl_inheritance(path: Path) -> None:
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$path = {_ps_literal(path)}
+$security = New-Object Security.AccessControl.DirectorySecurity
+$security.SetAccessRuleProtection($false, $false)
+$security.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$rule = New-Object Security.AccessControl.FileSystemAccessRule(
+  $sid,
+  [Security.AccessControl.FileSystemRights]::FullControl,
+  ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [Security.AccessControl.InheritanceFlags]::ObjectInherit),
+  [Security.AccessControl.PropagationFlags]::None,
+  [Security.AccessControl.AccessControlType]::Allow
+)
+[void]$security.AddAccessRule($rule)
+[IO.Directory]::SetAccessControl($path, $security)
+"""
+    completed = subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_powershell_env(),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def _add_untrusted_file_rule(path: Path) -> None:
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$path = {_ps_literal(path)}
+$acl = Get-Acl -LiteralPath $path
+$sid = New-Object Security.Principal.SecurityIdentifier('S-1-1-0')
+$rule = New-Object Security.AccessControl.FileSystemAccessRule(
+  $sid,
+  [Security.AccessControl.FileSystemRights]::FullControl,
+  [Security.AccessControl.AccessControlType]::Allow
+)
+[void]$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $path -AclObject $acl
+"""
+    completed = subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_powershell_env(),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def _create_directory_junction(path: Path, target: Path) -> None:
+    script = f"""
+$ErrorActionPreference = 'Stop'
+[void](New-Item -ItemType Junction -Path {_ps_literal(path)} -Target {_ps_literal(target)})
+"""
+    completed = subprocess.run(
+        [_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_powershell_env(),
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"directory junction unavailable: {completed.stderr.strip()}")
+
+
 def _remote_layout(tmp_path: Path) -> dict[str, Path]:
     candidate = tmp_path / "candidate"
     site = tmp_path / "site"
     audit = tmp_path / "audit"
     candidate.mkdir()
     site.mkdir()
+    _set_restricted_directory(site)
     for name in ("docker-compose.prod.yml", "site-network.override.yml"):
         (candidate / name).write_text(f"fixture:{name}\n", encoding="utf-8")
     manifest = _candidate_manifest()
@@ -339,6 +421,7 @@ def _render_remote_script(
     dry_run: bool = False,
     approved: bool = True,
     scenario: str = "",
+    discover_site: bool = False,
 ) -> str:
     rendered = _remote_template().replace(
         '$AuditDirectory = "C:\\Ruisheng\\audit"',
@@ -350,20 +433,33 @@ def _render_remote_script(
         "__OPERATION_ID__": _ps_literal(operation_id),
         "__TARGET__": _ps_literal("fixture@100.64.0.20"),
         "__CANDIDATE_ROOT__": _ps_literal(layout["candidate"]),
-        "__SITE_ROOT__": _ps_literal(layout["site"]),
+        "__SITE_ROOT__": _ps_literal("") if discover_site else _ps_literal(layout["site"]),
         "__LEASE_SECONDS__": "120",
         "__DRY_RUN__": "$true" if dry_run else "$false",
         "__APPROVED__": "$true" if approved else "$false",
     }
     for key, value in replacements.items():
         rendered = rendered.replace(key, value)
-    rendered = rendered.replace(
-        '$CandidateRoot = ""', f"$CandidateRoot = {_ps_literal(layout['candidate'])}", 1
-    )
-    if scenario:
+    if discover_site:
         rendered = rendered.replace(
-            "\n$identity = Get-RemoteIdentity\n$posture = Get-SshPosture",
-            f"\n{scenario}\n$identity = Get-RemoteIdentity\n$posture = Get-SshPosture",
+            '$CandidateSitesRoot = "C:\\Ruisheng\\candidates"',
+            f"$CandidateSitesRoot = {_ps_literal(layout['site'].parent)}",
+            1,
+        )
+    if scenario:
+        scenario_marker = (
+            "  $composeBase = @(\n"
+            '    "compose", "-f", $ComposeFile, "-f", $OverrideFile, "--env-file", $EnvFile\n'
+            "  )\n\n"
+            '  if ($Action -ne "Status" -and -not $DryRun) {'
+        )
+        assert scenario_marker in rendered, "maintenance scenario insertion marker changed"
+        rendered = rendered.replace(
+            scenario_marker,
+            "  $composeBase = @(\n"
+            '    "compose", "-f", $ComposeFile, "-f", $OverrideFile, "--env-file", $EnvFile\n'
+            f"  )\n{scenario}\n\n"
+            '  if ($Action -ne "Status" -and -not $DryRun) {',
             1,
         )
     return _mock_preamble() + "\n" + rendered
@@ -383,6 +479,7 @@ def _run_remote_script(
     fail_stop: str = "",
     drift_after_stop: str = "",
     fail_inspect: str = "",
+    discover_site: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     script_path = tmp_path / f"remote-{action}-{operation_id[-4:]}.ps1"
     command_log = tmp_path / f"docker-{action}-{operation_id[-4:]}.log"
@@ -395,6 +492,7 @@ def _run_remote_script(
             dry_run=dry_run,
             approved=approved,
             scenario=scenario,
+            discover_site=discover_site,
         ),
         encoding="utf-8",
     )
@@ -502,6 +600,55 @@ def test_remote_debug_state_guards_pid_reuse_and_supports_all_actions() -> None:
     assert "Stop-Process -Id ([int]$state.pid)" in script
     assert "docker exec ruisheng-api python" in script
     assert "docker exec ruisheng-gw python" in script
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected_exit"),
+    (
+        (200, b"ready", 0),
+        (403, b'{"detail":"health source is not approved"}', 0),
+        (403, b'{"detail":"different denial"}', 1),
+        (500, b'{"detail":"health source is not approved"}', 1),
+        (403, b'{"detail":"health source is not approved"}' + (b" " * 600), 1),
+    ),
+)
+def test_remote_debug_gw_probe_accepts_only_ready_or_known_bounded_acl_denial(
+    status: int, body: bytes, expected_exit: int
+) -> None:
+    class ProbeHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler hook
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ProbeHandler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        probe = _remote_debug_gw_probe().replace(
+            'HTTPConnection("127.0.0.1", 9090, timeout=5)',
+            f'HTTPConnection("127.0.0.1", {server.server_port}, timeout=5)',
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert completed.returncode == expected_exit, completed.stdout + completed.stderr
+    assert completed.stdout.strip() == f"gw={status}"
 
 
 def test_hotfix_supports_only_application_services_with_known_health_checks() -> None:
@@ -908,6 +1055,165 @@ def test_maintenance_status_and_dry_run_make_no_target_writes(tmp_path: Path) ->
         if path.is_file()
     ) == ["active-release.json"]
     assert not layout["audit"].exists()
+
+
+@pytest.mark.parametrize(
+    ("action", "dry_run", "expected_status"),
+    (
+        ("Status", False, "observed"),
+        ("StartApp", True, "planned"),
+        ("RestartApp", True, "planned"),
+    ),
+)
+def test_maintenance_discovers_the_unique_protected_active_site_by_default(
+    tmp_path: Path, action: str, dry_run: bool, expected_status: str
+) -> None:
+    layout = _remote_layout(tmp_path)
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action=action,
+        dry_run=dry_run,
+        operation_id="00000000-0000-4000-8000-000000000014",
+        discover_site=True,
+    )
+
+    assert result["status"] == expected_status
+    assert result["site"] == layout["candidate"].name
+    assert result["preflight"] == {"ok": True, "error_code": ""}
+    assert any("\tconfig\t" in f"\t{command}\t" for command in commands)
+
+
+def test_maintenance_default_discovery_rejects_zero_and_multiple_active_sites(
+    tmp_path: Path,
+) -> None:
+    layout = _remote_layout(tmp_path)
+    pointer = layout["site"] / ".remote-maintenance-state" / "active-release.json"
+    pointer.unlink()
+
+    missing, missing_commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="Status",
+        operation_id="00000000-0000-4000-8000-000000000016",
+        discover_site=True,
+    )
+    assert missing["error_code"] == "active_site_root_not_found"
+    assert missing["site"] == ""
+    assert missing_commands == []
+
+    pointer.write_text("{}", encoding="utf-8")
+    second_state = tmp_path / "site-secondary" / ".remote-maintenance-state"
+    second_state.mkdir(parents=True)
+    (second_state / "active-release.json").write_text("{}", encoding="utf-8")
+    ambiguous, ambiguous_commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="Status",
+        operation_id="00000000-0000-4000-8000-000000000017",
+        discover_site=True,
+    )
+    assert ambiguous["error_code"] == "active_site_root_ambiguous"
+    assert ambiguous_commands == []
+
+
+def test_maintenance_default_discovery_rejects_matching_reparse_directory(
+    tmp_path: Path,
+) -> None:
+    layout = _remote_layout(tmp_path)
+    target = tmp_path / "junction-target"
+    target.mkdir()
+    _create_directory_junction(tmp_path / "site-linked", target)
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="Status",
+        operation_id="00000000-0000-4000-8000-000000000018",
+        discover_site=True,
+    )
+
+    assert result["error_code"] == "active_site_root_reparse_point"
+    assert commands == []
+
+
+@pytest.mark.parametrize("untrusted_part", ("site", "state", "pointer"))
+def test_maintenance_default_discovery_rejects_untrusted_site_chain(
+    tmp_path: Path, untrusted_part: str
+) -> None:
+    layout = _remote_layout(tmp_path)
+    state = layout["site"] / ".remote-maintenance-state"
+    if untrusted_part == "site":
+        _enable_acl_inheritance(layout["site"])
+    elif untrusted_part == "state":
+        _enable_acl_inheritance(state)
+    else:
+        _add_untrusted_file_rule(state / "active-release.json")
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="Status",
+        operation_id="00000000-0000-4000-8000-000000000019",
+        discover_site=True,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["error_code"] in {
+        "restricted_acl_inheritance_enabled",
+        "restricted_acl_invalid",
+    }
+    assert commands == []
+
+
+def test_maintenance_pointer_failure_returns_safe_rejection_with_empty_candidate(
+    tmp_path: Path,
+) -> None:
+    layout = _remote_layout(tmp_path)
+    (layout["site"] / ".remote-maintenance-state" / "active-release.json").unlink()
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="Status",
+        operation_id="00000000-0000-4000-8000-000000000015",
+    )
+
+    assert result["status"] == "rejected"
+    assert result["error_code"] == "restricted_file_missing"
+    assert result["site"] == ""
+    assert commands == []
+
+
+def test_maintenance_status_rejects_active_pointer_drift_during_health_probe(
+    tmp_path: Path,
+) -> None:
+    layout = _remote_layout(tmp_path)
+    scenario = """
+function Get-HealthResult {
+  param([switch]$ActiveProbe)
+  $active = Get-Content -LiteralPath $ActiveReleasePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $active.operation_id = '10000000-0000-4000-8000-000000000020'
+  [IO.File]::WriteAllText(
+    $ActiveReleasePath,
+    ($active | ConvertTo-Json -Depth 5 -Compress),
+    (New-Object Text.UTF8Encoding($false))
+  )
+  return @()
+}
+"""
+
+    result, _commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="Status",
+        operation_id="00000000-0000-4000-8000-000000000020",
+        scenario=scenario,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["error_code"] == "active_release_identity_drift"
 
 
 @pytest.mark.parametrize(

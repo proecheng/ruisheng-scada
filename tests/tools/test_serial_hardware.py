@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import re
+import shutil
+import subprocess
+import sys
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -394,6 +399,92 @@ def test_attach_script_uses_usb_identity_and_never_opens_serial_port() -> None:
     assert "native_command_timeout" in script
     assert "audit_paths_are_fixed" in script
     assert "wsl_missing" in script
+    assert "StandardInputEncoding" not in script
+    assert "$process.StandardInput.BaseStream" in script
+    assert "[Text.UTF8Encoding]::new($false).GetBytes($StandardInput)" in script
+    assert "$inputStream.Close()" in script
+
+
+def test_native_stdin_is_utf8_without_bom_under_windows_powershell_51(tmp_path: Path) -> None:
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    source = (ROOT / "tools" / "serial_hardware_attach.ps1").read_text(encoding="utf-8")
+    match = re.search(
+        r"(function Invoke-NativeCommand\(.*?\n\})\r?\n\r?\nfunction Invoke-Usbipd",
+        source,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    reader = tmp_path / "read_stdin.py"
+    reader.write_text(
+        "import base64, sys\n"
+        "sys.stdout.write(base64.b64encode(sys.stdin.buffer.read()).decode('ascii'))\n",
+        encoding="utf-8",
+    )
+    python_literal = "'" + sys.executable.replace("'", "''") + "'"
+    reader_literal = "'" + str(reader).replace("'", "''") + "'"
+    invocation = f"""
+{match.group(1)}
+$inputText = "set -eu`n中文设备`n"
+$result = Invoke-NativeCommand {python_literal} @({reader_literal}) $inputText 30
+[ordered]@{{
+    version = $PSVersionTable.PSVersion.ToString()
+    exit_code = $result.ExitCode
+    stdin_base64 = $result.Output
+    stderr = $result.Error
+}} | ConvertTo-Json -Compress
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", invocation],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    result = json.loads(completed.stdout.strip())
+    assert result["version"].startswith("5.1.")
+    assert result["exit_code"] == 0
+    assert result["stderr"] == ""
+    stdin_bytes = base64.b64decode(result["stdin_base64"])
+    assert stdin_bytes == "set -eu\n中文设备\n".encode()
+    assert not stdin_bytes.startswith(b"\xef\xbb\xbf")
+
+
+def test_wsl_script_normalizes_crlf_and_removes_utf8_bom_before_stdin() -> None:
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    source = (ROOT / "tools" / "serial_hardware_attach.ps1").read_text(encoding="utf-8")
+    match = re.search(
+        r"(function Invoke-WslScript.*?\n\})\r?\n\r?\nfunction Remove-StableAlias",
+        source,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    invocation = f"""
+function Invoke-NativeCommand {{
+    param($FilePath, $ArgumentList, $StandardInput, $TimeoutSeconds)
+    [Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes($StandardInput))
+}}
+$script:WslDistribution = 'docker-desktop'
+$script:WslPath = 'wsl.exe'
+{match.group(1)}
+$inputText = ([string][char]0xFEFF) + "set -eu`r`n中文`rsecond`n"
+Invoke-WslScript $inputText @() 30
+"""
+    completed = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", invocation],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert base64.b64decode(completed.stdout.strip()).decode("utf-8") == ("set -eu\n中文\nsecond\n")
 
 
 def test_task_installer_registers_retry_when_device_is_temporarily_absent() -> None:

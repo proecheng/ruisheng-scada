@@ -26,7 +26,9 @@
 .\tools\remote_debug.ps1 Stop
 ```
 
-隧道仅监听本机 `127.0.0.1`。脚本使用公钥认证、转发失败即退出和 SSH keepalive，并记录 PID 以避免误停其他进程。`Health` 从容器内部执行 API/GW 就绪检查，因此无需放宽站点 ACL。
+隧道仅监听本机 `127.0.0.1`。脚本使用公钥认证、转发失败即退出和 SSH keepalive，并记录 PID 以避免误停其他进程。`Health` 从容器内部执行 API/GW 就绪检查，因此无需放宽站点 ACL。GW `/ready` 只有精确返回 200，或返回不超过 512 字节且 JSON 内容精确为 `{"detail":"health source is not approved"}` 的 403，才算可达；其他 403、其他状态、超大响应、连接失败和超时都使检查失败。
+
+通过登录页提交无效测试凭据时，真实 API 返回 HTTP 401、业务码 `-101`。Web 应显示“用户名或密码错误”，且不得把这次登录失败广播成已有会话过期；其他受保护 API 的 HTTP 401 或 `-101` 仍会清理已有会话。
 
 ## 单服务热修
 
@@ -61,6 +63,8 @@
 ```powershell
 .\tools\remote_maintenance.ps1 Status
 ```
+
+未指定 `-SiteRoot` 时，脚本只在目标机固定的 `C:\Ruisheng\candidates` 目录下查找唯一的 `site`，或名称匹配 `site-[a-z0-9][a-z0-9._-]{0,57}` 的目录。名称匹配的重解析目录会被拒绝；选中的站点目录、`.remote-maintenance-state` 目录和 `active-release.json` 指针都必须受保护。没有匹配、出现多个匹配、ACL 不可信或指针内容漂移都会 fail-closed，并返回具体拒绝码；非标准目录可显式传入 `-SiteRoot` 覆盖自动发现，但不会绕过目录和指针保护校验。
 
 任何启停操作都先 dry-run。原因必须为 8–200 个字符且不能包含控制字符：
 
@@ -159,3 +163,5 @@ $Reason = "approved signed full release upgrade"
 ## 当前门禁
 
 此工具不提供发布签名、站点审批、管理员交接、串口真机参数或备份恢复验收。因此当前部署的正式生产结论仍是 `BLOCKED`；不得把调试热修当作生产放行证据。
+
+串口主机附加工具在把脚本写入 WSL `sh -s` 前会去除 UTF-8 BOM，并把 CRLF/CR 统一为 LF；Windows PowerShell 5.1 会把规范化文本显式编码成无 BOM 的 UTF-8 字节并直接写入子进程标准输入基础流。该修复只恢复身份匹配的稳定设备别名，不增加 GW 设备映射、不设置 `GW_SERIAL_PORTS`，也不发送任何 Modbus 报文。

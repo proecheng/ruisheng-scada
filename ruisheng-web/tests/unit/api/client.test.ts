@@ -38,6 +38,58 @@ describe('apiClient', () => {
     await expect(apiClient.get('/fail')).rejects.toThrow(/设备离线|offline/)
   })
 
+  it.each([
+    '/auth/login',
+    'auth/login/',
+    'https://api.example.test/api/auth/login/?source=absolute',
+  ])('classifies login 401/-101 for normalized URL %s without expiring the session', async (url) => {
+    const onAuthExpired = vi.fn()
+    window.addEventListener('ruisheng:auth-expired', onAuthExpired)
+    mock.onPost(url).reply(401, { code: -101, message: 'invalid credentials', data: null })
+
+    try {
+      await expect(apiClient.post(url, {})).rejects.toMatchObject({
+        code: -101,
+        message: '用户名或密码错误',
+      })
+      expect(onAuthExpired).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('ruisheng:auth-expired', onAuthExpired)
+    }
+  })
+
+  it('returns the same coded credentials error for a login 401 without a structured body', async () => {
+    const onAuthExpired = vi.fn()
+    window.addEventListener('ruisheng:auth-expired', onAuthExpired)
+    mock.onPost('/auth/login/').reply(401)
+
+    try {
+      await expect(apiClient.post('/auth/login/', {})).rejects.toMatchObject({
+        code: -101,
+        message: '用户名或密码错误',
+      })
+      expect(onAuthExpired).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('ruisheng:auth-expired', onAuthExpired)
+    }
+  })
+
+  it('still expires the session for a protected API 401/-101', async () => {
+    const onAuthExpired = vi.fn()
+    window.addEventListener('ruisheng:auth-expired', onAuthExpired)
+    mock.onGet('/secure').reply(401, { code: -101, message: 'token expired', data: null })
+
+    try {
+      await expect(apiClient.get('/secure')).rejects.toMatchObject({
+        code: -101,
+        message: '登录已过期',
+      })
+      expect(onAuthExpired).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('ruisheng:auth-expired', onAuthExpired)
+    }
+  })
+
   it('adds Idempotency-Key header on POST/PUT/DELETE', async () => {
     mock.onPost('/write').reply((config) => {
       expect(config.headers?.['Idempotency-Key']).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/)
