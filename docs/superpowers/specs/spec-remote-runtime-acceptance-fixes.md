@@ -2,7 +2,7 @@
 title: '目标机远程启动与运行验收修复'
 type: 'bugfix'
 created: '2026-09-03'
-status: 'in-review'
+status: 'done'
 baseline_commit: '168cfebc146d4559dafe84acf866ff6c881232ad'
 context:
   - 'D:/江苏润盛/docs/REMOTE_DEBUG.md'
@@ -53,8 +53,8 @@ context:
 - [x] 修复 GW 403 健康语义和登录端点 401 分类，补齐单元/E2E 回归。
 - [x] 在写入 WSL stdin 前规范化换行，并覆盖 CRLF、错误清理与身份匹配。
 - [x] 运行前后端及工具定向测试、静态检查和 PowerShell 5.1/7 解析。
-- [ ] 受控重启应用并复验五服务、Web/API/GW、登录失败与串口稳定别名。
-- [ ] 构建、验签和部署不可变候选；复验活动指针、镜像、网络、备份、审计及清理。
+- [x] 受控重启应用并复验五服务、Web/API/GW、登录失败与串口稳定别名。
+- [x] 构建、验签和部署不可变候选；复验活动指针、镜像、网络、备份、审计及清理。
 
 **Acceptance Criteria:**
 - Given 目标机当前签名活动版本和纯公钥 SSH，when 执行受控 RestartApp，then 五个服务按顺序恢复且所有语义健康检查通过。
@@ -64,6 +64,7 @@ context:
 ## Spec Change Log
 
 - 2026-09-03 review hardening: 保留活动指针、认证分类、LF 规范化和无轮询边界；将 Windows PowerShell 5.1 stdin 改为无 BOM UTF-8 基础流写入，收紧受保护站点发现、指针漂移和可识别 ACL 403，增加真实子进程、HTTP 分支、浏览器异常及 `test:unit` 门禁回归。
+- 2026-09-03 runtime acceptance: 固定 Compose 项目目录，兼容 PowerShell 7.6 JSON 日期行为，以 Base64 探针跨 PowerShell 5.1 保留 Python 源码，并用显式认证请求标记及 `msg/transid` 兼容修复现场登录错误；部署、串口别名与无轮询边界均已实机复验。
 
 ## Verification
 
@@ -72,3 +73,20 @@ context:
 - `pnpm --dir ruisheng-web test:unit && pnpm --dir ruisheng-web lint && pnpm --dir ruisheng-web typecheck && pnpm --dir ruisheng-web build` -- expected: 全部通过。
 - `pre-commit run --files <changed files>`、PowerShell 5.1/7 AST -- expected: 全部通过。
 - 目标机受控 Status/Restart、远程 Health、浏览器登录失败和只读串口身份检查 -- expected: 满足上述 AC。
+
+## Runtime Acceptance Evidence
+
+- 本地门禁：工具测试 `114 passed`，Web 单测 `90 passed`，登录 E2E `4 passed`；lint、typecheck、生产构建、pre-commit 及 PowerShell 5.1/7 解析均通过。生产构建仅保留既有 ECharts 大分块警告。
+- 受控重启：操作 `70842655-5a9c-4bfe-b271-51e9763414da` 一次成功，五个服务按停止/启动顺序恢复并全部 ready。
+- 不可变部署：`deploy-20260903.2`，源码提交 `1093e21a5172c7cb2be3bdb37fc157a70792b6aa`，逻辑身份 `sha256:0f8aa61b0a19b468094146bc5d46b596b9bc47521e03cf132292630034ce2992`；Apply 操作 `67a9e154-d3f4-49f2-b805-0c2c8532b930` 状态为 `committed`，活动指针、数据库/角色/环境备份及五镜像身份通过。
+- 远程语义健康：API ready；GW 返回受控站点 ACL `403` 并被正确识别；Web 返回 `200`。
+- 浏览器验收：关闭部署前受旧 Service Worker 控制的标签后，以全新标签加载当前资产；虚假凭据显示“用户名或密码错误”，停留登录页，页面诊断日志为空。
+- 串口验收：认证安装收据绑定 `.2` 候选；`0403:6001 / AI06JYFW` 在总线 `1-9` 映射为 `/dev/ttyUSB0`，稳定别名 `/dev/ruisheng-rs485` 状态为 ready。
+- 安全边界：`polling_approved=false`；GW 的设备映射、设备请求、串口挂载及 `GW_SERIAL_PORTS` 均为零，容器内无串口节点，因此未启用轮询且不具备 Modbus TX 路径。B-04 继续保持 BLOCKED。
+
+## Suggested Review Order
+
+1. `tools/remote_maintenance.ps1` 与 `tests/tools/test_remote_operations.py`：审计日期、Compose 项目目录和 PowerShell 5.1 探针回归。
+2. `tools/remote_debug.ps1`：GW ACL 健康探针的 Base64 传输。
+3. `ruisheng-web/src/api/client.ts`、`ruisheng-web/src/api/auth.ts` 与 API 单测：登录认证标记及真实后端错误字段兼容。
+4. 本节实机证据：重启、不可变部署、浏览器登录、串口身份和无 Modbus TX 边界。
