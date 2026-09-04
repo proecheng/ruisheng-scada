@@ -20,6 +20,37 @@ function notifyAuthExpired(): void {
   }
 }
 
+type ApiClientError = Error & { code: number; hint?: string; traceId?: string }
+
+function isLoginRequest(config?: { url?: string; ruishengAuthRequest?: boolean }): boolean {
+  if (config?.ruishengAuthRequest) return true
+  if (!config?.url) return false
+  try {
+    const path = new URL(config.url, 'http://ruisheng.invalid').pathname.replace(/\/+$/, '')
+    return path === '/auth/login' || path === '/api/auth/login'
+  } catch {
+    return false
+  }
+}
+
+function toLoginCredentialsError(traceId?: string): ApiClientError {
+  const error = new Error('用户名或密码错误') as ApiClientError
+  error.code = -101
+  error.traceId = traceId
+  return error
+}
+
+function toApiError(body: ApiResponse, loginRequest: boolean): ApiClientError {
+  const traceId = body.trace_id ?? body.transid
+  if (loginRequest && body.code === -101) return toLoginCredentialsError(traceId)
+  const err = mapErrCode(body.code, body.message ?? body.msg ?? '请求失败')
+  const error = new Error(err.headline) as ApiClientError
+  error.code = body.code
+  error.hint = err.hint
+  error.traceId = traceId
+  return error
+}
+
 export const apiClient: AxiosInstance = axios.create({
   baseURL: BASE,
   timeout: 30000,
@@ -42,28 +73,25 @@ apiClient.interceptors.response.use(
   (response) => {
     const body = response.data as ApiResponse
     if (body && typeof body === 'object' && 'code' in body && body.code !== 0) {
-      const err = mapErrCode(body.code, body.message)
-      const e = new Error(err.headline) as Error & { code: number; hint?: string; traceId?: string }
-      e.code = body.code
-      e.hint = err.hint
-      e.traceId = body.trace_id
-      if (body.code === -101) notifyAuthExpired()
-      throw e
+      const loginRequest = isLoginRequest(response.config)
+      if (body.code === -101 && !loginRequest) notifyAuthExpired()
+      throw toApiError(body, loginRequest)
     }
     return response
   },
   (error: AxiosError<ApiResponse>) => {
     const body = error.response?.data
+    const loginRequest = isLoginRequest(error.config)
     if (body && typeof body === 'object' && 'code' in body) {
-      const err = mapErrCode(body.code, body.message)
-      const e = new Error(err.headline) as Error & { code: number; hint?: string; traceId?: string }
-      e.code = body.code
-      e.hint = err.hint
-      e.traceId = body.trace_id
-      if (body.code === -101 || error.response?.status === 401) notifyAuthExpired()
-      return Promise.reject(e)
+      if (!loginRequest && (body.code === -101 || error.response?.status === 401)) {
+        notifyAuthExpired()
+      }
+      return Promise.reject(toApiError(body, loginRequest))
     }
-    if (error.response?.status === 401) notifyAuthExpired()
+    if (error.response?.status === 401 && loginRequest) {
+      return Promise.reject(toLoginCredentialsError())
+    }
+    if (error.response?.status === 401 && !loginRequest) notifyAuthExpired()
     return Promise.reject(error)
   },
 )

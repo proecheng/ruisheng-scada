@@ -100,7 +100,7 @@ function Invoke-RemotePowerShell {
 
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
   return Invoke-NativeText -FilePath "ssh.exe" -ArgumentList @(
-    "-T",
+    "-T", "-F", "NUL",
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes",
     "-o", "ConnectTimeout=10",
@@ -671,6 +671,7 @@ if ((Test-Path -LiteralPath $archive) -or (Test-Path -LiteralPath $manifest)) {
 
   $scpDirectory = $remoteDirectory.Replace("\", "/")
   Invoke-NativeLive -FilePath "scp.exe" -ArgumentList @(
+    "-F", "NUL",
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes",
     "-o", "ConnectTimeout=10",
@@ -1083,6 +1084,28 @@ if ([string]$manifest.archive -ne $ArchiveName) { throw "Hotfix manifest archive
 $actualHash = Get-LeaseGuardedFileSha256 -Path $ArchivePath
 if ($actualHash -ne [string]$manifest.sha256) { throw "Hotfix archive SHA-256 mismatch." }
 
+$entitlementSitePath = "C:\ProgramData\Ruisheng\trust\entitlement-site-id"
+$entitlementVerifier = "C:\ProgramData\Ruisheng\bin\target_entitlement_verifier.ps1"
+if (-not (Test-Path -LiteralPath $entitlementSitePath -PathType Leaf) -or
+    (Get-Item -LiteralPath $entitlementSitePath -Force).Length -gt 256) {
+  throw "entitlement_feature_denied"
+}
+$entitlementSite = ([IO.File]::ReadAllText(
+  $entitlementSitePath, [Text.Encoding]::ASCII
+)).TrimEnd("`n")
+$authorization = @(
+  & $entitlementVerifier -Action Authorize -SiteId $entitlementSite -Feature security-patches
+)
+if ($LASTEXITCODE -ne 0 -or $authorization.Count -ne 1) {
+  throw "entitlement_feature_denied"
+}
+try { $authorizationReceipt = $authorization[0] | ConvertFrom-Json }
+catch { throw "entitlement_feature_denied" }
+if (-not $authorizationReceipt.ok -or
+    [string]$authorizationReceipt.status -cne "authorized" -or
+    [string]$authorizationReceipt.feature -cne "security-patches") {
+  throw "entitlement_feature_denied"
+}
 Invoke-Docker -Arguments @("image", "load", "--input", $ArchivePath)
 $inspectText = Invoke-Docker -Arguments @("image", "inspect", $ExpectedImage, "--format", "{{json .}}") -Capture
 $inspect = $inspectText | ConvertFrom-Json

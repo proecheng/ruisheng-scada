@@ -21,6 +21,34 @@ if (-not $StateDirectory) {
 $StateFile = Join-Path $StateDirectory "tunnel.json"
 $StdoutLog = Join-Path $StateDirectory "ssh.stdout.log"
 $StderrLog = Join-Path $StateDirectory "ssh.stderr.log"
+$SshPath = "C:\Windows\System32\OpenSSH\ssh.exe"
+
+function Get-RemoteSupportGuard {
+  $script = @'
+$ErrorActionPreference = "Stop"
+$sitePath = "C:\ProgramData\Ruisheng\trust\entitlement-site-id"
+$verifier = "C:\ProgramData\Ruisheng\bin\target_entitlement_verifier.ps1"
+if (-not (Test-Path -LiteralPath $sitePath -PathType Leaf) -or
+    (Get-Item -LiteralPath $sitePath -Force).Length -gt 256) { exit 42 }
+$site = ([IO.File]::ReadAllText($sitePath, [Text.Encoding]::ASCII)).TrimEnd("`n")
+if ($site -notmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') { exit 42 }
+while ($true) {
+  $line = @(& $verifier -Action Authorize -SiteId $site -Feature remote-support)
+  if ($LASTEXITCODE -ne 0 -or $line.Count -ne 1) { exit 42 }
+  try { $receipt = $line[0] | ConvertFrom-Json } catch { exit 42 }
+  if (-not $receipt.ok -or [string]$receipt.status -cne "authorized" -or
+      [string]$receipt.feature -cne "remote-support") { exit 42 }
+  try {
+    $remaining = (
+      [DateTimeOffset]::Parse([string]$receipt.valid_until) - [DateTimeOffset]::UtcNow
+    ).TotalMilliseconds
+  } catch { exit 42 }
+  if ($remaining -le 0) { exit 42 }
+  Start-Sleep -Milliseconds ([int][Math]::Min(5000, [Math]::Ceiling($remaining)))
+}
+'@
+  return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+}
 
 function Test-TcpPort {
   param(
@@ -159,12 +187,12 @@ function Start-Tunnel {
     }
   }
 
-  $ssh = Get-Command ssh.exe -ErrorAction Stop
+  if (-not (Test-Path -LiteralPath $SshPath -PathType Leaf)) { throw "Fixed ssh.exe is missing." }
   New-Item -ItemType Directory -Path $StateDirectory -Force | Out-Null
   Set-Content -LiteralPath $StdoutLog -Value "" -Encoding utf8
   Set-Content -LiteralPath $StderrLog -Value "" -Encoding utf8
   $sshArguments = @(
-    "-N", "-T",
+    "-T", "-F", "NUL",
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes",
     "-o", "ExitOnForwardFailure=yes",
@@ -173,9 +201,11 @@ function Start-Tunnel {
     "-L", "127.0.0.1:${WebPort}:127.0.0.1:80",
     "-L", "127.0.0.1:${GwHealthPort}:127.0.0.1:9090",
     "-L", "127.0.0.1:${GwDevicePort}:127.0.0.1:5020",
-    $Target
+    $Target,
+    "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", (Get-RemoteSupportGuard)
   )
-  $process = Start-Process -FilePath $ssh.Source -ArgumentList $sshArguments -PassThru `
+  $process = Start-Process -FilePath $SshPath -ArgumentList $sshArguments -PassThru `
     -WindowStyle Hidden -RedirectStandardOutput $StdoutLog -RedirectStandardError $StderrLog
   $state = [ordered]@{
     schema_version = 1
@@ -243,16 +273,63 @@ function Test-RemoteHealth {
   $remoteScript = @'
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$sitePath = "C:\ProgramData\Ruisheng\trust\entitlement-site-id"
+$verifier = "C:\ProgramData\Ruisheng\bin\target_entitlement_verifier.ps1"
+if (-not (Test-Path -LiteralPath $sitePath -PathType Leaf) -or
+    (Get-Item -LiteralPath $sitePath -Force).Length -gt 256) {
+  throw "entitlement_feature_denied"
+}
+$site = ([IO.File]::ReadAllText($sitePath, [Text.Encoding]::ASCII)).TrimEnd("`n")
+$authorization = @(& $verifier -Action Authorize -SiteId $site -Feature remote-support)
+if ($LASTEXITCODE -ne 0 -or $authorization.Count -ne 1) {
+  throw "entitlement_feature_denied"
+}
+try { $authorizationReceipt = $authorization[0] | ConvertFrom-Json }
+catch { throw "entitlement_feature_denied" }
+if (-not $authorizationReceipt.ok -or
+    [string]$authorizationReceipt.status -cne "authorized" -or
+    [string]$authorizationReceipt.feature -cne "remote-support") {
+  throw "entitlement_feature_denied"
+}
 docker exec ruisheng-api python -m ruisheng_api.healthcheck
 if ($LASTEXITCODE -ne 0) { throw "API health check failed." }
-docker exec ruisheng-gw python -c "import urllib.request; print('gw=' + str(urllib.request.urlopen('http://127.0.0.1:9090/ready', timeout=5).status))"
+$gwProbe = @"
+import http.client
+import json
+
+connection = http.client.HTTPConnection("127.0.0.1", 9090, timeout=5)
+try:
+    connection.request("GET", "/ready")
+    response = connection.getresponse()
+    try:
+        status = response.status
+        body = response.read(513)
+    finally:
+        response.close()
+finally:
+    connection.close()
+
+acl_denial = False
+if status == 403 and len(body) <= 512:
+    try:
+        acl_denial = json.loads(body.decode("utf-8")) == {
+            "detail": "health source is not approved"
+        }
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        pass
+print("gw=" + str(status))
+raise SystemExit(0 if status == 200 or acl_denial else 1)
+"@
+$gwProbeEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($gwProbe))
+$gwProbeBootstrap = "import base64;exec(base64.b64decode('$gwProbeEncoded'))"
+docker exec ruisheng-gw python -c $gwProbeBootstrap
 if ($LASTEXITCODE -ne 0) { throw "GW health check failed." }
 $web = Invoke-WebRequest -Uri "http://127.0.0.1/" -UseBasicParsing -TimeoutSec 5
 Write-Output "web=$([int]$web.StatusCode)"
 '@
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($remoteScript))
-  & ssh.exe -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 `
-    $Target powershell.exe `
+  & $SshPath -T -F NUL -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 `
+    $Target C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe `
     -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded
   if ($LASTEXITCODE -ne 0) { throw "Remote service health check failed." }
 }

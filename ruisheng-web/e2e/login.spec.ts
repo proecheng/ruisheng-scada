@@ -17,6 +17,8 @@ test.describe('登录流程', () => {
   })
 
   test('密码错误显示错误提示', async ({ page }) => {
+    const pageErrors: Error[] = []
+    page.on('pageerror', (error) => pageErrors.push(error))
     await mockLoginFailure(page)
 
     const loginPage = new LoginPage(page)
@@ -26,6 +28,7 @@ test.describe('登录流程', () => {
     await expect(loginPage.errorMsg).toBeVisible()
     await expect(loginPage.errorMsg).toContainText('用户名或密码错误')
     await expect(page).toHaveURL('/login')
+    expect(pageErrors).toEqual([])
   })
 
   test('空提交：HTML5 required 阻止提交，停留在登录页', async ({ page }) => {

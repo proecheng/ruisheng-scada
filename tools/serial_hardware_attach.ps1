@@ -149,8 +149,16 @@ function Invoke-NativeCommand(
     $process = [Diagnostics.Process]::Start($start)
     $outputTask = $process.StandardOutput.ReadToEndAsync()
     $errorTask = $process.StandardError.ReadToEndAsync()
-    if ($StandardInput.Length -gt 0) { $process.StandardInput.Write($StandardInput) }
-    $process.StandardInput.Close()
+    $inputStream = $process.StandardInput.BaseStream
+    try {
+        if ($StandardInput.Length -gt 0) {
+            $inputBytes = [Text.UTF8Encoding]::new($false).GetBytes($StandardInput)
+            $inputStream.Write($inputBytes, 0, $inputBytes.Length)
+            $inputStream.Flush()
+        }
+    } finally {
+        $inputStream.Close()
+    }
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         $process.Kill()
         $process.WaitForExit()
@@ -186,7 +194,12 @@ function Get-TargetDevice {
 function Invoke-WslScript([string]$Script, [string[]]$Arguments, [int]$TimeoutSeconds = 30) {
     $commandArguments = @("-d", $script:WslDistribution, "-u", "root", "--", "sh", "-s", "--") +
         $Arguments
-    return Invoke-NativeCommand $script:WslPath $commandArguments $Script $TimeoutSeconds
+    $normalizedScript = $Script.Replace("`r`n", "`n").Replace("`r", "`n")
+    if ($normalizedScript.Length -gt 0 -and $normalizedScript[0] -eq [char]0xFEFF) {
+        $normalizedScript = $normalizedScript.Substring(1)
+    }
+    return Invoke-NativeCommand `
+        $script:WslPath $commandArguments $normalizedScript $TimeoutSeconds
 }
 
 function Remove-StableAlias {
