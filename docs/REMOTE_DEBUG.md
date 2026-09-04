@@ -30,6 +30,20 @@
 
 通过登录页提交无效测试凭据时，真实 API 返回 HTTP 401、业务码 `-101`。Web 应显示“用户名或密码错误”，且不得把这次登录失败广播成已有会话过期；其他受保护 API 的 HTTP 401 或 `-101` 仍会清理已有会话。
 
+## 桌面一键启动
+
+目标机桌面上的“润盛监控系统”快捷方式供现场用户启动本机应用。双击后，启动器会复用已运行的 Docker Desktop；Docker 尚未就绪时会启动当前登录用户的 Docker Desktop 并限时等待。随后它只从 `C:\Ruisheng\candidates` 下唯一受保护站点的 `active-release.json` 解析活动候选，不扫描或猜测最新版本。
+
+启动器在任何 Compose 变更前核对站点、状态目录、活动指针和发布文件 ACL，并交叉检查 Manifest、Compose 闭集、`pull_policy: never`、已加载镜像、已有容器镜像及回环端口。需要恢复服务时，它按 `postgres/redis -> migrate -> gw/api/web -> health` 执行，并依次取得 `shared-maintenance` 和 `legacy-hotfix` 租约锁；配置、指针、锁或镜像身份发生漂移会立即停止。服务已经健康时只复核状态并打开 `http://127.0.0.1/`，不会重建或删除卷。
+
+日常双击不需要管理员权限，也不会出现 UAC；安装目录仅 Administrators 和 SYSTEM 可写，`lenovo` 只有读取执行权限。启动日志使用独立的 `C:\Ruisheng\launcher-audit`，不会修改远程维护审计目录。安装器不保存 SSH 密钥、不自连 SSH，也不会修改开机任务、Docker 全局设置或串口配置。管理员进行无浏览器验收时可运行：
+
+```powershell
+& "C:\Program Files\Ruisheng\Launcher\start_ruisheng_local.ps1" -NoBrowser -NoUi
+```
+
+输出 `READY` 只表示本机五个服务已按活动候选就绪，不代表生产放行。失败时保留容器、卷、候选和审计现场，并只显示不含环境密钥的错误代码。
+
 ## 单服务热修
 
 先执行只读预检：
