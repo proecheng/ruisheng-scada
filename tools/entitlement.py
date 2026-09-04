@@ -26,7 +26,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
-if os.name == "nt":
+if sys.platform == "win32":
     import msvcrt
 else:
     import fcntl
@@ -311,6 +311,13 @@ def _private_key(path: Path, password: bytes) -> Ed25519PrivateKey:
     return key
 
 
+def _windows_dlls() -> tuple[Any, Any]:
+    loader = getattr(ctypes, "windll", None)
+    if loader is None:
+        raise EntitlementError("windows_api_unavailable")
+    return loader.kernel32, loader.advapi32
+
+
 def _require_protected_private_key_parent(path: Path) -> None:  # noqa: PLR0912, PLR0915
     """Require the Windows key directory to have the target's exact protected ACL."""
     if os.name != "nt":
@@ -318,10 +325,11 @@ def _require_protected_private_key_parent(path: Path) -> None:  # noqa: PLR0912,
     parent = path.parent
     if not parent.exists() or not parent.is_dir():
         raise EntitlementError("private_key_parent_missing")
+    kernel32, advapi32 = _windows_dlls()
 
     invalid_attributes = 0xFFFFFFFF
     file_attribute_reparse_point = 0x400
-    attributes = ctypes.windll.kernel32.GetFileAttributesW(str(parent))
+    attributes = kernel32.GetFileAttributesW(str(parent))
     if attributes == invalid_attributes:
         raise EntitlementError("private_key_parent_read_failed")
     if attributes & file_attribute_reparse_point:
@@ -333,7 +341,7 @@ def _require_protected_private_key_parent(path: Path) -> None:  # noqa: PLR0912,
     security_descriptor = ctypes.c_void_p()
     owner = ctypes.c_void_p()
     dacl = ctypes.c_void_p()
-    result = ctypes.windll.advapi32.GetNamedSecurityInfoW(
+    result = advapi32.GetNamedSecurityInfoW(
         str(parent),
         se_file_object,
         owner_information | dacl_information,
@@ -364,7 +372,7 @@ def _require_protected_private_key_parent(path: Path) -> None:  # noqa: PLR0912,
         control = wintypes.WORD()
         revision = wintypes.DWORD()
         if (
-            not ctypes.windll.advapi32.GetSecurityDescriptorControl(
+            not advapi32.GetSecurityDescriptorControl(
                 security_descriptor, ctypes.byref(control), ctypes.byref(revision)
             )
             or not control.value & 0x1000
@@ -376,21 +384,21 @@ def _require_protected_private_key_parent(path: Path) -> None:  # noqa: PLR0912,
         expected_sids: list[ctypes.c_void_p] = []
         for sid_text in ("S-1-5-32-544", "S-1-5-18"):
             sid = ctypes.c_void_p()
-            if not ctypes.windll.advapi32.ConvertStringSidToSidW(sid_text, ctypes.byref(sid)):
+            if not advapi32.ConvertStringSidToSidW(sid_text, ctypes.byref(sid)):
                 raise EntitlementError("private_key_parent_acl_invalid")
             expected_sids.append(sid)
         try:
-            if not any(ctypes.windll.advapi32.EqualSid(owner, sid) for sid in expected_sids):
+            if not any(advapi32.EqualSid(owner, sid) for sid in expected_sids):
                 raise EntitlementError("private_key_parent_owner_invalid")
             info = AclSizeInformation()
-            if not ctypes.windll.advapi32.GetAclInformation(
+            if not advapi32.GetAclInformation(
                 dacl, ctypes.byref(info), ctypes.sizeof(info), 2
             ) or info.ace_count != len(expected_sids):
                 raise EntitlementError("private_key_parent_acl_invalid")
             seen: set[int] = set()
             for index in range(info.ace_count):
                 ace = ctypes.c_void_p()
-                if not ctypes.windll.advapi32.GetAce(dacl, index, ctypes.byref(ace)):
+                if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
                     raise EntitlementError("private_key_parent_acl_invalid")
                 header = ctypes.cast(ace, ctypes.POINTER(AceHeader)).contents
                 raw = ctypes.cast(ace, ctypes.POINTER(ctypes.c_ubyte))
@@ -401,7 +409,7 @@ def _require_protected_private_key_parent(path: Path) -> None:  # noqa: PLR0912,
                 matches = [
                     position
                     for position, sid in enumerate(expected_sids)
-                    if ctypes.windll.advapi32.EqualSid(ace_sid, sid)
+                    if advapi32.EqualSid(ace_sid, sid)
                 ]
                 if (
                     header.ace_type != 0
@@ -416,28 +424,27 @@ def _require_protected_private_key_parent(path: Path) -> None:  # noqa: PLR0912,
                 raise EntitlementError("private_key_parent_acl_invalid")
         finally:
             for sid in expected_sids:
-                ctypes.windll.kernel32.LocalFree(sid)
+                kernel32.LocalFree(sid)
     finally:
-        ctypes.windll.kernel32.LocalFree(security_descriptor)
+        kernel32.LocalFree(security_descriptor)
 
 
 def _set_protected_private_key_acl(path: Path) -> None:
     if os.name != "nt":
         return
+    kernel32, advapi32 = _windows_dlls()
     security_descriptor = ctypes.c_void_p()
     descriptor_size = wintypes.ULONG()
     sddl = "O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)"
-    if not ctypes.windll.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
         sddl, 1, ctypes.byref(security_descriptor), ctypes.byref(descriptor_size)
     ):
         raise EntitlementError("private_key_acl_invalid")
     try:
-        if not ctypes.windll.advapi32.SetFileSecurityW(
-            str(path), 0x1 | 0x2 | 0x4, security_descriptor
-        ):
+        if not advapi32.SetFileSecurityW(str(path), 0x1 | 0x2 | 0x4, security_descriptor):
             raise EntitlementError("private_key_acl_invalid")
     finally:
-        ctypes.windll.kernel32.LocalFree(security_descriptor)
+        kernel32.LocalFree(security_descriptor)
 
 
 def _require_protected_private_key_leaf(path: Path) -> None:  # noqa: PLR0912, PLR0915
@@ -445,7 +452,8 @@ def _require_protected_private_key_leaf(path: Path) -> None:  # noqa: PLR0912, P
         return
     if not path.exists() or not path.is_file():
         raise EntitlementError("private_key_missing")
-    attributes = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+    kernel32, advapi32 = _windows_dlls()
+    attributes = kernel32.GetFileAttributesW(str(path))
     invalid_attributes = 0xFFFFFFFF
     if attributes == invalid_attributes:
         raise EntitlementError("private_key_read_failed")
@@ -455,7 +463,7 @@ def _require_protected_private_key_leaf(path: Path) -> None:  # noqa: PLR0912, P
     security_descriptor = ctypes.c_void_p()
     owner = ctypes.c_void_p()
     dacl = ctypes.c_void_p()
-    result = ctypes.windll.advapi32.GetNamedSecurityInfoW(
+    result = advapi32.GetNamedSecurityInfoW(
         str(path),
         1,
         0x1 | 0x4,
@@ -486,7 +494,7 @@ def _require_protected_private_key_leaf(path: Path) -> None:  # noqa: PLR0912, P
         control = wintypes.WORD()
         revision = wintypes.DWORD()
         if (
-            not ctypes.windll.advapi32.GetSecurityDescriptorControl(
+            not advapi32.GetSecurityDescriptorControl(
                 security_descriptor, ctypes.byref(control), ctypes.byref(revision)
             )
             or not control.value & 0x1000
@@ -496,21 +504,21 @@ def _require_protected_private_key_leaf(path: Path) -> None:  # noqa: PLR0912, P
         expected_sids: list[ctypes.c_void_p] = []
         for sid_text in ("S-1-5-32-544", "S-1-5-18"):
             sid = ctypes.c_void_p()
-            if not ctypes.windll.advapi32.ConvertStringSidToSidW(sid_text, ctypes.byref(sid)):
+            if not advapi32.ConvertStringSidToSidW(sid_text, ctypes.byref(sid)):
                 raise EntitlementError("private_key_acl_invalid")
             expected_sids.append(sid)
         try:
-            if not any(ctypes.windll.advapi32.EqualSid(owner, sid) for sid in expected_sids):
+            if not any(advapi32.EqualSid(owner, sid) for sid in expected_sids):
                 raise EntitlementError("private_key_owner_invalid")
             info = AclSizeInformation()
-            if not ctypes.windll.advapi32.GetAclInformation(
+            if not advapi32.GetAclInformation(
                 dacl, ctypes.byref(info), ctypes.sizeof(info), 2
             ) or info.ace_count != len(expected_sids):
                 raise EntitlementError("private_key_acl_invalid")
             seen: set[int] = set()
             for index in range(info.ace_count):
                 ace = ctypes.c_void_p()
-                if not ctypes.windll.advapi32.GetAce(dacl, index, ctypes.byref(ace)):
+                if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
                     raise EntitlementError("private_key_acl_invalid")
                 header = ctypes.cast(ace, ctypes.POINTER(AceHeader)).contents
                 raw = ctypes.cast(ace, ctypes.POINTER(ctypes.c_ubyte))
@@ -521,7 +529,7 @@ def _require_protected_private_key_leaf(path: Path) -> None:  # noqa: PLR0912, P
                 matches = [
                     position
                     for position, sid in enumerate(expected_sids)
-                    if ctypes.windll.advapi32.EqualSid(ace_sid, sid)
+                    if advapi32.EqualSid(ace_sid, sid)
                 ]
                 if (
                     header.ace_type != 0
@@ -534,9 +542,9 @@ def _require_protected_private_key_leaf(path: Path) -> None:  # noqa: PLR0912, P
                 seen.add(matches[0])
         finally:
             for sid in expected_sids:
-                ctypes.windll.kernel32.LocalFree(sid)
+                kernel32.LocalFree(sid)
     finally:
-        ctypes.windll.kernel32.LocalFree(security_descriptor)
+        kernel32.LocalFree(security_descriptor)
 
 
 def _message(payload: Mapping[str, Any]) -> bytes:
@@ -677,26 +685,23 @@ def _atomic_replace(path: Path, data: bytes) -> None:
             os.unlink(temporary)
 
 
-def _lock_handle(handle: BinaryIO) -> None:
-    if os.name == "nt":
+if sys.platform == "win32":
+
+    def _lock_handle(handle: BinaryIO) -> None:
         handle.seek(0)
         msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-    else:
-        fcntl.flock(  # type: ignore[attr-defined]
-            handle.fileno(),
-            fcntl.LOCK_EX | fcntl.LOCK_NB,  # type: ignore[attr-defined]
-        )
 
-
-def _unlock_handle(handle: BinaryIO) -> None:
-    if os.name == "nt":
+    def _unlock_handle(handle: BinaryIO) -> None:
         handle.seek(0)
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-    else:
-        fcntl.flock(  # type: ignore[attr-defined]
-            handle.fileno(),
-            fcntl.LOCK_UN,  # type: ignore[attr-defined]
-        )
+
+else:
+
+    def _lock_handle(handle: BinaryIO) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock_handle(handle: BinaryIO) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 @contextmanager
