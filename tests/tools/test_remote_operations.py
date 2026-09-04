@@ -298,7 +298,35 @@ def _remote_layout(tmp_path: Path) -> dict[str, Path]:
         ),
         encoding="utf-8",
     )
-    return {"candidate": candidate, "site": site, "audit": audit}
+    entitlement_site = tmp_path / "entitlement-site-id"
+    entitlement_site.write_text("site-fixture\n", encoding="ascii", newline="\n")
+    entitlement_verifier = tmp_path / "target_entitlement_verifier.ps1"
+    entitlement_verifier.write_text(
+        "[CmdletBinding()]\n"
+        "param([string]$Action,[string]$SiteId,[string]$Feature)\n"
+        "$allowed = $env:SIM_ENTITLEMENT_MODE -ne 'denied'\n"
+        "if ($allowed -and $Action -ceq 'Authorize' -and $SiteId -ceq 'site-fixture' -and "
+        "$Feature -ceq 'remote-support') {\n"
+        "  $global:LASTEXITCODE = 0\n"
+        "  [ordered]@{schema_version=1;ok=$true;status='authorized';site_id=$SiteId;"
+        "feature=$Feature;entitlement_status='active';grant_id='fixture';"
+        "grant_sha256=('a'*64);serial=1;valid_until='2099-01-01T00:00:00+00:00'} | "
+        "ConvertTo-Json -Compress\n"
+        "  return\n"
+        "}\n"
+        "$global:LASTEXITCODE = 2\n"
+        "[ordered]@{schema_version=1;ok=$false;status='rejected';"
+        "error_code='entitlement_feature_denied'} | ConvertTo-Json -Compress\n",
+        encoding="ascii",
+        newline="\n",
+    )
+    return {
+        "candidate": candidate,
+        "site": site,
+        "audit": audit,
+        "entitlement_site": entitlement_site,
+        "entitlement_verifier": entitlement_verifier,
+    }
 
 
 def _tree_digest(path: Path) -> dict[str, str]:
@@ -428,6 +456,13 @@ def _render_remote_script(
         '$AuditDirectory = "C:\\Ruisheng\\audit"',
         f"$AuditDirectory = {_ps_literal(layout['audit'])}",
     )
+    rendered = rendered.replace(
+        '"C:\\ProgramData\\Ruisheng\\trust\\entitlement-site-id"',
+        _ps_literal(layout["entitlement_site"]),
+    ).replace(
+        '"C:\\ProgramData\\Ruisheng\\bin\\target_entitlement_verifier.ps1"',
+        _ps_literal(layout["entitlement_verifier"]),
+    )
     replacements = {
         "__ACTION__": _ps_literal(action),
         "__REASON__": _ps_literal(reason),
@@ -483,6 +518,7 @@ def _run_remote_script(
     drift_after_stop: str = "",
     fail_inspect: str = "",
     discover_site: bool = False,
+    entitlement_mode: str = "allowed",
 ) -> tuple[dict[str, Any], list[str]]:
     script_path = tmp_path / f"remote-{action}-{operation_id[-4:]}.ps1"
     command_log = tmp_path / f"docker-{action}-{operation_id[-4:]}.log"
@@ -509,6 +545,7 @@ def _run_remote_script(
             "SIM_FAIL_INSPECT": fail_inspect,
             "SIM_DRIFT_PATH": str(layout["candidate"] / "docker-compose.prod.yml"),
             "SIM_STOPPED_FILE": str(tmp_path / f"stopped-{action}-{operation_id[-4:]}.txt"),
+            "SIM_ENTITLEMENT_MODE": entitlement_mode,
         }
     )
     completed = subprocess.run(
@@ -588,6 +625,18 @@ def test_remote_debug_tunnel_is_loopback_only_and_fail_fast() -> None:
     assert '"127.0.0.1:${WebPort}:127.0.0.1:80"' in script
     assert '"127.0.0.1:${GwHealthPort}:127.0.0.1:9090"' in script
     assert '"127.0.0.1:${GwDevicePort}:127.0.0.1:5020"' in script
+    assert '"-T", "-F", "NUL"' in script
+    guard = script.split("function Get-RemoteSupportGuard", 1)[1].split("function Test-TcpPort", 1)[
+        0
+    ]
+    assert "-Action Authorize -SiteId $site -Feature remote-support" in guard
+    assert "while ($true)" in guard
+    assert "valid_until" in guard
+    health = script.split("function Test-RemoteHealth", 1)[1].split("switch ($Action)", 1)[0]
+    assert "-Action Authorize -SiteId $site -Feature remote-support" in health
+    assert health.index("-Feature remote-support") < health.index("docker exec ruisheng-api")
+    assert "$Target C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" in health
+    assert "$Target powershell.exe" not in health
     assert "0.0.0.0:${" not in script
 
 
@@ -722,6 +771,10 @@ def test_hotfix_renders_offline_compose_and_recreates_only_selected_service() ->
     )
     assert 'Invoke-Docker -Arguments @("exec", $ContainerName, "wget"' in script
     assert "Service did not become ready" in script
+    assert "-Action Authorize -SiteId $entitlementSite -Feature security-patches" in script
+    assert script.index("-Feature security-patches") < script.index(
+        'Invoke-Docker -Arguments @("image", "load"'
+    )
 
 
 def test_hotfix_has_atomic_environment_backup_and_automatic_rollback() -> None:
@@ -751,6 +804,16 @@ def test_maintenance_surface_validates_reason_approval_and_key_only_posture() ->
     assert '$keyboard -eq "no"' in script
     assert '$publicKey -eq "yes"' in script
     assert 'if (-not $posture.mutation_allowed) { throw "ssh_not_key_only" }' in script
+    remote = _remote_template()
+    guard = 'if ($Action -in @("StopApp", "RestartApp"))'
+    assert guard in remote
+    assert "-Action Authorize -SiteId $entitlementSite -Feature remote-support" in remote
+    replay = remote.index("$existingOperation = Read-ExistingOperation", remote.index("try {"))
+    entitlement_guard = remote.index(guard, replay)
+    assert replay < entitlement_guard
+    assert remote.index("-Feature remote-support", entitlement_guard) < remote.index(
+        "Assert-DockerAvailable", entitlement_guard
+    )
 
 
 def test_maintenance_prepare_is_explicit_key_only_and_docker_free() -> None:
@@ -1657,6 +1720,7 @@ def test_maintenance_start_keeps_relative_mounts_bound_to_candidate_root(tmp_pat
         action="StartApp",
         operation_id="00000000-0000-4000-8000-000000000055",
         scenario=_restricted_scenario(),
+        entitlement_mode="denied",
     )
 
     compose_commands = [
@@ -1668,6 +1732,26 @@ def test_maintenance_start_keeps_relative_mounts_bound_to_candidate_root(tmp_pat
     for arguments in compose_commands:
         project_index = arguments.index("--project-directory")
         assert arguments[project_index + 1] == str(layout["candidate"])
+
+
+def test_maintenance_denies_new_stop_before_docker_when_remote_support_is_absent(
+    tmp_path: Path,
+) -> None:
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StopApp",
+        operation_id="00000000-0000-4000-8000-000000000056",
+        scenario=_restricted_scenario(),
+        entitlement_mode="denied",
+    )
+
+    assert result["status"] == "rejected"
+    assert result["error_code"] == "entitlement_feature_denied"
+    assert commands == []
 
 
 def test_maintenance_reconciles_abandoned_executing_operation_as_uncertain(tmp_path: Path) -> None:

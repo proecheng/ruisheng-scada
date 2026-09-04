@@ -163,7 +163,7 @@ function Invoke-SshScript {
     [Text.Encoding]::Unicode.GetBytes($script:RemotePowerShellBootstrap)
   )
   $sshArguments = @(
-    "-T",
+    "-T", "-F", "NUL",
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes",
     "-o", "ConnectTimeout=10",
@@ -202,7 +202,9 @@ function Invoke-SshScript {
       try { [void]$process.WaitForExit(5000) } catch { }
       throw "Remote upgrade transport timed out."
     }
-    [Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 10000) | Out-Null
+    if (-not [Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 10000)) {
+      throw "Remote upgrade transport streams timed out."
+    }
     $exitCode = $process.ExitCode
     $text = [string]$stdoutTask.Result
     $errorText = [string]$stderrTask.Result
@@ -327,6 +329,7 @@ foreach (`$file in `$actual) {
   $sftp = (Get-Command sftp.exe -ErrorAction Stop).Source
   $arguments = @(
     "-b", "-",
+    "-F", "NUL",
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes",
     "-o", "ConnectTimeout=10",
@@ -358,7 +361,9 @@ foreach (`$file in `$actual) {
       $process.StandardInput.BaseStream.Write($batchBytes, 0, $batchBytes.Length)
       $process.StandardInput.BaseStream.Close()
       [void]$process.WaitForExit()
-      [Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 10000) | Out-Null
+      if (-not [Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 10000)) {
+        throw "Candidate resumable upload streams timed out."
+      }
       $lastExitCode = $process.ExitCode
       if ($lastExitCode -eq 0) {
         try { $uploadState = Invoke-SshScript -Script $completionProbe }
@@ -621,6 +626,7 @@ if ($Target -notmatch '^[A-Za-z0-9._-]+@[A-Za-z0-9._:-]+$') {
 if ($OperationId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$') {
   throw "OperationId must be a UUID."
 }
+$OperationId = $OperationId.ToLowerInvariant()
 Assert-RemotePath -Path $SiteRoot
 $SiteRoot = [IO.Path]::GetFullPath($SiteRoot).TrimEnd('\')
 if ($SiteRoot -notmatch '^[A-Za-z]:\\Ruisheng\\candidates\\[^\\]+$') {
@@ -774,6 +780,7 @@ foreach (`$directory in @(`$candidatePath, (Join-Path `$candidatePath "images"))
       $scpRoot = $incomingOperationRoot.Replace("\", "/") + "/"
       $scpArguments = @(
         "-r",
+        "-F", "NUL",
         "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=yes",
         "-o", "ConnectTimeout=10",

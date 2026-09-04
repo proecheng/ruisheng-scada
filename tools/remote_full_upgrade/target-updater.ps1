@@ -52,6 +52,26 @@ function Get-Sha256Text {
   finally { $sha.Dispose() }
 }
 
+function Assert-EntitlementFeature([string]$Feature) {
+  $sitePath = "C:\ProgramData\Ruisheng\trust\entitlement-site-id"
+  $verifier = "C:\ProgramData\Ruisheng\bin\target_entitlement_verifier.ps1"
+  if (-not (Test-Path -LiteralPath $sitePath -PathType Leaf) -or
+      (Get-Item -LiteralPath $sitePath -Force).Length -gt 256) {
+    throw "entitlement_feature_denied"
+  }
+  $site = ([IO.File]::ReadAllText($sitePath, [Text.Encoding]::ASCII)).TrimEnd("`n")
+  $authorization = @(& $verifier -Action Authorize -SiteId $site -Feature $Feature)
+  if ($LASTEXITCODE -ne 0 -or $authorization.Count -ne 1) {
+    throw "entitlement_feature_denied"
+  }
+  try { $receipt = $authorization[0] | ConvertFrom-Json }
+  catch { throw "entitlement_feature_denied" }
+  if (-not $receipt.ok -or [string]$receipt.status -cne "authorized" -or
+      [string]$receipt.feature -cne $Feature) {
+    throw "entitlement_feature_denied"
+  }
+}
+
 function Get-AuditLineHashMaterial {
   param([Parameter(Mandatory)][string]$Line)
   $match = [regex]::Match(
@@ -1279,6 +1299,7 @@ catch {
 
 try {
   if ($Action -eq "Initialize") {
+    Assert-EntitlementFeature "software-updates"
     if (-not $CandidateRoot -or -not (Test-Path -LiteralPath $CandidateRoot -PathType Container)) {
       throw "candidate_directory_missing"
     }
@@ -1404,6 +1425,7 @@ try {
   }
 
   if ($Action -ne "Apply") { throw "recover_journal_missing" }
+  Assert-EntitlementFeature "software-updates"
   if (-not $CandidateRoot -or -not (Test-Path -LiteralPath $CandidateRoot -PathType Container)) {
     throw "candidate_directory_missing"
   }

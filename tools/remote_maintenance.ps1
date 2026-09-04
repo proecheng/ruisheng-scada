@@ -1758,6 +1758,31 @@ try {
     throw "operation_state_invalid"
   }
 
+  if ($Action -in @("StopApp", "RestartApp")) {
+    $entitlementSitePath = "C:\ProgramData\Ruisheng\trust\entitlement-site-id"
+    $entitlementVerifier = "C:\ProgramData\Ruisheng\bin\target_entitlement_verifier.ps1"
+    if (-not (Test-Path -LiteralPath $entitlementSitePath -PathType Leaf) -or
+        (Get-Item -LiteralPath $entitlementSitePath -Force).Length -gt 256) {
+      throw "entitlement_feature_denied"
+    }
+    $entitlementSite = ([IO.File]::ReadAllText(
+      $entitlementSitePath, [Text.Encoding]::ASCII
+    )).TrimEnd("`n")
+    $authorization = @(
+      & $entitlementVerifier -Action Authorize -SiteId $entitlementSite -Feature remote-support
+    )
+    if ($LASTEXITCODE -ne 0 -or $authorization.Count -ne 1) {
+      throw "entitlement_feature_denied"
+    }
+    try { $authorizationReceipt = $authorization[0] | ConvertFrom-Json }
+    catch { throw "entitlement_feature_denied" }
+    if (-not $authorizationReceipt.ok -or
+        [string]$authorizationReceipt.status -cne "authorized" -or
+        [string]$authorizationReceipt.feature -cne "remote-support") {
+      throw "entitlement_feature_denied"
+    }
+  }
+
   Assert-RequiredFiles
   Assert-DockerAvailable
   $model = Get-ComposeModel
@@ -1967,7 +1992,7 @@ foreach ($replacement in $replacements.GetEnumerator()) {
 $transportScript = "& {`r`n$remoteScript`r`n}`r`n"
 
 $sshArguments = @(
-  "-T",
+  "-T", "-F", "NUL",
   "-o", "BatchMode=yes",
   "-o", "StrictHostKeyChecking=yes",
   "-o", "ConnectTimeout=10",

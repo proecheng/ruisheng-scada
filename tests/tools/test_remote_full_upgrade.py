@@ -109,7 +109,7 @@ public static class SshStub
         if (mode == "unicode")
         {
             Console.OutputEncoding = new UTF8Encoding(false);
-            Console.Out.Write("传输正常");
+            Console.Out.Write("\u4F20\u8F93\u6B63\u5E38");
             return 0;
         }
         if (mode == "failed")
@@ -328,6 +328,8 @@ def _assert_transport_call(call: dict[str, object]) -> None:
     assert call["read_count"] == 1
     assert args == [
         "-T",
+        "-F",
+        "NUL",
         "-o",
         "BatchMode=yes",
         "-o",
@@ -468,7 +470,12 @@ $Target = "operator@100.64.0.1"
 {transport}
 $before = [Console]::OutputEncoding.CodePage
 $result = Invoke-SshScript -Script '"ignored"'
-if ($result -cne "传输正常") {{ throw "unicode_transport_corrupted" }}
+$expected = [Text.Encoding]::UTF8.GetString(
+  [Convert]::FromBase64String("5Lyg6L6T5q2j5bi4")
+)
+if ($result -cne $expected) {{
+  throw "unicode_transport_corrupted"
+}}
 if ([Console]::OutputEncoding.CodePage -ne $before) {{ throw "console_encoding_not_restored" }}
 "ok"
 """
@@ -552,6 +559,10 @@ def test_controller_has_closed_approved_transport_workflow() -> None:
     assert 'if ($Action -eq "Plan" -and -not $DryRun)' in script
     assert '"-o", "BatchMode=yes"' in script
     assert '"-o", "StrictHostKeyChecking=yes"' in script
+    assert '"-T", "-F", "NUL"' in script
+    assert '"-r",\n        "-F", "NUL"' in script
+    assert '"-b", "-",\n    "-F", "NUL"' in script
+    assert "if (-not [Threading.Tasks.Task]::WaitAll" in script
     expected_bootstrap = (
         "$script:RemotePowerShellBootstrap = '" + REMOTE_BOOTSTRAP.replace("'", "''") + "'"
     )
@@ -1116,13 +1127,16 @@ Prepare-EnvironmentSwitch -Journal $journal -JournalFile {_ps_literal(journal_pa
 
 def test_initialize_is_explicit_verified_and_non_disruptive() -> None:
     script = _read(UPDATER)
-    start = script.index('  if ($Action -eq "Initialize") {\n    if (-not $CandidateRoot')
+    start = script.index('  if ($Action -eq "Initialize") {\n    Assert-EntitlementFeature')
     end = script.index("\n  if (Test-Path -LiteralPath $JournalPath", start)
     initialize = script[start:end]
     complete_start = script.index("function Complete-ActiveReleaseInitialization")
     complete_end = script.index("\nfunction New-SafeResult", complete_start)
     complete = script[complete_start:complete_end]
     pointer_commit = initialize.index("Complete-ActiveReleaseInitialization")
+    assert initialize.index('Assert-EntitlementFeature "software-updates"') < initialize.index(
+        "Assert-CandidateManifest"
+    )
 
     for gate in (
         "Assert-CandidateManifest",
@@ -1149,6 +1163,13 @@ def test_initialize_is_explicit_verified_and_non_disruptive() -> None:
     assert '"down"' not in initialize
     assert "scp.exe" not in initialize
     assert script.count("active_release_already_initialized") == 1
+
+    journal_gate = script.index("if (Test-Path -LiteralPath $JournalPath", end)
+    recover = script.index('if ($Action -ne "Recover")', journal_gate)
+    apply_guard = script.index('Assert-EntitlementFeature "software-updates"', end)
+    apply_mutation = script.index("Prepare-EnvironmentSwitch", apply_guard)
+    assert recover < apply_guard < apply_mutation
+    assert script.index('if ($Action -ne "Apply")', recover) < apply_guard
     assert script.count("active_release_initialization_race") == 1
     assert "active_release_already_initialized" in complete
 
