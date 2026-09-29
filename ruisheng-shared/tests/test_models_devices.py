@@ -7,6 +7,8 @@ from ruisheng_shared.models.devices import (
     DeviceTemplate,
     SimCard,
 )
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateIndex
 
 
 def test_devices_tablename() -> None:
@@ -22,6 +24,7 @@ def test_devices_columns() -> None:
         "iccid",
         "dev_name",
         "dev_type",
+        "read_profile",
         "modbus_addr",
         "baud_rate",
         "group_company",
@@ -58,6 +61,27 @@ def test_devices_constraints() -> None:
     assert "ck_devices_baud_rate" in names
     assert "uq_devices_ser_iccid" in names
     assert "uq_devices_dev_number" in names
+    assert "ck_devices_read_profile" in names
+    assert "ck_devices_read_profile_transport" in names
+
+
+def test_read_profile_preserves_existing_default() -> None:
+    column = Device.__table__.c.read_profile
+    assert column.nullable is False
+    assert column.default.arg == "point_groups"
+    assert str(column.server_default.arg) == "point_groups"
+
+
+def test_serial_endpoint_index_excludes_deleted_but_not_disabled() -> None:
+    index = next(
+        item
+        for item in Device.__table__.indexes
+        if item.name == "uq_devices_serial_port_modbus_addr"
+    )
+    statement = str(CreateIndex(index).compile(dialect=postgresql.dialect()))
+    assert "UNIQUE INDEX" in statement
+    assert "transport_type = 'serial' AND deleted_at IS NULL" in statement
+    assert "is_enabled" not in statement
 
 
 def test_devices_indexes() -> None:

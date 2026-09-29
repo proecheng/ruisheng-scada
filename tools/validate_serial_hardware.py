@@ -14,6 +14,8 @@ from typing import Any
 
 HEX_ID_RE = re.compile(r"^[0-9A-Fa-f]{4}$")
 SERIAL_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+CH340_SCHEMA_VERSION = 2
+CH340_INSTANCE_RE = re.compile(r"^USB\\VID_1A86&PID_7523\\[A-Za-z0-9&._-]{1,160}$", re.I)
 DEVICE_NUMBER_RE = re.compile(r"^[A-Za-z0-9._-]{1,50}$")
 LINUX_DEVICE_RE = re.compile(r"^/dev/ruisheng-[A-Za-z0-9._-]+$")
 TTY_DEVICE_RE = re.compile(r"^/dev/ttyUSB[0-9]+$")
@@ -33,6 +35,7 @@ EXPECTED_ADAPTER_KEYS = {
     "wsl_distribution",
     "retry_seconds",
 }
+CH340_AUTO_IDENTITY_POLICY = "single_present_device"
 EXPECTED_DEVICE_KEYS = {"dev_number", "brand", "model", "protocol", "point_map_reference"}
 EXPECTED_SERIAL_KEYS = {"baud_rate", "data_bits", "parity", "stop_bits", "modbus_addr"}
 EXPECTED_APPROVAL_KEYS = {"polling_approved", "approved_by", "approved_at"}
@@ -63,6 +66,8 @@ class AdapterConfig:
     stable_path: str
     wsl_distribution: str
     retry_seconds: int
+    instance_id: str | None = None
+    identity_policy: str = "exact_instance"
 
 
 @dataclass(frozen=True)
@@ -119,11 +124,38 @@ def _integer(value: object, name: str) -> int:
     return value
 
 
-def _load_adapter(raw: object) -> AdapterConfig:
-    adapter = _object(raw, "adapter", EXPECTED_ADAPTER_KEYS)
+def _load_adapter(raw: object, schema_version: int = 1) -> AdapterConfig:
+    keys = EXPECTED_ADAPTER_KEYS
+    if schema_version == CH340_SCHEMA_VERSION:
+        keys = (keys - {"serial_number"}) | {"instance_id"}
+        # identity_policy was added after schema 2; accept the old exact
+        # instance shape for backward compatibility, but validate it when
+        # present so an unapproved policy cannot reach the attach task.
+        raw_keys = set(raw) if isinstance(raw, dict) else set()
+        allowed_keys = keys | {"identity_policy"}
+        if raw_keys == keys:
+            adapter = _object(raw, "adapter", keys)
+        elif raw_keys == allowed_keys:
+            adapter = _object(raw, "adapter", allowed_keys)
+        else:
+            adapter = _object(raw, "adapter", keys)
+    else:
+        adapter = _object(raw, "adapter", keys)
     vendor_id = _text(adapter["vendor_id"], "adapter.vendor_id", HEX_ID_RE).upper()
     product_id = _text(adapter["product_id"], "adapter.product_id", HEX_ID_RE).upper()
-    serial_number = _text(adapter["serial_number"], "adapter.serial_number", SERIAL_RE)
+    instance_id = None
+    serial_number = ""
+    if schema_version == CH340_SCHEMA_VERSION:
+        if (vendor_id, product_id) != ("1A86", "7523"):
+            raise SerialHardwareError("schema 2 requires the CH340 adapter")
+        instance_id = _text(adapter["instance_id"], "adapter.instance_id", CH340_INSTANCE_RE)
+        instance_id = instance_id.upper()
+        identity_policy = str(adapter.get("identity_policy", "exact_instance"))
+        if identity_policy not in {"exact_instance", CH340_AUTO_IDENTITY_POLICY}:
+            raise SerialHardwareError("adapter.identity_policy is unsupported")
+    else:
+        serial_number = _text(adapter["serial_number"], "adapter.serial_number", SERIAL_RE)
+        identity_policy = "exact_instance"
     stable_path = _text(adapter["stable_path"], "adapter.stable_path", LINUX_DEVICE_RE)
     wsl_distribution = _text(adapter["wsl_distribution"], "adapter.wsl_distribution", SERIAL_RE)
     if wsl_distribution != "docker-desktop":
@@ -138,6 +170,8 @@ def _load_adapter(raw: object) -> AdapterConfig:
         stable_path=stable_path,
         wsl_distribution=wsl_distribution,
         retry_seconds=retry_seconds,
+        instance_id=instance_id,
+        identity_policy=identity_policy,
     )
 
 
@@ -205,10 +239,10 @@ def load_site_config(path: Path) -> SiteConfig:
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SerialHardwareError(f"cannot read serial hardware config: {error}") from error
     root = _object(raw, "root", EXPECTED_ROOT_KEYS)
-    if type(root["schema_version"]) is not int or root["schema_version"] != 1:
+    if type(root["schema_version"]) is not int or root["schema_version"] not in (1, 2):
         raise SerialHardwareError("unsupported schema_version")
     return SiteConfig(
-        adapter=_load_adapter(root["adapter"]),
+        adapter=_load_adapter(root["adapter"], root["schema_version"]),
         polling=_load_polling(root["device"], root["serial"], root["approval"]),
     )
 
@@ -264,20 +298,44 @@ def _load_json_object(path: Path, expected_keys: set[str], name: str) -> dict[st
     return value
 
 
-def validate_hardware_attestation(path: Path, site: SiteConfig) -> None:
-    value = _load_json_object(path, ATTESTATION_KEYS, "hardware attestation")
-    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+def validate_hardware_attestation(path: Path, site: SiteConfig) -> None:  # noqa: PLR0912
+    schema = CH340_SCHEMA_VERSION if site.adapter.instance_id else 1
+    identity_key = "instance_id" if schema == CH340_SCHEMA_VERSION else "serial_number"
+    identity = (
+        site.adapter.instance_id if schema == CH340_SCHEMA_VERSION else site.adapter.serial_number
+    )
+    keys = (ATTESTATION_KEYS - {"serial_number"}) | {identity_key}
+    policy_keys = keys | {"identity_policy", "configured_instance_id"}
+    try:
+        value = _load_json_object(path, policy_keys, "hardware attestation")
+    except SerialHardwareError:
+        value = _load_json_object(path, keys, "hardware attestation")
+    if type(value["schema_version"]) is not int or value["schema_version"] != schema:
         raise SerialHardwareError("hardware attestation schema is unsupported")
     if value["result"] != "ready":
         raise SerialHardwareError("hardware attestation is not ready")
     for key, expected in (
         ("vendor_id", site.adapter.vendor_id),
         ("product_id", site.adapter.product_id),
-        ("serial_number", site.adapter.serial_number),
         ("stable_path", site.adapter.stable_path),
     ):
-        if str(value[key]).upper() != expected.upper():
+        if not isinstance(expected, str) or str(value[key]).upper() != expected.upper():
             raise SerialHardwareError(f"hardware attestation {key} does not match approval")
+    observed_identity = str(value[identity_key]).upper()
+    if site.adapter.identity_policy == CH340_AUTO_IDENTITY_POLICY:
+        if str(value.get("identity_policy", "")).lower() != CH340_AUTO_IDENTITY_POLICY:
+            raise SerialHardwareError(
+                "hardware attestation identity_policy does not match approval"
+            )
+        configured = str(value.get("configured_instance_id", "")).upper()
+        if configured != str(site.adapter.instance_id).upper():
+            raise SerialHardwareError(
+                "hardware attestation configured_instance_id does not match approval"
+            )
+        if CH340_INSTANCE_RE.fullmatch(observed_identity) is None:
+            raise SerialHardwareError("hardware attestation instance_id is invalid")
+    elif observed_identity != str(identity).upper():
+        raise SerialHardwareError(f"hardware attestation {identity_key} does not match approval")
     if (
         not isinstance(value["device_path"], str)
         or TTY_DEVICE_RE.fullmatch(value["device_path"]) is None

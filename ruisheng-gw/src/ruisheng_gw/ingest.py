@@ -28,6 +28,8 @@ if TYPE_CHECKING:
     from ruisheng_gw.domain.registry import AlarmSpec, PointEntry
 
 MAX_REGISTER_BIT = 15
+WORD_SIGN_BIT = 0x8000
+WORD_MODULUS = 0x10000
 
 
 class _BatchSink(Protocol):
@@ -70,7 +72,7 @@ class FrameIngestor:
     async def process_frame(self, *, dev_number: str, frame: bytes) -> None:
         await self.process_frame_for_pending(dev_number=dev_number, frame=frame, pending_read=None)
 
-    async def process_frame_for_pending(  # noqa: PLR0912
+    async def process_frame_for_pending(  # noqa: PLR0911, PLR0912
         self,
         *,
         dev_number: str,
@@ -80,6 +82,16 @@ class FrameIngestor:
         entry = self._registry.get(dev_number)
         decoded = self._decode_frame(frame)
         if entry is None or decoded is None:
+            return
+        if entry.transport_type == "serial" and (
+            pending_read is None
+            or pending_read.registry_entry is not entry
+            or pending_read.bus_id != entry.serial_port
+            or pending_read.dev_number != dev_number
+            or not isinstance(decoded, ReadHoldingResponse)
+            or pending_read.fun_code != decoded.fun_code
+            or pending_read.expected_byte_count != decoded.byte_count
+        ):
             return
         if isinstance(decoded, RegisterFrame):
             self._mark_seen(dev_number=dev_number, now=time.time())
@@ -126,8 +138,15 @@ class FrameIngestor:
                 row.recorded_at,
             )
 
+        if entry.transport_type == "serial":
+            for _point_entry, row in readings:
+                self._batch.submit(row)
+
         for _point_entry, row in readings:
-            self._batch.submit(row)
+            if entry.transport_type == "serial" and self._registry.get(dev_number) is not entry:
+                return
+            if entry.transport_type != "serial":
+                self._batch.submit(row)
             await self._publisher.publish_realtime(
                 RealtimeEvent(
                     dev_number=row.dev_number,
@@ -139,8 +158,15 @@ class FrameIngestor:
             )
 
         for point_entry, row in readings:
+            if entry.transport_type == "serial" and self._registry.get(dev_number) is not entry:
+                return
             if self._alarm_repository is not None:
                 for alarm in point_entry.alarms:
+                    if (
+                        entry.transport_type == "serial"
+                        and self._registry.get(dev_number) is not entry
+                    ):
+                        return
                     try:
                         relation_value = self._relation_value(
                             dev_number, alarm, observed_at=row.recorded_at
@@ -170,6 +196,11 @@ class FrameIngestor:
                 )
                 if threshold_alarm is not None:
                     await self._publisher.publish_alarm(AlarmEvent(**threshold_alarm.__dict__))
+
+    def invalidate_devices(self, dev_numbers: set[str]) -> None:
+        self._current_values = {
+            key: value for key, value in self._current_values.items() if key[0] not in dev_numbers
+        }
 
     def _relation_value(
         self, dev_number: str, alarm: AlarmSpec, *, observed_at: float
@@ -222,10 +253,14 @@ def _raw_value_for_point(
     start_addr: int,
 ) -> float | None:
     point = point_entry.point
+    if point.fun_code != response.fun_code:
+        return None
     index = point.point_number - start_addr
     if index < 0 or index >= len(response.bits + response.registers):
         return None
     if response.fun_code in (1, 2):
+        if point.value_type != "bit" or point.r_bit is not None:
+            return None
         return _bit_response_value(response=response, index=index)
     return _register_response_value(
         response=response, index=index, value_type=point.value_type, bit=point.r_bit
@@ -264,6 +299,14 @@ def _register_bit_value(*, register: int, bit: int | None) -> float | None:
     return float((register >> bit) & 0x01)
 
 
+def _register_word_value(*, register: int, signed: bool) -> float:
+    """Decode one complete Modbus 16-bit register as signed or unsigned."""
+    value = register & 0xFFFF
+    if signed and value >= WORD_SIGN_BIT:
+        value -= WORD_MODULUS
+    return float(value)
+
+
 def _register_response_value(
     *,
     response: ReadHoldingResponse,
@@ -277,4 +320,10 @@ def _register_response_value(
         return _double_word_value(response=response, index=index)
     if value_type == "bit":
         return _register_bit_value(register=response.registers[index], bit=bit)
-    return float(response.registers[index])
+    if value_type in ("有符号字节", "无符号字节"):
+        return _register_word_value(
+            register=response.registers[index], signed=value_type == "有符号字节"
+        )
+    if value_type == "字":
+        return float(response.registers[index])
+    return None

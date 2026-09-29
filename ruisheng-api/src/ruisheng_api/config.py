@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from typing import Any, Literal
 
@@ -33,6 +34,7 @@ class Config(BaseSettings):
     )
     jwt_access_ttl_sec: int = Field(default=900, ge=60)
     jwt_refresh_ttl_sec: int = Field(default=7 * 24 * 3600, ge=3600)
+    jwt_session_ttl_sec: int = Field(default=24 * 3600, ge=60)
     otp_ttl_sec: int = Field(default=300, ge=60)
 
     db_pool_size: int = Field(default=20, ge=1)
@@ -43,6 +45,10 @@ class Config(BaseSettings):
     login_lock_ttl_sec: int = Field(default=1800, ge=60)
     login_fail_ip_max: int = Field(default=20, ge=1)
     ip_block_ttl_sec: int = Field(default=3600, ge=60)
+    trusted_proxy_cidrs: str = Field(
+        default="",
+        description="Immediate peers in these CIDRs are shared ingress, not one browser",
+    )
 
     slowapi_rate_default: str = Field(default="100/minute")
     slowapi_rate_login: str = Field(default="5/minute")
@@ -92,6 +98,21 @@ class Config(BaseSettings):
         if self.env == "prod" and self.management_token_sha256 is None:
             raise ValueError("production requires API_MANAGEMENT_TOKEN_SHA256")
         return self
+
+    @field_validator("trusted_proxy_cidrs")
+    @classmethod
+    def _validate_trusted_proxy_cidrs(cls, value: str) -> str:
+        networks = []
+        for item in value.split(","):
+            network = item.strip()
+            if not network:
+                continue
+            try:
+                parsed = ipaddress.ip_network(network, strict=False)
+            except ValueError as exc:
+                raise ValueError("trusted proxy CIDR is invalid") from exc
+            networks.append(str(parsed))
+        return ",".join(networks)
 
     @field_validator("management_token_sha256", mode="before")
     @classmethod

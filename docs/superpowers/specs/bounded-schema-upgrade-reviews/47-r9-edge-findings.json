@@ -1,0 +1,26 @@
+[
+  {
+    "location": "ruisheng-api/src/ruisheng_api/api/devices.py:79-93",
+    "trigger_condition": "A 129th nondeleted serial device is created or moved onto one port.",
+    "guard_snippet": "await enforce_serial_port_capacity(session, target_port, maximum=128, include_disabled=True, lock_port=True)",
+    "potential_consequence": "All registry refreshes fail; subsequent disables/deletions remain unapplied, and gateway restarts fail."
+  },
+  {
+    "location": "tools/remote_maintenance_prepare.ps1:242-249",
+    "trigger_condition": "Audit preparation creates a missing mutex under the protected C:\\Ruisheng\\audit directory.",
+    "guard_snippet": "Set-Acl -LiteralPath $mutexPath -AclObject $protectedMutexAcl; Assert-SharedAuditFile -Path $mutexPath",
+    "potential_consequence": "Preparation reports success, but maintenance and upgrade reject the mutex's inherited, unprotected ACL."
+  },
+  {
+    "location": "ruisheng-gw/src/ruisheng_gw/ingest.py:163-180",
+    "trigger_condition": "Serial configuration changes while apply_alarm_reading awaits database access.",
+    "guard_snippet": "SELECT ... WHERE d.update_flag = :expected_version AND d.is_enabled AND d.deleted_at IS NULL FOR UPDATE OF d",
+    "potential_consequence": "A pre-change value can trigger or clear alarms using post-change thresholds, points, or scaling."
+  },
+  {
+    "location": "ruisheng-web/src/views/devices/DeviceCreateView.vue:119-123",
+    "trigger_condition": "Selecting zero_origin_38 with a template containing FC4 or out-of-range points.",
+    "guard_snippet": "assertTemplateFitsReadProfile(templatePoints, payload.read_profile); const created = await createDevice(payload)",
+    "potential_consequence": "Device creation commits before point rejection, leaving partial configuration and duplicate-number failures on retry."
+  }
+]

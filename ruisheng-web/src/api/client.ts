@@ -7,6 +7,10 @@ import { useDiagStore } from '@/stores/diag'
 const BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
 let authToken: string | null = null
+let renewSession: ((failedToken?: string) => Promise<void>) | null = null
+export function setSessionRenewal(handler: typeof renewSession): void {
+  renewSession = handler
+}
 const AUTH_EXPIRED_EVENT = 'ruisheng:auth-expired'
 export function setAuthToken(token: string | null): void {
   authToken = token
@@ -33,6 +37,25 @@ function isLoginRequest(config?: { url?: string; ruishengAuthRequest?: boolean }
   }
 }
 
+function isSessionRequest(config?: { url?: string; ruishengAuthRequest?: boolean }): boolean {
+  if (isLoginRequest(config)) return true
+  const path = new URL(config?.url ?? '', 'http://ruisheng.invalid').pathname.replace(/\/+$/, '')
+  return /\/(?:auth)\/(?:refresh|logout)$/.test(path)
+}
+
+async function recoverSession(config?: InternalAxiosRequestConfig) {
+  if (!config || isSessionRequest(config)) return
+  if (renewSession && authToken && !config.ruishengAuthRetried) {
+    const failedToken = String(config.headers.get('Authorization') ?? '').replace(/^Bearer /i, '')
+    await renewSession(failedToken)
+    if (authToken) {
+      // Preserve the original idempotency key when retrying an unauthorized request.
+      return apiClient.request({ ...config, ruishengAuthRetried: true })
+    }
+  }
+  notifyAuthExpired()
+}
+
 function toLoginCredentialsError(traceId?: string): ApiClientError {
   const error = new Error('用户名或密码错误') as ApiClientError
   error.code = -101
@@ -56,7 +79,8 @@ export const apiClient: AxiosInstance = axios.create({
   timeout: 30000,
 })
 
-apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+apiClient.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
+  if (authToken && renewSession && !isSessionRequest(config)) await renewSession()
   const traceId = generateUlid()
   config.headers.set('X-Trace-Id', traceId)
   const method = (config.method ?? 'get').toUpperCase()
@@ -70,28 +94,35 @@ apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
 })
 
 apiClient.interceptors.response.use(
-  (response) => {
+  async (response) => {
     const body = response.data as ApiResponse
     if (body && typeof body === 'object' && 'code' in body && body.code !== 0) {
       const loginRequest = isLoginRequest(response.config)
-      if (body.code === -101 && !loginRequest) notifyAuthExpired()
+      if (body.code === -101 && !loginRequest) {
+        const retried = await recoverSession(response.config)
+        if (retried) return retried
+      }
       throw toApiError(body, loginRequest)
     }
     return response
   },
-  (error: AxiosError<ApiResponse>) => {
+  async (error: AxiosError<ApiResponse>) => {
     const body = error.response?.data
     const loginRequest = isLoginRequest(error.config)
     if (body && typeof body === 'object' && 'code' in body) {
       if (!loginRequest && (body.code === -101 || error.response?.status === 401)) {
-        notifyAuthExpired()
+        const retried = await recoverSession(error.config)
+        if (retried) return retried
       }
       return Promise.reject(toApiError(body, loginRequest))
     }
     if (error.response?.status === 401 && loginRequest) {
       return Promise.reject(toLoginCredentialsError())
     }
-    if (error.response?.status === 401 && !loginRequest) notifyAuthExpired()
+    if (error.response?.status === 401 && !loginRequest) {
+      const retried = await recoverSession(error.config)
+      if (retried) return retried
+    }
     return Promise.reject(error)
   },
 )

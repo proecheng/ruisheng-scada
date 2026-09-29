@@ -1,0 +1,50 @@
+[
+  {
+    "location": "tools/remote_full_upgrade/target-updater.ps1:1668",
+    "trigger_condition": "计划任务使用 %ComSpec% /c docker.exe compose up -d",
+    "guard_snippet": "$Execute = [Environment]::ExpandEnvironmentVariables($Execute); if ($Execute -match '%[^%]+%') { return $true }",
+    "potential_consequence": "CMD启动包装被漏判，未保护任务可在维护期间启动业务容器"
+  },
+  {
+    "location": "tools/remote_full_upgrade/target-updater.ps1:1775-1782",
+    "trigger_condition": "powershell.exe 参数为 -NoProfile docker.exe compose up -d，省略 -Command",
+    "guard_snippet": "if ($program -eq 'powershell.exe' -and -not $explicitMode) { return Test-CommandAst $implicitCommand }",
+    "potential_consequence": "合法隐式命令被判安全，计划任务绕过维护启动门禁"
+  },
+  {
+    "location": "ruisheng-api/src/ruisheng_api/api/devices.py:81-93",
+    "trigger_condition": "同串口已有128个未删除设备，再新增或迁入第129个",
+    "guard_snippet": "await devices_repo.assert_serial_capacity_locked(session, body.serial_port, limit=128)",
+    "potential_consequence": "全注册表刷新持续失败，其他串口的停用与删除也无法生效"
+  },
+  {
+    "location": "ruisheng-gw/src/ruisheng_gw/transport/serial_bus.py:101-107",
+    "trigger_condition": "串口读取退出、写入异常或drain超时",
+    "guard_snippet": "await supervisor.run_with_backoff(self.start, on_failure=health.mark_serial_failed)",
+    "potential_consequence": "整条总线永久停止采集，现有主循环只记日志而不恢复"
+  },
+  {
+    "location": "ruisheng-gw/src/ruisheng_gw/scheduler/serial_poller.py:161",
+    "trigger_condition": "事务结束后200毫秒等待期间仍收到迟到字节",
+    "guard_snippet": "await wait_until_bus_silent(last_rx_at, self._quiet_time_sec)",
+    "potential_consequence": "总线尚未静默就发送下一请求，可能碰撞或接纳旧响应"
+  },
+  {
+    "location": "tools/remote_maintenance_prepare.ps1:223-230",
+    "trigger_condition": "首次准备时C:\\Ruisheng\\audit目录不存在",
+    "guard_snippet": "if ($createdNow) { Set-SharedAuditDirectoryAcl $Path }; Assert-SharedAuditDirectoryAcl $Path",
+    "potential_consequence": "刚创建的目录仍继承ACL，立即被拒绝，首次准备无法完成"
+  },
+  {
+    "location": "tools/remote_maintenance_prepare.ps1:242-249",
+    "trigger_condition": "共享审计目录ACL合格，但审计互斥文件尚不存在",
+    "guard_snippet": "if ($createdMutex) { Set-SharedAuditMutexAcl $mutexPath }; Assert-RestrictedFile $mutexPath",
+    "potential_consequence": "新文件继承ACL且缺专用主体，准备成功后维护入口仍拒绝"
+  },
+  {
+    "location": "ruisheng-gw/src/ruisheng_gw/main.py:246-249",
+    "trigger_condition": "发布新注册表后，异步清零前已有新配置告警计数",
+    "guard_snippet": "await publish_configuration_after_quiesce_and_counter_reset(candidate)",
+    "potential_consequence": "清零删除新配置的有效连续计数，告警触发被延迟"
+  }
+]

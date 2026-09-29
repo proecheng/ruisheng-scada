@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { RouterLink, RouterView, useRouter, useRoute } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
+
 import { useAlarmsStore } from '@/stores/alarms'
 import { useWsStore } from '@/stores/ws'
-import { logout as apiLogout } from '@/api/auth'
+import { logout as apiLogout, refresh } from '@/api/auth'
+import { decodeAccessClaims, useAuthStore } from '@/stores/auth'
 import CommandPalette from '@/components/CommandPalette.vue'
 import { useWsConnection } from '@/composables/useWsConnection'
 import { useShortcuts } from '@/composables/useShortcuts'
@@ -18,7 +19,7 @@ const alarms = useAlarmsStore()
 const ws = useWsStore()
 useWsConnection()
 
-const sidebarOpen = ref(true)
+const sidebarOpen = ref(!window.matchMedia('(max-width: 768px)').matches)
 const debugOn = ref(route.query.debug === '1')
 useShortcuts([
   { key: 'd', ctrl: true, alt: true, handler: () => (debugOn.value = !debugOn.value) },
@@ -40,9 +41,14 @@ const navItems = computed<Array<{ to: string; label: string; icon: string; badge
 
 async function onLogout(): Promise<void> {
   try {
-    await apiLogout()
+    const claims = auth.accessToken ? decodeAccessClaims(auth.accessToken) : null
+    const expires = typeof claims?.exp === 'number' ? claims.exp * 1000 : 0
+    if (auth.refreshToken && expires <= Date.now() + 60_000) {
+      auth.setSession(await refresh(auth.refreshToken))
+    }
+    await apiLogout(auth.refreshToken ?? undefined)
   } catch {
-    /* ignore */
+    /* local logout still clears a token the server could not revoke */
   }
   auth.logout()
   await router.push('/login')
@@ -50,6 +56,10 @@ async function onLogout(): Promise<void> {
 
 function toggleSidebar(): void {
   sidebarOpen.value = !sidebarOpen.value
+}
+
+function closeMobileSidebar(): void {
+  if (window.matchMedia('(max-width: 768px)').matches) sidebarOpen.value = false
 }
 </script>
 
@@ -67,6 +77,7 @@ function toggleSidebar(): void {
           :to="item.to"
           class="nav-item"
           active-class="active"
+          @click="closeMobileSidebar"
         >
           <span class="icon">{{ item.icon }}</span>
           <span v-if="sidebarOpen" class="label">{{ item.label }}</span>
@@ -76,7 +87,7 @@ function toggleSidebar(): void {
     </aside>
     <div class="main">
       <header class="topbar">
-        <button class="toggle" aria-label="toggle sidebar" @click="toggleSidebar">☰</button>
+        <button class="toggle" aria-label="toggle sidebar" :aria-expanded="sidebarOpen" @click="toggleSidebar">☰</button>
         <div class="spacer"></div>
         <div class="ws-status" :data-state="ws.state">
           {{ ws.isHealthy ? '● 在线' : '● ' + ws.state }}
@@ -174,7 +185,7 @@ function toggleSidebar(): void {
 .content { flex: 1; padding: 16px; overflow: auto; background: var(--color-bg-alt); }
 
 @media (max-width: 768px) {
-  .sidebar { position: fixed; z-index: 10; height: 100vh; }
+  .sidebar { position: fixed; top: 48px; z-index: 10; height: calc(100vh - 48px); overflow-y: auto; }
   .sidebar.collapsed { width: 0; overflow: hidden; }
 }
 .debug-dock {

@@ -5,7 +5,8 @@ param(
   [string]$AuditRoot = "C:\Ruisheng\launcher-audit",
   [string]$LauncherUser = "lenovo",
   [string]$ShortcutName = "",
-  [string]$DesktopPath = ""
+  [string]$DesktopPath = "",
+  [switch]$EnableSerialRecovery
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,10 +74,83 @@ function Install-FileAtomic {
   )
   if (Test-Path -LiteralPath $DestinationPath -PathType Leaf) {
     $backup = "$DestinationPath.$([Guid]::NewGuid().ToString('N')).replace.bak"
-    try { [IO.File]::Replace($StagedPath, $DestinationPath, $backup) }
-    finally { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
+    $oldHash = (Get-FileHash -LiteralPath $DestinationPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::Copy($DestinationPath, $backup, $false)
+    if ((Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash.ToLowerInvariant() -cne $oldHash) {
+      throw "launcher_backup_verification_failed"
+    }
+    [IO.File]::WriteAllText("$backup.sha256", $oldHash, (New-Object Text.UTF8Encoding($false)))
+    foreach ($path in @($backup, "$backup.sha256")) {
+      Set-LauncherFileAcl -Path $path -UserSid $launcherUserSid
+      Assert-LauncherAcl -Path $path -UserSid $launcherUserSid
+    }
+    if ((Get-FileHash -LiteralPath $DestinationPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $oldHash) {
+      throw "launcher_destination_changed"
+    }
+    [IO.File]::Replace($StagedPath, $DestinationPath, [NullString]::Value)
   }
   else { [IO.File]::Move($StagedPath, $DestinationPath) }
+}
+
+function Assert-LauncherGuardSource {
+  param([Parameter(Mandatory)][string]$Path)
+  # Pin reviewed code, including guard call sites; a version label cannot attest to executable behavior.
+  $text = [IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $hash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)))).Replace("-", "").ToLowerInvariant() }
+  finally { $sha.Dispose() }
+  if ($hash -cne "a1940251fce08604f24d70994fec85f4e395423806b3882391693ac033353dc5") { throw "launcher_maintenance_guard_unapproved" }
+}
+
+function Write-GuardInstallReceipt {
+  param([Parameter(Mandatory)][string]$LauncherPath, [Parameter(Mandatory)][string]$UserSid,
+    [Parameter(Mandatory)][string]$ExpectedHash)
+  if ($LauncherPath -cne "C:\Program Files\Ruisheng\Launcher\start_ruisheng_local.ps1") {
+    throw "launcher_guard_path_invalid"
+  }
+  Assert-LauncherGuardSource -Path $LauncherPath
+  Assert-LauncherAcl -Path $LauncherPath -UserSid $UserSid
+  if ((Get-FileHash -LiteralPath $LauncherPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ExpectedHash) {
+    throw "launcher_installed_hash_changed"
+  }
+  $receiptPath = Join-Path (Split-Path -Parent $LauncherPath) "schema-upgrade-guard.json"
+  $staged = "$receiptPath.$([Guid]::NewGuid().ToString('N')).tmp"
+  $receipt = [ordered]@{
+    schema_version = 1; guard_version = "bounded-schema-v1"; launcher = $LauncherPath
+    launcher_sha256 = $ExpectedHash; installed_at = [DateTimeOffset]::UtcNow.ToString("o")
+  }
+  try {
+    [IO.File]::WriteAllText($staged, ($receipt | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
+    Set-LauncherFileAcl -Path $staged -UserSid $UserSid
+    Assert-LauncherAcl -Path $staged -UserSid $UserSid
+    Install-FileAtomic -StagedPath $staged -DestinationPath $receiptPath
+    Assert-LauncherAcl -Path $receiptPath -UserSid $UserSid
+  }
+  finally { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }
+}
+
+function Register-SerialRecoveryTask {
+  param([Parameter(Mandatory)][string]$LauncherPath, [Parameter(Mandatory)][string]$UserSid,
+    [Parameter(Mandatory)][string]$RuntimePath)
+  Assert-LauncherGuardSource -Path $LauncherPath
+  Assert-LauncherAcl -Path $LauncherPath -UserSid $UserSid
+  $name = 'Ruisheng-Serial-Gateway-Recovery'
+  $existing = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+  if ($null -ne $existing) {
+    $backup = Join-Path $AuditRoot ("serial-recovery-task-{0}.xml" -f [Guid]::NewGuid().ToString('N'))
+    [IO.File]::WriteAllText($backup, (Export-ScheduledTask -TaskName $name), [Text.UTF8Encoding]::new($false))
+    Set-RuntimeAuditFileAcl -Path $backup -UserSid $UserSid
+  }
+  $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -RecoverSerialGateway -NoUi -NoBrowser -StartupTimeoutSeconds 120' -f $LauncherPath
+  $action = New-ScheduledTaskAction -Execute $RuntimePath -Argument $arguments
+  $periodic = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
+  $boot = New-ScheduledTaskTrigger -AtStartup
+  $boot.Delay = 'PT90S'
+  $principal = New-ScheduledTaskPrincipal -UserId $UserSid -LogonType S4U -RunLevel Highest
+  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 4) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+  Register-ScheduledTask -TaskName $name -Action $action -Trigger @($periodic,$boot) `
+    -Principal $principal -Settings $settings -Force | Out-Null
 }
 
 function Set-LauncherDirectoryAcl {
@@ -272,6 +346,12 @@ if (-not $source.Name.Equals("start_ruisheng_local.ps1", [StringComparison]::Ord
 Assert-ProtectedSourceFile -Path $source.FullName
 $launcherUserSid = Resolve-LauncherUserSid
 
+# Resolve the explicit desktop runtime before changing installed files.
+$powerShellPath = "C:\Program Files\PowerShell\7\pwsh.exe"
+if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw "pwsh_missing" }
+$runtimeMajor = & $powerShellPath -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.Major'
+if ($LASTEXITCODE -ne 0 -or [int]$runtimeMajor.Trim() -ne 7) { throw "pwsh_version_invalid" }
+
 if (Test-Path -LiteralPath $AuditRoot) {
   $auditItem = Assert-PlainPath -Path $AuditRoot -ErrorCode "launcher_audit_root_linked"
   if (-not $auditItem.PSIsContainer) { throw "launcher_audit_root_invalid" }
@@ -320,7 +400,8 @@ try {
 
 $installedLauncher = Join-Path $InstallRoot "start_ruisheng_local.ps1"
 $iconPath = Join-Path $InstallRoot "ruisheng.ico"
-foreach ($path in @($installedLauncher, $iconPath)) {
+$guardReceiptPath = Join-Path $InstallRoot "schema-upgrade-guard.json"
+foreach ($path in @($installedLauncher, $iconPath, $guardReceiptPath)) {
   if (Test-Path -LiteralPath $path) {
     $existing = Assert-PlainPath -Path $path -ErrorCode "launcher_payload_linked"
     if ($existing.PSIsContainer) { throw "launcher_payload_invalid" }
@@ -351,6 +432,7 @@ try {
   if ($sourceHash -cne (Get-FileHash -LiteralPath $stagedLauncher -Algorithm SHA256).Hash) {
     throw "launcher_copy_verification_failed"
   }
+  Assert-LauncherGuardSource -Path $stagedLauncher
   New-RuishengIcon -Path $stagedIcon
   Set-LauncherFileAcl -Path $stagedLauncher -UserSid $launcherUserSid
   Set-LauncherFileAcl -Path $stagedIcon -UserSid $launcherUserSid
@@ -374,8 +456,6 @@ if (-not $DesktopPath) {
 }
 $desktop = Assert-PlainPath -Path $DesktopPath -ErrorCode "desktop_path_linked"
 if (-not $desktop.PSIsContainer) { throw "desktop_path_invalid" }
-$powerShellPath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
-if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) { throw "powershell_missing" }
 $shortcutPath = Join-Path $desktop.FullName $ShortcutName
 if (Test-Path -LiteralPath $shortcutPath) {
   $existingShortcut = Assert-PlainPath -Path $shortcutPath -ErrorCode "shortcut_target_linked"
@@ -397,6 +477,10 @@ try { Install-FileAtomic -StagedPath $stagedShortcutPath -DestinationPath $short
 finally { Remove-Item -LiteralPath $stagedShortcutPath -Force -ErrorAction SilentlyContinue }
 
 if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) { throw "shortcut_creation_failed" }
+Write-GuardInstallReceipt -LauncherPath $installedLauncher -UserSid $launcherUserSid -ExpectedHash $sourceHash.ToLowerInvariant()
+if ($EnableSerialRecovery) {
+  Register-SerialRecoveryTask -LauncherPath $installedLauncher -UserSid $launcherUserSid -RuntimePath $powerShellPath
+}
 $receipt = [ordered]@{
   status = "installed"
   launcher = $installedLauncher
@@ -405,7 +489,7 @@ $receipt = [ordered]@{
   shortcut = $shortcutPath
   user_sid = $launcherUserSid
   requires_elevation_to_run = $false
-  startup_task_changed = $false
+  startup_task_changed = [bool]$EnableSerialRecovery
 }
 Write-Output ($receipt | ConvertTo-Json -Compress)
 }

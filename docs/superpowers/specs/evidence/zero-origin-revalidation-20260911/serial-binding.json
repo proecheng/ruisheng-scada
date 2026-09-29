@@ -1,0 +1,15 @@
+{
+  "observed_at": "2026-09-11T14:31:12.9287886+08:00",
+  "installed": true,
+  "candidate_id": "deploy-20260911.1",
+  "source_commit": "a78c522b6879e4ed54a7f369dfcdb0083001a071",
+  "gw_image_id": "sha256:8d3eda8af8f7d884d96dd1a5062ba25ad60f31f85b064b3c91f7fd12cb860f41",
+  "publisher_exit": 2,
+  "backup_root": "C:\\Ruisheng\\tools\\bounded-serial-rebind-925612673f5d4c9bbf5078fbee0a184d",
+  "original_files_retained": true,
+  "config_path": "C:\\Ruisheng\\site\\modbus-probe-zero-origin-20260907.json",
+  "config_sha256": "a6736686c594894326647f3fbb1ced3006783078d5d11c4482bee123f6f02ff7",
+  "physical_tx": 0,
+  "site_environment_unchanged": true,
+  "active_release_unchanged": true
+}

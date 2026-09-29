@@ -23,12 +23,14 @@ const showDeleteDialog = ref(false)
 
 function formatDateTimeLocal(iso: string): string {
   const date = new Date(iso)
+  if (!Number.isFinite(date.getTime())) return ''
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 function toIsoFromLocal(value: string): string {
-  return new Date(value).toISOString()
+  const date = new Date(value)
+  return Number.isFinite(date.getTime()) ? date.toISOString() : ''
 }
 
 function nextHourIso(): string {
@@ -71,6 +73,10 @@ function startEdit(p: TimingPlan): void {
 
 async function save(): Promise<void> {
   if (!editing.value) return
+  if (!Number.isFinite(new Date(editing.value.action_at).getTime())) {
+    toast.error('请选择有效的执行时间')
+    return
+  }
   try {
     await upsertTimingPlan(editing.value)
     toast.success('已保存')

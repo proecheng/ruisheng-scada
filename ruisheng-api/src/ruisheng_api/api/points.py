@@ -4,25 +4,28 @@ from __future__ import annotations
 
 import csv
 import io
-from typing import cast
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import StreamingResponse
 from ruisheng_shared.errors.codes import BizError, ErrCode
-from sqlalchemy import text
+from ruisheng_shared.models.devices import Device
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config_changes import mark_config_changed, publish_config_changed
 from ..core.rbac import CurrentUser, check_ca, check_role
 from ..core.response import ApiResponse, ok
 from ..core.tenant import apply_tenant_context
 from ..db.repositories import devices as devices_repo
 from ..db.repositories import points as points_repo
-from ..deps import get_current_user, get_session
+from ..deps import get_current_user, get_redis, get_session
 from .schemas.points import (
     PointCreateRequest,
     PointOut,
     PointUpdateRequest,
     validate_point_contract,
+    validate_point_display,
+    validate_point_read_profile,
 )
 
 router = APIRouter(prefix="/api/devices", tags=["points"])
@@ -43,22 +46,21 @@ CSV_FIELDS = [
     "min_value",
     "max_value",
     "show",
+    "display_bits",
 ]
 
 
-async def _require_dev(session: AsyncSession, dev_number: str, user: CurrentUser) -> object:
+async def _require_dev(
+    session: AsyncSession, dev_number: str, user: CurrentUser, *, for_update: bool = False
+) -> Device:
     await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
-    d = await devices_repo.get_by_dev_number(session, dev_number)
+    if for_update:
+        d = await devices_repo.get_by_dev_number(session, dev_number, for_update=True)
+    else:
+        d = await devices_repo.get_by_dev_number(session, dev_number)
     if d is None:
         raise BizError(ErrCode.BAD_PARAM, "device not found")
     return d
-
-
-async def _bump_flag(session: AsyncSession, dev_number: str) -> None:
-    await session.execute(
-        text("UPDATE devices SET update_flag = 1 WHERE dev_number = :d"),
-        {"d": dev_number},
-    )
 
 
 @router.get("/{dev_number}/points", response_model=ApiResponse)
@@ -79,15 +81,18 @@ async def create_point(
     body: PointCreateRequest,
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    r: Any = Depends(get_redis),
 ) -> ApiResponse:
     check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
     check_ca(user, bit=0x02)
     async with session.begin():
-        await _require_dev(session, dev_number, user)
+        d = await _require_dev(session, dev_number, user, for_update=True)
+        _validate_read_profile(d, body.fun_code, body.point_number, body.value_type)
         p = await points_repo.create_point(
             session, dev_number=dev_number, **body.model_dump(exclude_none=True)
         )
-        await _bump_flag(session, dev_number)
+        config_version = await mark_config_changed(session, dev_number)
+    await publish_config_changed(r, dev_number, config_version)
     return ok(data=PointOut.model_validate(p).model_dump())
 
 
@@ -95,6 +100,20 @@ def _csv_value(value: object) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def _validate_read_profile(
+    device: Device, fun_code: int, point_number: int, value_type: str
+) -> None:
+    try:
+        validate_point_read_profile(
+            device.read_profile,
+            fun_code=fun_code,
+            point_number=point_number,
+            value_type=value_type,
+        )
+    except ValueError as exc:
+        raise BizError(ErrCode.BAD_PARAM, str(exc)) from exc
 
 
 def _point_to_csv_row(point: PointOut) -> dict[str, str]:
@@ -131,6 +150,7 @@ def _parse_csv_row(row: dict[str, str | None]) -> PointCreateRequest:
         min_value=_parse_optional_float(row.get("min_value")),
         max_value=_parse_optional_float(row.get("max_value")),
         show=int(row.get("show") or "1"),
+        display_bits=_parse_optional_int(row.get("display_bits")),
     )
 
 
@@ -162,6 +182,7 @@ async def import_points(
     file: UploadFile = File(...),
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    r: Any = Depends(get_redis),
 ) -> ApiResponse:
     check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
     check_ca(user, bit=0x02)
@@ -177,13 +198,16 @@ async def import_points(
     if not requests:
         raise BizError(ErrCode.BAD_PARAM, "csv has no point rows")
     async with session.begin():
-        await _require_dev(session, dev_number, user)
+        d = await _require_dev(session, dev_number, user, for_update=True)
+        for request in requests:
+            _validate_read_profile(d, request.fun_code, request.point_number, request.value_type)
         points = await points_repo.create_points(
             session,
             dev_number=dev_number,
             rows=[p.model_dump(exclude_none=True) for p in requests],
         )
-        await _bump_flag(session, dev_number)
+        config_version = await mark_config_changed(session, dev_number)
+    await publish_config_changed(r, dev_number, config_version)
     return ok(
         data={
             "imported": len(points),
@@ -199,14 +223,29 @@ async def update_point(
     body: PointUpdateRequest,
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    r: Any = Depends(get_redis),
 ) -> ApiResponse:
     check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
     check_ca(user, bit=0x02)
     updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise BizError(ErrCode.BAD_PARAM, "no fields to update")
+    required = {
+        "point_name",
+        "point_number",
+        "fun_code",
+        "dev_addr",
+        "value_type",
+        "point_ratio",
+        "point_offset",
+        "user_ratio",
+        "user_point_offset",
+        "show",
+    }
+    if any(updates[name] is None for name in required & updates.keys()):
+        raise BizError(ErrCode.BAD_PARAM, "required point fields cannot be null")
     async with session.begin():
-        await _require_dev(session, dev_number, user)
+        d = await _require_dev(session, dev_number, user, for_update=True)
         p = await points_repo.get_point(session, point_id)
         if p is None or p.dev_number != dev_number:
             raise BizError(ErrCode.BAD_PARAM, "point not found")
@@ -218,10 +257,30 @@ async def update_point(
                 min_value=cast(float | None, updates.get("min_value", p.min_value)),
                 max_value=cast(float | None, updates.get("max_value", p.max_value)),
             )
+            validate_point_display(
+                display_bits=cast(
+                    int | None, updates.get("display_bits", getattr(p, "display_bits", None))
+                ),
+                fun_code=cast(int, updates.get("fun_code", p.fun_code)),
+                value_type=str(updates.get("value_type", p.value_type)),
+                point_ratio=cast(float, updates.get("point_ratio", p.point_ratio)),
+                point_offset=cast(float, updates.get("point_offset", p.point_offset)),
+                user_ratio=cast(float, updates.get("user_ratio", p.user_ratio)),
+                user_point_offset=cast(
+                    float, updates.get("user_point_offset", p.user_point_offset)
+                ),
+            )
         except ValueError as exc:
             raise BizError(ErrCode.BAD_PARAM, str(exc)) from exc
+        _validate_read_profile(
+            d,
+            cast(int, updates.get("fun_code", p.fun_code)),
+            cast(int, updates.get("point_number", p.point_number)),
+            str(updates.get("value_type", p.value_type)),
+        )
         await points_repo.update_point(session, p, updates)
-        await _bump_flag(session, dev_number)
+        config_version = await mark_config_changed(session, dev_number)
+    await publish_config_changed(r, dev_number, config_version)
     return ok(data=PointOut.model_validate(p).model_dump())
 
 
@@ -231,13 +290,15 @@ async def delete_point(
     point_id: int,
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    r: Any = Depends(get_redis),
 ) -> ApiResponse:
     check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
     async with session.begin():
-        await _require_dev(session, dev_number, user)
+        await _require_dev(session, dev_number, user, for_update=True)
         p = await points_repo.get_point(session, point_id)
         if p is None or p.dev_number != dev_number:
             raise BizError(ErrCode.BAD_PARAM, "point not found")
         await points_repo.delete_point(session, p)
-        await _bump_flag(session, dev_number)
+        config_version = await mark_config_changed(session, dev_number)
+    await publish_config_changed(r, dev_number, config_version)
     return ok(data={"deleted": point_id})

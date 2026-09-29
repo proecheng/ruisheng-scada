@@ -1,0 +1,54 @@
+[
+  {
+    "archive": "D:\\江苏润盛\\润圣监控软件平台终端.rar",
+    "entry_count": 5,
+    "firmware_or_protocol_candidates": [],
+    "nested_archives": [
+      "���ϴ�ѧ��������.rar",
+      "DataBase.rar",
+      "ModBusServer.rar",
+      "ModBusServer20210908.rar",
+      "ModBusWeb20210908.rar"
+    ]
+  },
+  {
+    "archive": "D:\\江苏润盛\\润圣监控软件平台终端\\济南大学开发软件.rar",
+    "entry_count": 7788,
+    "firmware_or_protocol_candidates": [],
+    "nested_archives": [
+      "WEB/111/ModBusWeb20210811/IOTWeb/js/mypublic.rar",
+      "WEB/ModBusWeb20210811/IOTWeb/js/mypublic.rar",
+      "WEB/ModBusWeb20210811.rar"
+    ]
+  },
+  {
+    "archive": "D:\\江苏润盛\\润圣监控软件平台终端\\DataBase.rar",
+    "entry_count": 5,
+    "firmware_or_protocol_candidates": [],
+    "nested_archives": []
+  },
+  {
+    "archive": "D:\\江苏润盛\\润圣监控软件平台终端\\ModBusServer.rar",
+    "entry_count": 62,
+    "firmware_or_protocol_candidates": [],
+    "nested_archives": [
+      "ModBusServer/ModBusServer/bin/Debug/ModBusServer.rar"
+    ]
+  },
+  {
+    "archive": "D:\\江苏润盛\\润圣监控软件平台终端\\ModBusServer20210908.rar",
+    "entry_count": 62,
+    "firmware_or_protocol_candidates": [],
+    "nested_archives": [
+      "ModBusServer20210908/ModBusServer/bin/Debug/ModBusServer.rar"
+    ]
+  },
+  {
+    "archive": "D:\\江苏润盛\\润圣监控软件平台终端\\ModBusWeb20210908.rar",
+    "entry_count": 3853,
+    "firmware_or_protocol_candidates": [],
+    "nested_archives": [
+      "ModBusWeb20210908/IOTWeb/js/mypublic.rar"
+    ]
+  }
+]

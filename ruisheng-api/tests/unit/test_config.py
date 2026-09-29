@@ -42,6 +42,12 @@ def test_config_extra_forbid(monkeypatch):
         Config()
 
 
+def test_trusted_proxy_cidrs_must_be_networks(monkeypatch):
+    _env(monkeypatch, API_TRUSTED_PROXY_CIDRS="10.254.250.0/24, not-a-cidr")
+    with pytest.raises(ValidationError, match="trusted proxy CIDR is invalid"):
+        Config()
+
+
 def test_config_jwt_secret_too_short(monkeypatch):
     _env(monkeypatch, API_JWT_SECRET="short")
     with pytest.raises(ValidationError):

@@ -1,0 +1,240 @@
+{
+  "source": "docs/修正后485点位表.docx",
+  "source_sha256": "272a3a867808135bc1176273afae276705d094d0cbd29de9163692d6dd2d2acd",
+  "csv_sha256": "fafc1b9b077e754c788ba35e5587069240806329b63b29099948cd12a843db98",
+  "value_policy": "unsigned_raw_preserved",
+  "points": [
+    {
+      "address": 0,
+      "quantity": "开关量输入 DI",
+      "display_name": "开关量输入 DI",
+      "source_definition": "高8位=DI2, 低8位=DI1。0=低电平(接地), 1=高电平(悬空/上拉)",
+      "display_bits": 2,
+      "display_basis": "2026-09-15 user confirms value 3 means both DI channels high; low-order bits 0 and 1"
+    },
+    {
+      "address": 1,
+      "quantity": "开关量输出 DO",
+      "display_name": "开关量输出 DO (原始值)",
+      "source_definition": "高8位=DO2, 低8位=DO1。0=断开, 1=闭合(继电器吸合)",
+      "display_bits": null,
+      "display_basis": "DO readback layout requires confirmation; FC05 write commands alone do not establish FC03 readback layout"
+    },
+    {
+      "address": 2,
+      "quantity": "A相电压",
+      "display_name": "A相电压 (原始值)",
+      "source_definition": "值=DATA，单位 V。范围 0~65535 V"
+    },
+    {
+      "address": 3,
+      "quantity": "B相电压",
+      "display_name": "B相电压 (原始值)",
+      "source_definition": "值=DATA，单位 V"
+    },
+    {
+      "address": 4,
+      "quantity": "C相电压",
+      "display_name": "C相电压 (原始值)",
+      "source_definition": "值=DATA，单位 V"
+    },
+    {
+      "address": 5,
+      "quantity": "A相电流",
+      "display_name": "A相电流 (原始值)",
+      "source_definition": "值=DATA，单位 A"
+    },
+    {
+      "address": 6,
+      "quantity": "B相电流",
+      "display_name": "B相电流 (原始值)",
+      "source_definition": "值=DATA，单位 A"
+    },
+    {
+      "address": 7,
+      "quantity": "C相电流",
+      "display_name": "C相电流 (原始值)",
+      "source_definition": "值=DATA，单位 A"
+    },
+    {
+      "address": 8,
+      "quantity": "A相有功功率",
+      "display_name": "A相有功功率 (原始值)",
+      "source_definition": "值=DATA，单位 W"
+    },
+    {
+      "address": 9,
+      "quantity": "B相有功功率",
+      "display_name": "B相有功功率 (原始值)",
+      "source_definition": "值=DATA，单位 W"
+    },
+    {
+      "address": 10,
+      "quantity": "C相有功功率",
+      "display_name": "C相有功功率 (原始值)",
+      "source_definition": "值=DATA，单位 W"
+    },
+    {
+      "address": 11,
+      "quantity": "总有功功率",
+      "display_name": "总有功功率 (原始值)",
+      "source_definition": "值=DATA，单位 W"
+    },
+    {
+      "address": 12,
+      "quantity": "A相无功功率",
+      "display_name": "A相无功功率 (原始值)",
+      "source_definition": "值=DATA，单位 Var"
+    },
+    {
+      "address": 13,
+      "quantity": "B相无功功率",
+      "display_name": "B相无功功率 (原始值)",
+      "source_definition": "值=DATA，单位 Var"
+    },
+    {
+      "address": 14,
+      "quantity": "C相无功功率",
+      "display_name": "C相无功功率 (原始值)",
+      "source_definition": "值=DATA，单位 Var"
+    },
+    {
+      "address": 15,
+      "quantity": "总无功功率",
+      "display_name": "总无功功率 (原始值)",
+      "source_definition": "值=DATA，单位 Var"
+    },
+    {
+      "address": 16,
+      "quantity": "A相功率因数",
+      "display_name": "A相功率因数 (原始值)",
+      "source_definition": "值=DATA/10，保留1位小数。范围 -1.00 ~ +1.00"
+    },
+    {
+      "address": 17,
+      "quantity": "B相功率因数",
+      "display_name": "B相功率因数 (原始值)",
+      "source_definition": "值=DATA/10，保留1位小数"
+    },
+    {
+      "address": 18,
+      "quantity": "C相功率因数",
+      "display_name": "C相功率因数 (原始值)",
+      "source_definition": "值=DATA/10，保留1位小数"
+    },
+    {
+      "address": 19,
+      "quantity": "A相电压谐波含有率 THDU",
+      "display_name": "A相电压谐波含有率 THDU (原始值)",
+      "source_definition": "值=DATA/100，单位 %。例: 561 → 5.61%"
+    },
+    {
+      "address": 20,
+      "quantity": "B相电压谐波含有率 THDU",
+      "display_name": "B相电压谐波含有率 THDU (原始值)",
+      "source_definition": "值=DATA/100，单位 %"
+    },
+    {
+      "address": 21,
+      "quantity": "C相电压谐波含有率 THDU",
+      "display_name": "C相电压谐波含有率 THDU (原始值)",
+      "source_definition": "值=DATA/100，单位 %"
+    },
+    {
+      "address": 22,
+      "quantity": "A相电流谐波含有率 THDI",
+      "display_name": "A相电流谐波含有率 THDI (原始值)",
+      "source_definition": "值=DATA/100，单位 %。例: 640 → 6.40%"
+    },
+    {
+      "address": 23,
+      "quantity": "B相电流谐波含有率 THDI",
+      "display_name": "B相电流谐波含有率 THDI (原始值)",
+      "source_definition": "值=DATA/100，单位 %"
+    },
+    {
+      "address": 24,
+      "quantity": "C相电流谐波含有率 THDI",
+      "display_name": "C相电流谐波含有率 THDI (原始值)",
+      "source_definition": "值=DATA/100，单位 %"
+    },
+    {
+      "address": 25,
+      "quantity": "电网频率",
+      "display_name": "电网频率 (原始值)",
+      "source_definition": "值=DATA，单位 Hz。例: 5000 → 50.00Hz"
+    },
+    {
+      "address": 26,
+      "quantity": "总有功电能 EPZ",
+      "display_name": "总有功电能 EPZ (原始值)",
+      "source_definition": "值=DATA，单位 kWh"
+    },
+    {
+      "address": 27,
+      "quantity": "总无功电能 EQZ",
+      "display_name": "总无功电能 EQZ (原始值)",
+      "source_definition": "值=DATA，单位 kVarh"
+    },
+    {
+      "address": 28,
+      "quantity": "1路温度(NTC)",
+      "display_name": "1路温度(NTC) (原始值)",
+      "source_definition": "值=DATA/10，单位 ℃。范围 -20~+130℃"
+    },
+    {
+      "address": 29,
+      "quantity": "2路温度(NTC)",
+      "display_name": "2路温度(NTC) (原始值)",
+      "source_definition": "值=DATA/10，单位 ℃"
+    },
+    {
+      "address": 30,
+      "quantity": "3路温度(NTC)",
+      "display_name": "3路温度(NTC) (原始值)",
+      "source_definition": "值=DATA/10，单位 ℃"
+    },
+    {
+      "address": 31,
+      "quantity": "4路温度(NTC)",
+      "display_name": "4路温度(NTC) (原始值)",
+      "source_definition": "值=DATA/10，单位 ℃"
+    },
+    {
+      "address": 32,
+      "quantity": "5路温度(预留)",
+      "display_name": "5路温度(预留) (原始值)",
+      "source_definition": "固定值 0x0000，预留扩展"
+    },
+    {
+      "address": 33,
+      "quantity": "6路温度(预留)",
+      "display_name": "6路温度(预留) (原始值)",
+      "source_definition": "固定值 0x0000，预留扩展"
+    },
+    {
+      "address": 34,
+      "quantity": "7路温度(预留)",
+      "display_name": "7路温度(预留) (原始值)",
+      "source_definition": "固定值 0x0000，预留扩展"
+    },
+    {
+      "address": 35,
+      "quantity": "环境温度(DHT11)",
+      "display_name": "环境温度(DHT11) (原始值)",
+      "source_definition": "值=DATA/10，单位 ℃"
+    },
+    {
+      "address": 36,
+      "quantity": "环境湿度(DHT11)",
+      "display_name": "环境湿度(DHT11) (原始值)",
+      "source_definition": "值=DATA/10，单位 %RH"
+    },
+    {
+      "address": 37,
+      "quantity": "漏电流",
+      "display_name": "漏电流 (原始值)",
+      "source_definition": "值=DATA，单位 mA。由 AD 采样计算得出"
+    }
+  ]
+}

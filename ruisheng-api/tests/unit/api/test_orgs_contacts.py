@@ -48,6 +48,11 @@ def _install(app, monkeypatch):
     async def fake_apply(*a, **kw):
         return None
 
+    async def fake_visible_user(session, user_name):
+        return type("U", (), {"user_name": user_name, "authority": "User"})()
+
+    monkeypatch.setattr(users_repo, "load_by_user_name", fake_visible_user)
+
     from ruisheng_api.api import orgs as orgsapi
 
     monkeypatch.setattr(orgsapi, "apply_tenant_context", fake_apply)

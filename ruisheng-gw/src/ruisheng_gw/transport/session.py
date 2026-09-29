@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ruisheng_gw.domain.registry import PointEntry
+    from ruisheng_gw.domain.registry import PointEntry, RegistryEntry
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,12 @@ class PendingRead:
     start_addr: int
     quantity: int
     points: tuple[PointEntry, ...] = field(default_factory=tuple)
+    registry_entry: RegistryEntry | None = None
+    bus_id: str | None = None
+
+    @property
+    def expected_byte_count(self) -> int:
+        return (self.quantity + 7) // 8 if self.fun_code in (1, 2) else self.quantity * 2
 
 
 class SessionMap:
@@ -63,6 +69,23 @@ class SessionMap:
 
     def get(self, dev_number: str) -> SessionEntry | None:
         return self._map.get(dev_number)
+
+    def bind_serial(
+        self, *, dev_number: str, writer: asyncio.StreamWriter, bus_id: str
+    ) -> SessionEntry:
+        existing = self._map.get(dev_number)
+        entry = SessionEntry(
+            writer=writer,
+            generation=existing.generation + 1 if existing else 1,
+            bus_id=bus_id,
+        )
+        self._map[dev_number] = entry
+        return entry
+
+    def remove_if_writer(self, dev_number: str, writer: asyncio.StreamWriter) -> None:
+        entry = self._map.get(dev_number)
+        if entry is not None and entry.writer is writer:
+            self._map.pop(dev_number, None)
 
     def remove(self, dev_number: str) -> None:
         self._map.pop(dev_number, None)

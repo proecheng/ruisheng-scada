@@ -1,5 +1,7 @@
 import { apiClient } from '@/api/client'
 
+export type DeviceReadProfile = 'point_groups' | 'zero_origin_38'
+
 export interface Device {
   id?: number
   dev_number: string
@@ -7,6 +9,7 @@ export interface Device {
   dev_name: string
   dev_type?: string | null
   transport_type?: 'tcp' | 'serial'
+  read_profile?: DeviceReadProfile
   serial_port?: string | null
   dev_ip?: string | null
   modbus_addr?: number
@@ -31,6 +34,7 @@ export interface DeviceCreatePayload {
   dev_ser_number: string
   modbus_addr: number
   transport_type?: 'tcp' | 'serial'
+  read_profile?: DeviceReadProfile
   serial_port?: string
   dev_ip?: string
   iccid?: string
@@ -47,6 +51,7 @@ export interface DeviceUpdatePayload {
   dev_name?: string
   dev_type?: string
   transport_type?: 'tcp' | 'serial'
+  read_profile?: DeviceReadProfile
   serial_port?: string | null
   dev_ip?: string | null
   modbus_addr?: number
@@ -61,9 +66,10 @@ export interface DeviceUpdatePayload {
 export interface RealtimePoint {
   point_id: number
   point_name?: string
-  value: number
+  value: number | null
   ts: string
   unit?: string
+  display_bits?: number | null
 }
 
 export interface RealtimeSnapshot {
@@ -81,10 +87,11 @@ export interface HistoryQuery {
 }
 
 export interface HistoryPage {
-  points: Array<{ ts: string; value: number; point_id?: number }>
+  points: Array<{ ts: string; value: number | null; point_id?: number }>
   next_cursor: string | null
   downsampled?: boolean
   sample_interval_s?: number
+  truncated?: boolean
 }
 
 interface ListEnvelope<T> {
@@ -99,6 +106,7 @@ interface DeviceWire {
   dev_name?: string | null
   dev_type?: string | null
   transport_type?: 'tcp' | 'serial'
+  read_profile?: DeviceReadProfile
   serial_port?: string | null
   dev_ip?: string | null
   modbus_addr?: number
@@ -118,8 +126,8 @@ interface DeviceWire {
   owner_user_name?: string
 }
 
-interface RealtimePointWire extends Partial<RealtimePoint> {
-  rt_value?: number
+interface RealtimePointWire extends Omit<Partial<RealtimePoint>, 'show'> {
+  rt_value?: number | null
   recorded_at?: string
   point_unit?: string | null
   user_point_name?: string | null
@@ -149,17 +157,20 @@ function toDevice(d: DeviceWire): Device {
   return {
     ...d,
     dev_name: d.dev_name ?? d.dev_number,
+    read_profile: d.read_profile ?? 'point_groups',
     state: d.state ?? (d.is_online ? 'online' : 'offline'),
   }
 }
 
 function toRealtimePoint(p: RealtimePointWire): RealtimePoint {
+  const value = p.value !== undefined ? p.value : p.rt_value
   return {
     point_id: Number(p.point_id ?? 0),
     point_name: p.point_name ?? p.user_point_name ?? undefined,
-    value: Number(p.value ?? p.rt_value ?? 0),
-    ts: String(p.ts ?? p.recorded_at ?? new Date(0).toISOString()),
+    value: typeof value === 'number' && Number.isFinite(value) ? value : null,
+    ts: String(p.ts ?? p.recorded_at ?? ''),
     unit: p.unit ?? p.point_unit ?? undefined,
+    display_bits: p.display_bits ?? null,
   }
 }
 
@@ -168,8 +179,18 @@ export async function listDevices(params?: {
   department?: string
   q?: string
 }): Promise<Device[]> {
-  const { data } = await apiClient.get('/devices', { params })
-  return itemsOf(data.data as DeviceWire[] | ListEnvelope<DeviceWire>).map(toDevice)
+  const devices: Device[] = []
+  let offset = 0
+  while (true) {
+    const { data } = await apiClient.get('/devices', { params: { ...params, offset, limit: 500 } })
+    const payload = data.data as DeviceWire[] | ListEnvelope<DeviceWire>
+    const items = itemsOf(payload)
+    devices.push(...items.map(toDevice))
+    offset += items.length
+    if (Array.isArray(payload) || !items.length || offset >= (payload?.total ?? offset)) {
+      return devices
+    }
+  }
 }
 
 export async function getDevice(dev_number: string): Promise<Device> {
@@ -205,10 +226,17 @@ export async function getRealtime(dev_number: string): Promise<RealtimeSnapshot>
   }
 }
 
+function historyValue(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === '') return null
+  const value = Number(raw)
+  return Number.isFinite(value) ? value : null
+}
+
 export async function getHistory(dev_number: string, q: HistoryQuery): Promise<HistoryPage> {
   const params = {
     ...q,
     point_ids: q.point_ids?.join(','),
+    limit: 5000,
   }
   const { data } = await apiClient.get(`/devices/${dev_number}/history`, { params })
   const page = data.data as HistoryWire
@@ -216,16 +244,15 @@ export async function getHistory(dev_number: string, q: HistoryQuery): Promise<H
     page.points ??
     (page.rows ?? []).map((p) => ({
       ts: String(p.ts ?? p.recorded_at ?? new Date(0).toISOString()),
-      value: Number(p.value ?? p.rt_value ?? 0),
+      value: historyValue(p.value ?? p.rt_value),
       point_id: p.point_id === undefined ? undefined : Number(p.point_id),
     }))
+  const truncated = page.next_offset !== null && page.next_offset !== undefined
   return {
     points,
-    next_cursor:
-      page.next_cursor ?? (page.next_offset === null || page.next_offset === undefined
-        ? null
-        : String(page.next_offset)),
+    next_cursor: truncated ? String(page.next_offset) : page.next_cursor ?? null,
     downsampled: page.downsampled,
     sample_interval_s: page.sample_interval_s,
+    truncated,
   }
 }

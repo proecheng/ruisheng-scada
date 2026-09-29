@@ -40,6 +40,7 @@ def _issue(
     typ: str,
     secret: str,
     ttl_sec: int,
+    session_expires_at: int | None = None,
 ) -> str:
     now = int(time.time())
     payload = {
@@ -51,14 +52,26 @@ def _issue(
         "jti": str(ulid.ULID()),
         "typ": typ,
         "iat": now,
-        "exp": now + ttl_sec,
+        "exp": min(now + ttl_sec, session_expires_at)
+        if session_expires_at is not None
+        else now + ttl_sec,
     }
+    if session_expires_at is not None:
+        payload["session_exp"] = session_expires_at
     encoded: str = jwt.encode(payload, secret, algorithm=_ALG)
     return encoded
 
 
 def issue_access_token(
-    sub: str, usr_group: str, role: str, ca: int, fp: str, *, secret: str, ttl_sec: int
+    sub: str,
+    usr_group: str,
+    role: str,
+    ca: int,
+    fp: str,
+    *,
+    secret: str,
+    ttl_sec: int,
+    session_expires_at: int | None = None,
 ) -> str:
     return _issue(
         sub=sub,
@@ -69,11 +82,20 @@ def issue_access_token(
         typ="access",
         secret=secret,
         ttl_sec=ttl_sec,
+        session_expires_at=session_expires_at,
     )
 
 
 def issue_refresh_token(
-    sub: str, usr_group: str, role: str, ca: int, fp: str, *, secret: str, ttl_sec: int
+    sub: str,
+    usr_group: str,
+    role: str,
+    ca: int,
+    fp: str,
+    *,
+    secret: str,
+    ttl_sec: int,
+    session_expires_at: int | None = None,
 ) -> str:
     return _issue(
         sub=sub,
@@ -84,7 +106,21 @@ def issue_refresh_token(
         typ="refresh",
         secret=secret,
         ttl_sec=ttl_sec,
+        session_expires_at=session_expires_at,
     )
+
+
+def session_deadline(payload: dict[str, object], ttl_sec: int) -> int:
+    """Keep the original deadline through refresh; bound pre-upgrade tokens too."""
+    deadline = payload.get("session_exp")
+    if deadline is None:
+        issued_at = payload.get("iat")
+        if type(issued_at) is not int:
+            raise BizError(ErrCode.UNAUTHED, "missing session issue time")
+        deadline = issued_at + ttl_sec
+    if type(deadline) is not int or deadline <= int(time.time()):
+        raise BizError(ErrCode.UNAUTHED, "session expired; please log in again")
+    return deadline
 
 
 def verify_token(
@@ -98,4 +134,6 @@ def verify_token(
         raise BizError(ErrCode.UNAUTHED, f"wrong token type: {payload.get('typ')}")
     if payload.get("fp") != expected_fp:
         raise BizError(ErrCode.UNAUTHED, "fingerprint mismatch")
+    if "session_exp" in payload:
+        session_deadline(payload, 24 * 3600)
     return payload

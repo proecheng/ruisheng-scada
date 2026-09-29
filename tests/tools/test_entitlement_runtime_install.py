@@ -384,6 +384,8 @@ def test_runtime_bundle_is_uploaded_then_preverified_before_signed_installer_exe
     assert [kind for kind, _, _ in calls] == ["ssh", "scp", "ssh", "ssh"]
     for _, arguments, _ in calls:
         _assert_key_only(arguments)
+        if "-EncodedCommand" in arguments:
+            assert arguments[arguments.index("-ExecutionPolicy") + 1] == "Bypass"
     assert calls[1][1][-1] == (
         f"operator@100.64.0.2:C:/ProgramData/Ruisheng/entitlement-bootstrap-incoming/{OPERATION}/"
     )
@@ -1984,6 +1986,124 @@ def _replace_ps_function(source: str, name: str, next_name: str, replacement: st
     start = source.index("function " + name)
     end = source.index("function " + next_name, start)
     return source[:start] + replacement + "\n\n" + source[end:]
+
+
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+def test_generated_runtime_transport_scripts_parse(executable: str, tmp_path: Path) -> None:
+    definitions = REMOTE.read_text(encoding="utf-8").split("$finalOutput = $null", 1)[0]
+    harness = tmp_path / "parse-generated-runtime.ps1"
+    harness.write_text(
+        definitions
+        + r"""
+$script:BundleIdentity = @{sums_sha256=('a' * 64);bundle_bytes=4096}
+$payloads = [ordered]@{
+  bootstrap = $script:RemotePowerShellBootstrap
+  prepare = (New-PrepareScript)
+  execute = (New-ExecuteScript)
+  cleanup = (New-CleanupScript)
+  cleanup_retained = (New-CleanupScript -RetainReservation)
+}
+$results = foreach ($name in $payloads.Keys) {
+  $tokens = $null
+  $parseErrors = $null
+  [void][Management.Automation.Language.Parser]::ParseInput(
+    $payloads[$name], [ref]$tokens, [ref]$parseErrors
+  )
+  [ordered]@{name=$name;errors=@($parseErrors | ForEach-Object {$_.ErrorId})}
+}
+ConvertTo-Json -InputObject @($results) -Depth 5 -Compress
+""",
+        encoding="utf-8-sig",
+    )
+    completed = subprocess.run(
+        [
+            _powershell(executable),
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(harness),
+            "-Target",
+            "lenovo@100.109.90.21",
+            "-SiteId",
+            SITE,
+            "-BundlePath",
+            str(tmp_path),
+            "-OperationId",
+            OPERATION,
+        ],
+        capture_output=True,
+        check=False,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        env=_powershell_environment(),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    results = json.loads(completed.stdout)
+    assert len(results) == 5
+    assert all(not result["errors"] for result in results), results
+
+
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("mode", ["valid", "tampered", "unsafe-path"])
+def test_runtime_signature_uses_file_stdin_and_rejects_invalid_inputs(
+    executable: str, mode: str, signed_bundle: tuple[Path, Path], tmp_path: Path
+) -> None:
+    bundle, allowed = signed_bundle
+    if mode == "unsafe-path":
+        unsafe_bundle = tmp_path / "bundle&echo"
+        shutil.copytree(bundle, unsafe_bundle)
+        bundle = unsafe_bundle
+    if mode == "tampered":
+        signature = bundle / "SHA256SUMS.sig"
+        signature.write_text("invalid signature\n", encoding="ascii")
+    key_blob = base64.b64decode(allowed.read_text(encoding="ascii").split()[2])
+    fingerprint = tmp_path / "fingerprint"
+    fingerprint.write_text(
+        "SHA256:" + base64.b64encode(hashlib.sha256(key_blob).digest()).decode().rstrip("=") + "\n",
+        encoding="ascii",
+        newline="\n",
+    )
+    definitions = TARGET.read_text(encoding="utf-8").split("\nif ($OperationId -notmatch", 1)[0]
+    harness = tmp_path / "signature-check.ps1"
+    harness.write_text(
+        definitions
+        + f"""
+$AllowedSigners={_ps_literal(allowed)}
+$ReleaseFingerprint={_ps_literal(fingerprint)}
+function Assert-ProtectedItem([string]$Path,[string]$Kind) {{ }}
+try {{
+  $sums=Get-AuthenticatedSums {_ps_literal(bundle)}
+  [Console]::Out.Write('verified')
+}} catch {{ [Console]::Out.Write($_.Exception.Message); exit 2 }}
+""",
+        encoding="utf-8-sig",
+    )
+    completed = subprocess.run(
+        [
+            _powershell(executable),
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(harness),
+            "-OperationId",
+            OPERATION,
+            "-SiteId",
+            SITE,
+        ],
+        capture_output=True,
+        check=False,
+        encoding="utf-8",
+        errors="replace",
+        timeout=40,
+        env=_powershell_environment(),
+    )
+    expected = {
+        "valid": (0, "verified"),
+        "tampered": (2, "bootstrap_signature_invalid"),
+        "unsafe-path": (2, "bootstrap_signature_path_invalid"),
+    }
+    assert (completed.returncode, completed.stdout) == expected[mode], completed.stderr
 
 
 @pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])

@@ -39,6 +39,12 @@ const functionLabels: Record<PointConfig['fun_code'], string> = {
 const requiresRegisterBit = computed(
   () => editing.value?.data_type === 'bit' && editing.value.fun_code !== 1 && editing.value.fun_code !== 2,
 )
+const displayMode = computed({
+  get: () => editing.value?.display_bits ? 'binary' : 'decimal',
+  set: (mode: string) => {
+    if (editing.value) editing.value.display_bits = mode === 'binary' ? 2 : null
+  },
+})
 
 async function reload(): Promise<void> {
   points.value = await loader.run()
@@ -55,6 +61,7 @@ function startNew(): void {
     dev_addr: 1,
     r_bit: null,
     data_type: '字',
+    display_bits: null,
     raw_ratio: 1,
     raw_offset: 0,
     ratio: 1,
@@ -93,6 +100,11 @@ async function save(): Promise<void> {
 
 function normalizeEditing(): void {
   if (!editing.value) return
+  if (editing.value.display_bits && (
+    editing.value.data_type !== '字' || ![3, 4].includes(editing.value.fun_code) ||
+    editing.value.raw_ratio !== 1 || editing.value.raw_offset !== 0 ||
+    editing.value.ratio !== 1 || editing.value.offset !== 0
+  )) throw new Error('多位二进制显示需要整字采集，两个倍率均为1，两个偏移均为0')
   if (editing.value.fun_code === 1 || editing.value.fun_code === 2) {
     editing.value.data_type = 'bit'
     editing.value.r_bit = null
@@ -100,6 +112,9 @@ function normalizeEditing(): void {
   if (editing.value.data_type !== 'bit') {
     editing.value.r_bit = null
   }
+  if (editing.value.data_type !== '字') editing.value.display_bits = null
+  editing.value.min_value = blankToNull(editing.value.min_value)
+  editing.value.max_value = blankToNull(editing.value.max_value)
   if (requiresRegisterBit.value && (editing.value.r_bit === null || editing.value.r_bit === undefined)) {
     throw new Error('寄存器 bit 点必须填写位号 0-15')
   }
@@ -131,6 +146,13 @@ function onDataTypeChange(): void {
   } else {
     editing.value.r_bit = null
   }
+  if (editing.value.data_type !== '字') editing.value.display_bits = null
+}
+
+function blankToNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function askDelete(p: PointConfig): void {
@@ -208,6 +230,8 @@ async function onImportFile(e: Event): Promise<void> {
           <th>地址</th>
           <th>数据类型</th>
           <th>位号</th>
+          <th>显示方式</th>
+          <th>状态</th>
           <th>倍率/偏移</th>
           <th>单位</th>
           <th>操作</th>
@@ -221,6 +245,8 @@ async function onImportFile(e: Event): Promise<void> {
           <td>{{ p.register_address }}</td>
           <td>{{ p.data_type }}</td>
           <td>{{ p.r_bit ?? '—' }}</td>
+          <td>{{ p.display_bits ? `二进制（${p.display_bits}位）` : '数值' }}</td>
+          <td>{{ p.show === false ? '隐藏' : '显示' }}</td>
           <td>{{ p.raw_ratio }} / {{ p.raw_offset }}；{{ p.ratio }} / {{ p.offset }}</td>
           <td>{{ p.unit ?? '—' }}</td>
           <td>
@@ -264,13 +290,29 @@ async function onImportFile(e: Event): Promise<void> {
           <select v-model="editing.data_type" :disabled="editing.fun_code === 1 || editing.fun_code === 2" @change="onDataTypeChange">
             <option value="字">字</option>
             <option value="双字">双字</option>
-            <option value="bit">bit</option>
+            <option value="有符号字节">有符号字节（完整16位）</option>
+            <option value="无符号字节">无符号字节（完整16位）</option>
+            <option value="bit">bit（提取单独一位）</option>
           </select>
         </label>
         <label v-if="requiresRegisterBit">
           位号
           <input v-model.number="editing.r_bit" type="number" min="0" max="15" required />
         </label>
+        <p v-if="requiresRegisterBit" class="hint">bit只读取所选的一位，结果为0或1。同时显示多路开关量，请选择“字”和“多位二进制”。</p>
+        <p v-else-if="editing.data_type === '有符号字节' || editing.data_type === '无符号字节'" class="hint">该类型读取完整16位寄存器；有符号范围为 -32768～32767，无符号范围为 0～65535。例如 0xFFFF 解析为 -1 或 65535。</p>
+        <label>
+          显示方式
+          <select v-model="displayMode">
+            <option value="decimal">数值（十进制）</option>
+            <option value="binary">多位二进制（开关量）</option>
+          </select>
+        </label>
+        <label v-if="displayMode === 'binary'">
+          显示位数
+          <input v-model.number="editing.display_bits" type="number" min="1" max="16" required />
+        </label>
+        <p v-if="displayMode === 'binary'" class="hint">两路填写2：0→00，1→01，2→10，3→11。右起第1位是第1路，1=高电平，0=低电平。数据类型选“字”，倍率为1、偏移为0。</p>
         <label>
           原始倍率
           <input v-model.number="editing.raw_ratio" type="number" step="0.0001" />
@@ -338,6 +380,7 @@ h2 { flex: 1; font-size: 18px; }
 .drawer h3 { font-size: 16px; margin-bottom: 16px; }
 .drawer form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .drawer label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.hint { grid-column: 1 / -1; margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; }
 .drawer input, .drawer select { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .drawer .checkbox { flex-direction: row; align-items: center; }
 .drawer .checkbox input { width: auto; }

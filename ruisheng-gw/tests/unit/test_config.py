@@ -109,6 +109,21 @@ def test_serial_ports_parses_json(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(cfg.serial_ports) == 1
     assert cfg.serial_ports[0].port == "COM3"
     assert cfg.serial_ports[0].baud_rate == 9600
+    assert cfg.serial_ports[0].read_timeout_retries == 1
+
+
+@pytest.mark.parametrize("retries", [-1, 2, True, "1", 1.0])
+def test_serial_retry_config_rejects_invalid_values(retries):
+    from ruisheng_gw.config import SerialPortConfig
+
+    with pytest.raises(ValueError):
+        SerialPortConfig(port="COM3", read_timeout_retries=retries)
+
+
+def test_serial_retry_can_be_disabled():
+    from ruisheng_gw.config import SerialPortConfig
+
+    assert SerialPortConfig(port="COM3", read_timeout_retries=0).read_timeout_retries == 0
 
 
 def test_prod_requires_health_token_digest(monkeypatch: pytest.MonkeyPatch) -> None:

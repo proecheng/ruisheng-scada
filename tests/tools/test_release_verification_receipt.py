@@ -1454,6 +1454,8 @@ def test_static_migration_contract_handles_many_duplicate_metadata_assignments()
 
 
 def test_static_migration_observation_matches_repository_graph(tmp_path: Path) -> None:
+    from ruisheng_gw.main import EXPECTED_ALEMBIC_HEAD
+
     archive = tmp_path / "api.tar.gz"
     entries = {
         "app/alembic.ini": (ROOT / "alembic.ini").read_bytes(),
@@ -1464,7 +1466,7 @@ def test_static_migration_observation_matches_repository_graph(tmp_path: Path) -
     }
     _write_static_api_archive(archive, [entries])
 
-    assert release_verification_receipt._observed_alembic_head(archive) == ALEMBIC_HEAD
+    assert release_verification_receipt._observed_alembic_head(archive) == EXPECTED_ALEMBIC_HEAD
 
 
 def test_static_migration_graph_rejects_multiple_heads(tmp_path: Path) -> None:

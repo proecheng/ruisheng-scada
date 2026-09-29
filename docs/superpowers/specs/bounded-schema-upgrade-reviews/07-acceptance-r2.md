@@ -1,0 +1,7 @@
+# Independent Acceptance Audit, Loop 2
+
+No conversation context and no further delegation. Review the complete diff `D:/江苏润盛/tmp-test-logs/bounded-review-r2-XxS5An/implementation.diff`; read all chunks without truncation. It covers tracked and untracked release-tree changes from baseline `d839330a91cdf7cae3f4c30aff9396fb99a47120`, including previously deployed compatibility fixes. SHA256: `5f92c3bcfb455a3f42b72bb82c683d2c1de7ec34f1046a40368825d3d8f31219`.
+
+Read-only project root: `C:/ProgramData/Ruisheng/publisher-build/bounded-schema-multidevice-20260908`. Read its full `docs/superpowers/specs/spec-bounded-schema-upgrade.md` and every document listed in that spec's frontmatter context. Check actual changed behavior against acceptance criteria, constraints and principles. Trace real Apply/Recover, snapshot and restore evidence, data written after migration, startup guard installation, environment bytes, image/volume/database identities, interruption and operation completion uncertainty.
+
+Distinguish local implementation evidence from uncompleted release and target acceptance. Mocks do not prove signatures, real application health, or physical acquisition. No file edits, target access, push/PR, signing, destructive tests or cleanup. Report actionable violations with exact file and line references and concrete reachable triggers, in Chinese. You may perform non-mutating local function analysis; do not execute Docker or production SQL.

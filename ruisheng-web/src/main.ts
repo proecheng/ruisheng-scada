@@ -7,6 +7,7 @@ import router from './router'
 import { i18n } from './i18n'
 import { permissionDirective } from './directives/v-permission'
 import { useAuthStore } from './stores/auth'
+import { installSessionRenewal } from './auth/sessionRenewal'
 import './styles/main.css'
 
 async function bootstrap(): Promise<void> {
@@ -28,6 +29,7 @@ async function bootstrap(): Promise<void> {
       void router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath } })
     }
   })
+  installSessionRenewal(auth)
 
   app.mount('#app')
   if (import.meta.env.PROD && 'serviceWorker' in navigator) {

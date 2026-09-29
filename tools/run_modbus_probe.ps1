@@ -17,6 +17,15 @@ $DockerPath = "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
 $DockerHost = "npipe:////./pipe/docker_engine"
 $DevicePath = "/dev/ruisheng-rs485"
 $ApprovalScope = "b06-9600-8n1-unit1-fc3-r0-5-r27-35"
+$ExtendedScope = "b09-9600-8n1-unit1-fc3-r0-5-r6-26-r27-35"
+$CorrelationScope = "b10-address-correlation-fc3-r0-35-v1"
+$ZeroOriginScope = "b11-zero-origin-block-fc3-r0-35-v1"
+$ExpectedRequests = @(
+    [ordered]@{ address = 0; count = 6; frame = "010300000006c5c8" },
+    [ordered]@{ address = 27; count = 9; frame = "0103001b0009f5cb" }
+)
+$MaxRequests = 4
+$MaxResponseBytes = 64
 $ContainerNames = @(
     "ruisheng-postgres", "ruisheng-redis", "ruisheng-api", "ruisheng-gw", "ruisheng-web"
 )
@@ -446,21 +455,64 @@ function Read-ProbeTerminal([string]$Output) {
     try { return $Lines[0].Substring($Prefix.Length) | ConvertFrom-Json } catch { return $null }
 }
 
-function Assert-ProbeAuditSequence([object[]]$Events) {
-    $ExpectedRequests = @(
-        [ordered]@{ index = 0; address = 0; count = 6; frame = "010300000006c5c8" },
-        [ordered]@{ index = 1; address = 27; count = 9; frame = "0103001b0009f5cb" }
+function Set-ProbeScope([string]$Scope) {
+    if ($Scope -cnotin @("b06-9600-8n1-unit1-fc3-r0-5-r27-35", $ExtendedScope, $CorrelationScope, $ZeroOriginScope)) {
+        Fail "config approval scope is not an executable profile"
+    }
+    $script:ApprovalScope = $Scope
+    $script:MaxResponseBytes = 64
+    if ($Scope -ceq $ZeroOriginScope) {
+        $script:ExpectedRequests = @(
+            [ordered]@{ address = 0; count = 36; frame = "01030000002445d1" },
+            [ordered]@{ address = 0; count = 27; frame = "01030000001b05c1" },
+            [ordered]@{ address = 0; count = 36; frame = "01030000002445d1" },
+            [ordered]@{ address = 0; count = 6; frame = "010300000006c5c8" },
+            [ordered]@{ address = 0; count = 36; frame = "01030000002445d1" }
+        )
+        $script:MaxRequests = 10
+        $script:MaxResponseBytes = 80
+        return
+    }
+    if ($Scope -ceq $CorrelationScope) {
+        $script:ExpectedRequests = @(
+            [ordered]@{ address = 0; count = 27; frame = "01030000001b05c1" },
+            [ordered]@{ address = 6; count = 21; frame = "0103000600156404" },
+            [ordered]@{ address = 0; count = 27; frame = "01030000001b05c1" },
+            [ordered]@{ address = 18; count = 18; frame = "01030012001265c2" },
+            [ordered]@{ address = 27; count = 9; frame = "0103001b0009f5cb" },
+            [ordered]@{ address = 18; count = 18; frame = "01030012001265c2" }
+        )
+        $script:MaxRequests = 12
+        return
+    }
+    $script:ExpectedRequests = @(
+        [ordered]@{ address = 0; count = 6; frame = "010300000006c5c8" }
+        if ($Scope -ceq $ExtendedScope) {
+            [ordered]@{ address = 6; count = 21; frame = "0103000600156404" }
+        }
+        [ordered]@{ address = 27; count = 9; frame = "0103001b0009f5cb" }
     )
+    $script:MaxRequests = 2 * $script:ExpectedRequests.Count
+}
+
+function Assert-ProbeAuditSequence([object[]]$Events) {
     if ($Events.Count -lt 3 -or $Events[1].event -cne "port_verified") {
         Fail "probe audit lacks the verified port event"
     }
     $Pending = $null
     $ValidRequestIndexes = @()
+    $NextRequest = 0
+    $NextAttempt = 0
+    $NextTx = 1
+    $MayContinue = $true
     for ($Index = 2; $Index -lt $Events.Count - 1; $Index++) {
         $Event = $Events[$Index]
         if ($Event.event -ceq "request_tx") {
-            if ($null -ne $Pending -or $Event.request_index -notin 0..1 -or
-                $Event.attempt -notin 0..1 -or $Event.tx_number -notin 1..4) {
+            if (-not $MayContinue -or $null -ne $Pending -or
+                $Event.request_index -ne $NextRequest -or
+                $Event.request_index -notin 0..($ExpectedRequests.Count - 1) -or
+                $Event.attempt -ne $NextAttempt -or $Event.attempt -notin 0..1 -or
+                $Event.tx_number -ne $NextTx -or $Event.tx_number -notin 1..$MaxRequests) {
                 Fail "probe audit request sequence is invalid"
             }
             $Expected = $ExpectedRequests[[int]$Event.request_index]
@@ -469,6 +521,7 @@ function Assert-ProbeAuditSequence([object[]]$Events) {
                 Fail "probe audit contains an out-of-scope request"
             }
             $Pending = $Event
+            $NextTx++
             continue
         }
         if ($Event.event -ceq "response_rx") {
@@ -481,14 +534,28 @@ function Assert-ProbeAuditSequence([object[]]$Events) {
                 )) {
                 Fail "probe audit response sequence is invalid"
             }
+            if ($Event.rx_hex.Length -gt (2 * $MaxResponseBytes)) {
+                Fail "probe audit response exceeds the profile receive budget"
+            }
             if ($Event.classification -ceq "valid") {
                 $Expected = $ExpectedRequests[[int]$Event.request_index]
+                if ($ApprovalScope -ceq $ZeroOriginScope -and
+                    ($Event.rx_hex.Length -ne (2 * (5 + 2 * $Expected.count)) -or
+                        $Event.rx_bytes -ne (5 + 2 * $Expected.count))) {
+                    Fail "whole-block response length does not match the fixed request"
+                }
                 if ($Event.crc_valid -ne $true -or
                     @($Event.registers).Count -ne $Expected.count -or
                     $Event.conclusion -cne "仅证明区间可读，型号/点名/倍率未决") {
                     Fail "probe audit valid response evidence is incomplete"
                 }
                 $ValidRequestIndexes += [int]$Event.request_index
+                $NextRequest++
+                $NextAttempt = 0
+            } elseif ($Event.classification -ceq "modbus_exception" -or $Event.attempt -eq 1) {
+                $MayContinue = $false
+            } else {
+                $NextAttempt = 1
             }
             $Pending = $null
             continue
@@ -500,9 +567,9 @@ function Assert-ProbeAuditSequence([object[]]$Events) {
         Fail "completed probe audit has a request without a response"
     }
     if ($TerminalEvent.event -ceq "completed" -and $TerminalEvent.result -ceq "valid" -and
-        (@($ValidRequestIndexes).Count -ne 2 -or $ValidRequestIndexes[0] -ne 0 -or
-            $ValidRequestIndexes[1] -ne 1)) {
-        Fail "successful probe audit lacks both ordered valid responses"
+        (@($ValidRequestIndexes).Count -ne $ExpectedRequests.Count -or
+            $NextRequest -ne $ExpectedRequests.Count)) {
+        Fail "successful probe audit lacks all ordered valid responses"
     }
 }
 
@@ -521,9 +588,9 @@ function Assert-ProbeTerminalMatches(
     $TxCount = @($Events | Where-Object { $_.event -ceq "request_tx" }).Count
     if (-not $Terminal.audit_complete) { Fail "probe reported an incomplete audit sink" }
     if ($Terminal.tx_count_known) {
-        if ($Terminal.completed_tx_count -notin 0..4 -or
+        if ($Terminal.completed_tx_count -notin 0..$MaxRequests -or
             $Terminal.attempted_write_bytes -lt 0 -or
-            $Terminal.attempted_write_bytes -gt 32 -or
+            $Terminal.attempted_write_bytes -gt (8 * $MaxRequests) -or
             $Terminal.completed_tx_count -ne $TxCount -or
             $Events[-1].completed_tx_count -ne $TxCount) {
             Fail "probe terminal TX count mismatch"
@@ -568,6 +635,10 @@ function Test-ProbeAudit(
         Assert-ProbeAuditSequence $Events
         Assert-ProbeTerminalMatches $Events $Terminal $ExitCode
         $Started = $Events[0]
+        if ($Started.plan.budget.max_response_bytes -ne $MaxResponseBytes -or
+            $Started.plan.budget.max_requests -ne $MaxRequests) {
+            Fail "probe audit receive or transmission budget mismatch"
+        }
         if ($Started.script_sha256 -cne $Receipt.probe_sha256 -or
             $Started.config_sha256 -cne $ConfigHash -or
             $Started.image_id -cne $Receipt.gw_image_id -or
@@ -754,6 +825,8 @@ try {
     $ProbeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $SnapshotProbe).Hash.ToLowerInvariant()
     $ConfigHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $SnapshotConfig).Hash.ToLowerInvariant()
     if ($ProbeHash -cne $Receipt.probe_sha256) { Fail "snapshot probe hash mismatch" }
+    $ScopeConfig = Get-Content -Raw -LiteralPath $SnapshotConfig | ConvertFrom-Json
+    Set-ProbeScope ([string]$ScopeConfig.approval.scope_id)
 
     $Before = Get-ProductionState
     Assert-SafeProductionState $Before $Receipt.gw_image_id
@@ -905,7 +978,7 @@ try {
                     ($After | ConvertTo-Json -Depth 30 -Compress)
             }
             tx_count = if ($null -eq $Terminal -or -not $Terminal.tx_count_known -or
-                $Terminal.completed_tx_count -notin 0..4) { "unknown" } else {
+                $Terminal.completed_tx_count -notin 0..$MaxRequests) { "unknown" } else {
                 $Terminal.completed_tx_count
             }
         }

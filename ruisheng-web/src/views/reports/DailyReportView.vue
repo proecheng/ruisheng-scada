@@ -9,10 +9,11 @@ import { useAsync } from '@/composables/useAsync'
 import { useToast } from '@/composables/useToast'
 import LoadingSkeleton from '@/components/LoadingSkeleton.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import { beijingDateString } from '@/utils/beijingDate'
 
 const toast = useToast()
 
-const date = ref<string>(new Date().toISOString().slice(0, 10))
+const date = ref<string>(beijingDateString())
 const rows = ref<DailyReportRow[]>([])
 
 const loader = useAsync(() => generateDailyReport({ date: date.value }))
@@ -42,13 +43,17 @@ async function exportXlsx(): Promise<void> {
     <header>
       <h2>日报表</h2>
       <div class="bar">
-        <label>日期 <input v-model="date" type="date" /></label>
+        <label>
+          日期（北京时间）
+          <input v-model="date" type="date" required />
+        </label>
         <button :disabled="loader.isPending.value" @click="run">
           {{ loader.isPending.value ? '生成中…' : '生成' }}
         </button>
         <button v-if="rows.length" class="secondary" @click="exportXlsx">导出 Excel</button>
       </div>
     </header>
+    <p class="hint">统计所选日期的北京时间 00:00 至次日 00:00，不包含次日零点。</p>
 
     <LoadingSkeleton v-if="loader.isPending.value" :lines="4" />
     <EmptyState v-else-if="rows.length === 0" title="未生成数据" description="选择日期后点击生成" />
@@ -74,6 +79,7 @@ async function exportXlsx(): Promise<void> {
 
 <style scoped>
 .report { background: #fff; padding: 16px; border-radius: 6px; }
+.hint { margin: -8px 0 16px; color: var(--color-text-secondary); font-size: 12px; }
 header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
 h2 { font-size: 18px; }
 .bar { display: flex; gap: 8px; align-items: end; }

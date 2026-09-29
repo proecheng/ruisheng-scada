@@ -31,11 +31,14 @@ class Connection:
         on_frame: Callable[[bytes], Awaitable[None]],
         parse_fail_budget: int = 10,
         heartbeat_timeout_sec: float = 90.0,
+        strip_dtu_heartbeats: bool = True,
     ) -> None:
         self._reader = reader
         self._writer = writer
         self._on_frame = on_frame
-        self._framer = Framer()
+        self._framer = Framer(strip_dtu_heartbeats=strip_dtu_heartbeats)
+        self._read_future: asyncio.Task[bytes] | None = None
+        self._input_generation = 0
         self._parse_fail_budget = parse_fail_budget
         self._parse_fail_run = 0
         self._heartbeat_timeout_sec = heartbeat_timeout_sec
@@ -43,7 +46,17 @@ class Connection:
         self.disconnected_for_framing = False
         self.disconnected_for_heartbeat_timeout = False
 
-    async def read_loop(self) -> None:
+    def discard_input(self) -> None:
+        """Serial-only reset, called synchronously before sending the next request."""
+        self._input_generation += 1
+        if self._read_future is not None:
+            self._read_future.cancel()
+        self._framer.clear()
+        # StreamReader has no public flush API; cancel its read before clearing queued bytes.
+        self._reader._buffer.clear()  # type: ignore[attr-defined]  # noqa: SLF001
+        self._parse_fail_run = 0
+
+    async def read_loop(self) -> None:  # noqa: PLR0912
         prev_resync = self._framer.stats["resync"]
         while not self._reader.at_eof():
             now = time.monotonic()
@@ -51,12 +64,23 @@ class Connection:
                 self.disconnected_for_heartbeat_timeout = True
                 return
             try:
+                input_generation = self._input_generation
+                self._read_future = asyncio.create_task(self._reader.read(_READ_CHUNK))
                 data = await asyncio.wait_for(
-                    self._reader.read(_READ_CHUNK),
+                    self._read_future,
                     timeout=_IDLE_POLL_MS / 1000,
                 )
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise
+                continue
             except TimeoutError:
                 self._framer.tick(int(now * 1000))
+                continue
+            finally:
+                self._read_future = None
+            if input_generation != self._input_generation:
                 continue
             if not data:
                 break

@@ -6,6 +6,7 @@ import { listPoints, type PointConfig } from '@/api/points'
 import { useAsync } from '@/composables/useAsync'
 import { useToast } from '@/composables/useToast'
 import LoadingSkeleton from '@/components/LoadingSkeleton.vue'
+import { digitalLevelSummary, formatPointValue } from '@/utils/pointDisplay'
 
 type ECharts = import('echarts').ECharts
 type EChartsModule = typeof import('echarts')
@@ -16,9 +17,14 @@ const router = useRouter()
 const toast = useToast()
 
 const points = ref<PointConfig[]>([])
+const visiblePoints = computed(() => points.value.filter((p) => p.show !== false))
 const selectedPointIds = ref<number[]>([])
-const fromDate = ref<string>(new Date(Date.now() - 24 * 3600000).toISOString().slice(0, 16))
-const toDate = ref<string>(new Date().toISOString().slice(0, 16))
+function localDateTime(date: Date): string {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return local.toISOString().slice(0, 19)
+}
+const fromDate = ref<string>(localDateTime(new Date(Date.now() - 24 * 3600000)))
+const toDate = ref<string>(localDateTime(new Date()))
 const viewMode = ref<'combined' | 'chart' | 'table'>('combined')
 const historyPage = ref<HistoryPage | null>(null)
 
@@ -37,7 +43,7 @@ const loader = useAsync(() =>
 
 const pointNameById = computed(() => {
   const map = new Map<number, string>()
-  for (const p of points.value) {
+  for (const p of visiblePoints.value) {
     const register = `FC${p.fun_code} 地址 ${p.register_address}`
     const unit = p.unit ? ` / ${p.unit}` : ''
     map.set(p.point_id, `${p.point_name}（${register}${unit}）`)
@@ -53,11 +59,16 @@ const tableRows = computed(() =>
       pointNameById.value.get(p.point_id ?? selectedPointIds.value[0] ?? 0) ??
       `点位 ${p.point_id ?? selectedPointIds.value[0] ?? ''}`,
     value: p.value,
+    display_value: formatPointValue(p.value, visiblePoints.value.find(point => point.point_id === (p.point_id ?? selectedPointIds.value[0]))?.display_bits),
+    levels: digitalLevelSummary(p.value, visiblePoints.value.find(point => point.point_id === (p.point_id ?? selectedPointIds.value[0]))?.display_bits),
   })),
 )
 
 const shouldShowChart = computed(() => viewMode.value === 'combined' || viewMode.value === 'chart')
 const shouldShowTable = computed(() => viewMode.value === 'combined' || viewMode.value === 'table')
+const selectedDisplayBits = computed(() => selectedPointIds.value.length === 1
+  ? visiblePoints.value.find(p => p.point_id === selectedPointIds.value[0])?.display_bits
+  : null)
 
 async function getEcharts(): Promise<EChartsModule> {
   echartsModule ??= await import('echarts')
@@ -78,6 +89,9 @@ async function load(): Promise<void> {
     historyPage.value = page
     await nextTick()
     await renderChart()
+    if (page.truncated) {
+      toast.info('结果超过 5000 行，只显示最早的一段。请缩小时间范围或减少点位。', { timeoutMs: 5000 })
+    }
     if (page.downsampled) {
       toast.info(`数据已降采样至 ${page.sample_interval_s}s 粒度`, { timeoutMs: 3000 })
     }
@@ -102,25 +116,36 @@ async function renderChart(): Promise<void> {
     tooltip: { trigger: 'axis' },
     legend: { top: 0 },
     xAxis: { type: 'time' },
-    yAxis: { type: 'value' },
-    grid: { left: 50, right: 20, top: 44, bottom: 40 },
+    yAxis: {
+      type: 'value',
+      min: selectedDisplayBits.value ? 0 : undefined,
+      max: selectedDisplayBits.value ? 2 ** selectedDisplayBits.value - 1 : undefined,
+      minInterval: selectedDisplayBits.value ? 1 : undefined,
+      axisLabel: { formatter: (value: number) => formatPointValue(value,
+        selectedDisplayBits.value,
+      ) },
+    },
+    grid: { left: Math.max(50, (selectedDisplayBits.value ?? 0) * 8 + 12), right: 20, top: 44, bottom: 40 },
     dataZoom: [{ type: 'inside' }, { type: 'slider' }],
     series: selectedPointIds.value.map((pointId) => ({
       type: 'line',
-      name: points.value.find((p) => p.point_id === pointId)?.point_name ?? `点位 ${pointId}`,
+      name: visiblePoints.value.find((p) => p.point_id === pointId)?.point_name ?? `点位 ${pointId}`,
       data: rows
         .filter((p) => (p.point_id ?? selectedPointIds.value[0]) === pointId)
         .map((p) => [p.ts, p.value]),
       showSymbol: false,
-      smooth: true,
+      smooth: !visiblePoints.value.find(p => p.point_id === pointId)?.display_bits,
+      step: visiblePoints.value.find(p => p.point_id === pointId)?.display_bits ? 'end' : false,
+      tooltip: { valueFormatter: (value: number) => formatPointValue(value, visiblePoints.value.find(p => p.point_id === pointId)?.display_bits) },
     })),
-  })
+  }, { notMerge: true })
 }
 
 function downloadCsv(): void {
-  const header = 'timestamp,point_id,point_name,value\n'
+  const header = 'timestamp,point_id,point_name,value,display_value,levels\n'
   const body = tableRows.value
-    .map((p) => `${p.ts},${p.point_id},${p.point_name},${p.value}`)
+    .map((p) => [p.ts, p.point_id, p.point_name, p.value, p.display_value, p.levels]
+      .map(value => `"${String(value).replace(/"/g, '""')}"`).join(','))
     .join('\n')
   const blob = new Blob([header + body], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
@@ -135,7 +160,9 @@ onMounted(async () => {
   try {
     points.value = await pointsLoader.run()
     const initial = Number(route.query.point_id ?? 0)
-    selectedPointIds.value = initial > 0 ? [initial] : points.value.slice(0, 3).map((p) => p.point_id)
+    selectedPointIds.value = initial > 0 && visiblePoints.value.some((p) => p.point_id === initial)
+      ? [initial]
+      : visiblePoints.value.slice(0, 3).map((p) => p.point_id)
     await load()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '加载点位失败')
@@ -162,13 +189,13 @@ watch(viewMode, () => {
       <label>
         点位变量
         <select v-model="selectedPointIds" multiple size="4">
-          <option v-for="p in points" :key="p.point_id" :value="p.point_id">
+          <option v-for="p in visiblePoints" :key="p.point_id" :value="p.point_id">
             {{ p.point_name }}（ID {{ p.point_id }} / FC{{ p.fun_code }} 地址 {{ p.register_address }}）
           </option>
         </select>
       </label>
-      <label>起 <input v-model="fromDate" type="datetime-local" /></label>
-      <label>止 <input v-model="toDate" type="datetime-local" /></label>
+      <label>起 <input v-model="fromDate" type="datetime-local" step="1" required /></label>
+      <label>止 <input v-model="toDate" type="datetime-local" step="1" required /></label>
       <div class="mode">
         <button type="button" :class="{ active: viewMode === 'combined' }" @click="viewMode = 'combined'">图表+表格</button>
         <button type="button" :class="{ active: viewMode === 'chart' }" @click="viewMode = 'chart'">图表</button>
@@ -190,7 +217,7 @@ watch(viewMode, () => {
           <tr v-for="row in tableRows" :key="`${row.ts}-${row.point_id}`">
             <td>{{ new Date(row.ts).toLocaleString() }}</td>
             <td>{{ row.point_name }}</td>
-            <td>{{ row.value }}</td>
+            <td>{{ row.display_value }}<small v-if="row.levels" class="digital-levels">{{ row.levels }}</small></td>
           </tr>
         </tbody>
       </table>
@@ -217,4 +244,5 @@ h2 { display: inline; font-size: 18px; }
 .chart { height: 440px; }
 .history-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .history-table th, .history-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; }
+.digital-levels { display: block; margin-top: 4px; color: var(--color-text-secondary); }
 </style>

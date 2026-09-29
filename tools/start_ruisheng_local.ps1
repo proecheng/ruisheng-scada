@@ -4,12 +4,14 @@ param(
   [ValidateRange(30, 900)][int]$StartupTimeoutSeconds = 300,
   [ValidateRange(900, 3600)][int]$LeaseSeconds = 900,
   [switch]$NoBrowser,
-  [switch]$NoUi
+  [switch]$NoUi,
+  [switch]$RecoverSerialGateway
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $CandidateSitesRoot = "C:\Ruisheng\candidates"
+$HotfixRoot = "C:\Ruisheng\hotfix"
 $DockerContext = "desktop-linux"
 $DockerEndpoint = "npipe:////./pipe/dockerDesktopLinuxEngine"
 $AuditDirectory = "C:\Ruisheng\launcher-audit"
@@ -204,6 +206,62 @@ function Resolve-SiteRoot {
   return $resolved
 }
 
+function Assert-NoFullUpgradeMaintenance {
+  param([Parameter(Mandatory)][string]$SiteRoot)
+  $stateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
+  $path = Join-Path $stateDirectory "full-upgrade-maintenance.json"
+  try { $marker = Get-Item -LiteralPath $path -Force -ErrorAction Stop }
+  catch [System.Management.Automation.ItemNotFoundException] { return }
+  $allowed = @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value, "S-1-5-18", "S-1-5-32-544")
+  foreach ($entry in @($SiteRoot, $stateDirectory, $path)) {
+    $item = Get-Item -LiteralPath $entry -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        ($entry -eq $path -and ($item.PSIsContainer -or $item.Length -gt 16KB))) {
+      throw "full_upgrade_maintenance_invalid"
+    }
+    $acl = Get-Acl -LiteralPath $entry
+    if (($item.PSIsContainer -and -not $acl.AreAccessRulesProtected) -or
+        $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $allowed) {
+      throw "full_upgrade_maintenance_acl_invalid"
+    }
+    foreach ($rule in @($acl.Access)) {
+      $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+      $write = [Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'
+      if ($rule.AccessControlType -eq "Allow" -and ($rule.FileSystemRights -band $write) -ne 0 -and
+          $sid -notin $allowed) { throw "full_upgrade_maintenance_acl_invalid" }
+    }
+  }
+  try {
+    $json = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey("DateKind")) {
+      $state = $json | ConvertFrom-Json -DateKind String
+    }
+    else { $state = $json | ConvertFrom-Json }
+  }
+  catch { throw "full_upgrade_maintenance_invalid" }
+  $keys = @("schema_version", "operation_id", "site_root", "status", "source_identity", "candidate_identity",
+    "source_head", "target_head", "journal_path", "updated_at")
+  if ($state -isnot [PSCustomObject] -or @($state.PSObject.Properties).Count -ne $keys.Count -or
+      ($state.schema_version -isnot [int] -and $state.schema_version -isnot [long]) -or
+      $state.schema_version -ne 1) { throw "full_upgrade_maintenance_invalid" }
+  foreach ($key in $keys) {
+    if (@($state.PSObject.Properties.Name) -cnotcontains $key -or
+        ($key -ne "schema_version" -and $state.$key -isnot [string])) { throw "full_upgrade_maintenance_invalid" }
+  }
+  if ($state.site_root -cne $SiteRoot -or
+      $state.operation_id -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+      $state.source_identity -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+      $state.candidate_identity -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+      $state.source_head -cne "0012_alarm_notification_runtime" -or
+      $state.target_head -cne "0013_serial_polling_profile" -or
+      $state.journal_path -cne (Join-Path $stateDirectory "full-upgrade-$($state.operation_id).json") -or
+      $state.status -cnotin @("active", "committed", "rolled_back")) { throw "full_upgrade_maintenance_invalid" }
+  [DateTimeOffset]$updatedAt = [DateTimeOffset]::MinValue
+  if (-not [DateTimeOffset]::TryParseExact($state.updated_at, "o", [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::None, [ref]$updatedAt)) { throw "full_upgrade_maintenance_invalid" }
+  if ($state.status -ceq "active") { throw "full_upgrade_maintenance_active" }
+}
+
 function Test-ExactJsonObjectKeys {
   param(
     [Parameter(Mandatory)][AllowNull()]$Value,
@@ -277,6 +335,131 @@ function Assert-CandidateManifest {
   }
   if ($images.Count -ne $PersistentServices.Count) { throw "manifest_images_invalid" }
   return $images
+}
+
+function Copy-ImageIdentity {
+  param([Parameter(Mandatory)]$Image)
+  return [pscustomobject]@{
+    component = [string]$Image.component
+    source_reference = [string]$Image.source_reference
+    repo_digest = [string]$Image.repo_digest
+    candidate_reference = [string]$Image.candidate_reference
+    image_id = [string]$Image.image_id
+    os = [string]$Image.os
+    architecture = [string]$Image.architecture
+    archive = [string]$Image.archive
+    sha256 = [string]$Image.sha256
+  }
+}
+
+function Assert-HotfixArtifactPath {
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { throw "hotfix_artifact_missing" }
+  $item = Get-Item -LiteralPath $Path -Force
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "hotfix_artifact_linked"
+  }
+  $allowed = @(
+    [Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
+    "S-1-5-18", "S-1-5-32-544"
+  ) | Select-Object -Unique
+  $acl = Get-Acl -LiteralPath $Path
+  try { $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value }
+  catch { throw "hotfix_artifact_acl_invalid" }
+  if ($owner -notin $allowed) { throw "hotfix_artifact_acl_invalid" }
+  foreach ($rule in @($acl.Access)) {
+    try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }
+    catch { throw "hotfix_artifact_acl_invalid" }
+    if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        $sid -notin $allowed -or
+        ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+          [Security.AccessControl.FileSystemRights]::FullControl) {
+      throw "hotfix_artifact_acl_invalid"
+    }
+  }
+}
+
+function Resolve-HotfixImageIdentity {
+  param(
+    [Parameter(Mandatory)][string]$Component,
+    [Parameter(Mandatory)][string]$Reference
+  )
+  if ($Component -notin @("api", "gw", "web") -or
+      $Reference -notmatch '^ruisheng-hotfix/(?<service>api|gw|web):(?<tag>[a-z0-9][a-z0-9-]{2,63})$' -or
+      [string]$Matches.service -cne $Component) {
+    throw "compose_manifest_image_mismatch"
+  }
+  $tag = [string]$Matches.tag
+  $directory = Join-Path (Join-Path $HotfixRoot $tag) $Component
+  $manifestPath = Join-Path $directory "ruisheng-$Component-hotfix-$tag.json"
+  foreach ($path in @($HotfixRoot, (Join-Path $HotfixRoot $tag), $directory)) {
+    Assert-HotfixArtifactPath -Path $path
+  }
+  Assert-HotfixArtifactPath -Path $manifestPath
+  try {
+    $manifest = ConvertFrom-JsonPreservingDateStrings -Json ([IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8))
+  }
+  catch { throw "hotfix_manifest_invalid" }
+  $keys = @("schema_version", "service", "source_commit", "image_reference", "image_id",
+    "os", "architecture", "archive", "sha256", "generated_at")
+  if (-not (Test-ExactJsonObjectKeys -Value $manifest -ExpectedKeys $keys) -or
+      ($manifest.schema_version -isnot [int] -and $manifest.schema_version -isnot [long]) -or
+      [int64]$manifest.schema_version -ne 1 -or
+      [string]$manifest.service -cne $Component -or
+      [string]$manifest.source_commit -notmatch '^[0-9a-f]{40}$' -or
+      [string]$manifest.image_reference -cne $Reference -or
+      [string]$manifest.image_id -notmatch '^sha256:[0-9a-f]{64}$' -or
+      [string]$manifest.os -cne "linux" -or
+      [string]$manifest.architecture -cne "amd64" -or
+      [string]$manifest.archive -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' -or
+      [string]$manifest.sha256 -notmatch '^[0-9a-f]{64}$') {
+    throw "hotfix_manifest_invalid"
+  }
+  [DateTimeOffset]$generatedAt = [DateTimeOffset]::MinValue
+  if (-not [DateTimeOffset]::TryParseExact(
+      [string]$manifest.generated_at, "o", [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::None, [ref]$generatedAt)) {
+    throw "hotfix_manifest_invalid"
+  }
+  $archivePath = Join-Path $directory ([string]$manifest.archive)
+  Assert-HotfixArtifactPath -Path $archivePath
+  $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($archiveHash -cne [string]$manifest.sha256) { throw "hotfix_archive_identity_mismatch" }
+  return [pscustomobject]@{
+    component = $Component
+    candidate_reference = [string]$manifest.image_reference
+    image_id = [string]$manifest.image_id
+    hotfix_manifest = $manifestPath
+    hotfix_archive = $archivePath
+  }
+}
+
+function Resolve-EffectiveImages {
+  param(
+    [Parameter(Mandatory)]$Model,
+    [Parameter(Mandatory)]$CandidateImages
+  )
+  $effective = @{}
+  foreach ($component in $PersistentServices) {
+    $serviceModel = $Model.services.PSObject.Properties[$component].Value
+    if ($null -eq $serviceModel) { throw "compose_service_missing" }
+    $reference = [string]$serviceModel.image
+    $candidate = $CandidateImages[$component]
+    if ($reference -ceq [string]$candidate.candidate_reference) {
+      $effective[$component] = Copy-ImageIdentity -Image $candidate
+    }
+    else {
+      $effective[$component] = Resolve-HotfixImageIdentity -Component $component -Reference $reference
+    }
+  }
+  foreach ($service in $PolicyServices) {
+    $component = if ($service -eq "migrate") { "api" } else { $service }
+    $reference = [string]$Model.services.PSObject.Properties[$service].Value.image
+    if ($reference -cne [string]$effective[$component].candidate_reference) {
+      throw "compose_manifest_image_mismatch"
+    }
+  }
+  return $effective
 }
 
 function Resolve-ActiveRelease {
@@ -386,6 +569,13 @@ function Invoke-NativeResult {
       throw "native_command_timeout"
     }
     $process.WaitForExit()
+    # A Docker CLI/plugin child can exit while retaining one of the redirected
+    # pipe handles briefly (this is common while Docker Desktop is warming up
+    # after a host reboot).  Do not wait forever on ReadToEndAsync in that
+    # state; the launcher must fail or retry within its bounded startup window.
+    if (-not [Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 5000)) {
+      throw "native_output_timeout"
+    }
     return [pscustomobject]@{
       ExitCode = $process.ExitCode
       Stdout   = [string]$stdoutTask.Result
@@ -395,12 +585,112 @@ function Invoke-NativeResult {
   finally { $process.Dispose() }
 }
 
+# BEGIN site serial compose
+# Embedded in each remote script so historical signed candidates stay immutable.
+function Assert-SiteSerialPath {
+  param([Parameter(Mandatory)][string]$Path)
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'site_serial_path_linked'
+  }
+  $acl = Get-Acl -LiteralPath $Path
+  $trusted = @('S-1-5-18', 'S-1-5-32-544')
+  if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cnotin $trusted) {
+    throw 'site_serial_owner_invalid'
+  }
+  $write = [Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'
+  foreach ($rule in @($acl.Access)) {
+    if ($rule.AccessControlType -eq 'Allow' -and ($rule.FileSystemRights -band $write) -ne 0 -and
+        $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -cnotin $trusted) {
+      throw 'site_serial_writer_invalid'
+    }
+  }
+}
+
+function Assert-SiteSerialContent {
+  param([Parameter(Mandatory)][string]$Json)
+  # Requiring the canonical representation also rejects duplicate keys, hidden
+  # overrides, interpolation and fields that could broaden container privileges.
+  try {
+    $model = $Json | ConvertFrom-Json
+    $ports = @($model.services.gw.environment.GW_SERIAL_PORTS | ConvertFrom-Json)
+  }
+  catch { throw 'site_serial_json_invalid' }
+  if ($ports.Count -ne 1 -or $ports[0].port -isnot [string] -or
+      $ports[0].port -cnotmatch '^/dev/ruisheng-[A-Za-z0-9._-]{1,64}$' -or
+      ($ports[0].baud_rate -isnot [int] -and $ports[0].baud_rate -isnot [long]) -or
+      $ports[0].baud_rate -notin @(1200,2400,4800,9600,19200,38400,57600,115200)) {
+    throw 'site_serial_parameters_invalid'
+  }
+  $port = [string]$ports[0].port
+  $baud = [string]$ports[0].baud_rate
+  $expected = '{"services":{"gw":{"environment":{"GW_SERIAL_PORTS":"[{\"port\":\"' + $port +
+    '\",\"baud_rate\":' + $baud + '}]"},"devices":[{"source":"' + $port +
+    '","target":"' + $port + '","permissions":"rw"}]}}}'
+  if ($Json.Trim() -cne $expected) { throw 'site_serial_override_invalid' }
+}
+
+function Get-SiteSerialOverride {
+  $path = 'C:\Ruisheng\site\site-serial.override.json'
+  $exists = $true
+  try { $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop }
+  catch [System.Management.Automation.ItemNotFoundException] { $exists = $false }
+  if ($null -ne $script:SiteSerialSnapshot) {
+    if ($exists -ne $script:SiteSerialSnapshot.exists) { throw 'site_serial_configuration_changed' }
+    if (-not $exists) { return '' }
+    foreach ($part in @('C:\Ruisheng','C:\Ruisheng\site',$path)) { Assert-SiteSerialPath $part }
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $script:SiteSerialSnapshot.hash) {
+      throw 'site_serial_configuration_changed'
+    }
+    return $path
+  }
+  if (-not $exists) {
+    $script:SiteSerialSnapshot = @{ exists = $false }
+    return ''
+  }
+  if ($item.PSIsContainer -or $item.Length -gt 4096) { throw 'site_serial_file_invalid' }
+  foreach ($part in @('C:\Ruisheng','C:\Ruisheng\site',$path)) { Assert-SiteSerialPath $part }
+  $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    $json = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+    Assert-SiteSerialContent $json
+    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    # Retain the read handle until process exit. Compose must read exactly the
+    # validated file, including during recovery and asynchronous native calls.
+    $script:SiteSerialSnapshot = @{ exists = $true; hash = $hash; guard = $stream }
+  }
+  catch { $stream.Dispose(); throw }
+  return $path
+}
+
+function Add-SiteSerialComposeArguments {
+  param([Parameter(Mandatory)][string[]]$Arguments)
+  if ($Arguments[0] -cne 'compose') { return ,$Arguments }
+  $path = Get-SiteSerialOverride
+  if (-not $path) { return ,$Arguments }
+  $index = 1
+  while ($index -lt $Arguments.Count -and $Arguments[$index].StartsWith('-')) {
+    if ($Arguments[$index] -cin @('-f','--file','--env-file','--project-directory','-p','--project-name','--profile','--ansi','--progress','--parallel')) {
+      if ($index + 1 -ge $Arguments.Count) { throw 'site_serial_compose_arguments_invalid' }
+      if ($Arguments[$index] -cin @('-f','--file') -and $Arguments[$index+1] -ieq $path) {
+        throw 'site_serial_override_already_present'
+      }
+      $index += 2
+    }
+    else { throw 'site_serial_compose_option_unsupported' }
+  }
+  if ($index -ge $Arguments.Count) { throw 'site_serial_compose_command_missing' }
+  return ,(@($Arguments[0..($index-1)]) + @('-f',$path) + @($Arguments[$index..($Arguments.Count-1)]))
+}
+# END site serial compose
 function Invoke-DockerText {
   param(
     [Parameter(Mandatory)][string[]]$Arguments,
     [ValidateRange(1, 900)][int]$TimeoutSeconds = 120,
     [switch]$Mutation
   )
+  if ($Arguments[0] -ceq 'compose') { $Arguments = Add-SiteSerialComposeArguments -Arguments $Arguments }
+  if ($Mutation) { Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot }
   try {
     $result = Invoke-NativeResult -FilePath $DockerPath `
       -Arguments (@("--host", $DockerEndpoint) + $Arguments) -TimeoutSeconds $TimeoutSeconds
@@ -468,8 +758,18 @@ function Test-DockerReady {
   catch { return $false }
 }
 
+function Test-DockerComposeReady {
+  try {
+    $result = Invoke-NativeResult -FilePath $DockerPath -Arguments @(
+      "compose", "version", "--short"
+    ) -TimeoutSeconds 10
+    return $result.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($result.Stdout)
+  }
+  catch { return $false }
+}
+
 function Start-OrReuseDockerDesktop {
-  if (Test-DockerReady) { return }
+  if (Test-DockerReady -and Test-DockerComposeReady) { return }
   $desktopCandidates = @()
   if ($env:ProgramFiles) {
     $desktopCandidates += Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"
@@ -493,7 +793,7 @@ function Start-OrReuseDockerDesktop {
   $deadline = [DateTimeOffset]::UtcNow.AddSeconds($DockerTimeoutSeconds)
   do {
     Start-Sleep -Seconds 2
-    if (Test-DockerReady) { return }
+    if (Test-DockerReady -and Test-DockerComposeReady) { return }
   } while ([DateTimeOffset]::UtcNow -lt $deadline)
   throw "docker_desktop_timeout"
 }
@@ -573,12 +873,15 @@ function Assert-ComposePolicy {
 }
 
 function Assert-LoadedImageIdentity {
-  param([Parameter(Mandatory)]$Images)
+  param([Parameter(Mandatory)]$Images, [Nullable[DateTimeOffset]]$Deadline = $null)
   foreach ($component in $PersistentServices) {
     $image = $Images[$component]
+    $timeout = if ($null -ne $Deadline) {
+      Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 30 -ErrorCode "service_health_timeout"
+    } else { 120 }
     $actualId = Invoke-DockerText -Arguments @(
       "image", "inspect", "--format", "{{.Id}}", [string]$image.candidate_reference
-    )
+    ) -TimeoutSeconds $timeout
     if ($actualId -cne [string]$image.image_id) { throw "loaded_image_identity_mismatch" }
   }
 }
@@ -645,27 +948,144 @@ function Assert-ServiceImageIdentity {
   ) { throw "container_image_identity_mismatch" }
 }
 
+function Get-RetainedUpgradeJournal {
+  param([Parameter(Mandatory)][string]$UpgradeOperation)
+  if ($UpgradeOperation -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') {
+    throw "unexpected_project_container"
+  }
+  $directory = Join-Path $SiteRoot ".remote-maintenance-state"
+  $path = Join-Path $directory "full-upgrade-$UpgradeOperation.json"
+  Assert-RestrictedDirectory -Path $SiteRoot
+  Assert-RestrictedDirectory -Path $directory
+  Assert-RestrictedFile -Path $path
+  if ((Get-Item -LiteralPath $path).Length -gt 1MB) { throw "unexpected_project_container" }
+  $journal = ConvertFrom-JsonPreservingDateStrings -Json (Get-Content -LiteralPath $path -Raw -Encoding UTF8)
+  if (($journal.schema_version -isnot [int] -and $journal.schema_version -isnot [long]) -or $journal.schema_version -ne 1 -or
+      [string]$journal.operation_id -cne $UpgradeOperation -or
+      [string]$journal.action -cne "full-upgrade" -or
+      [string]$journal.status -cne "committed" -or
+      [string]$journal.previous_release.site_root -cne $SiteRoot -or
+      [string]$journal.upgrade_kind -cne "bounded_0012_0013" -or
+      [string]$journal.migration.kind -cne "bounded_0012_0013" -or
+      [string]$journal.migration.phase -cne "completed" -or
+      [string]$journal.migration.target_images.api -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+      [string]$journal.candidate.candidate_id -cnotmatch '^[a-z0-9][a-z0-9._-]{0,62}$' -or
+      [string]$journal.migration.container_name -cne "ruisheng-migrate-$UpgradeOperation" -or
+      [string]$journal.migration.container_id -cnotmatch '^[0-9a-f]{64}$') {
+    throw "unexpected_project_container"
+  }
+  return $journal
+}
+
+function Assert-RetainedUpgradeContainer {
+  param(
+    [Parameter(Mandatory)][string]$Id,
+    [Parameter(Mandatory)][string]$Name,
+    [Parameter(Mandatory)][string]$Service,
+    [Parameter(Mandatory)][DateTimeOffset]$Deadline
+  )
+  try {
+    $proof = $Name -cmatch '^ruisheng-migration-proof-([0-9a-f-]{36})-[0-9a-f]{32}$'
+    if ($proof) { $upgradeOperation = $Matches[1] }
+    elseif ($Name -cmatch '^ruisheng-migrate-([0-9a-f-]{36})$') { $upgradeOperation = $Matches[1] }
+    else { throw "unexpected_project_container" }
+    $journal = Get-RetainedUpgradeJournal -UpgradeOperation $upgradeOperation
+    $timeout = Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 30 -ErrorCode "service_health_timeout"
+    $items = @(ConvertFrom-JsonPreservingDateStrings -Json (Invoke-DockerText -Arguments @(
+      "container", "inspect", $Id
+    ) -TimeoutSeconds $timeout))
+    if ($items.Count -ne 1) { throw "unexpected_project_container" }
+    $info = $items[0]
+    if ([string]$info.Id -cne $Id -or [string]$info.Name -cne "/$Name" -or
+        [string]$info.Image -cne [string]$journal.migration.target_images.api -or
+        [string]$info.Config.Labels.'com.docker.compose.project' -cne "ruisheng-prod" -or
+        [string]$info.Config.Labels.'com.docker.compose.service' -cne $Service -or
+        [string]$info.Config.Labels.'com.ruisheng.upgrade.operation' -cne $upgradeOperation -or
+        [string]$info.State.Status -cne "exited" -or [string]$info.State.Error -or
+        $info.State.Pid -ne 0 -or $info.State.ExitCode -ne 0 -or $info.RestartCount -ne 0 -or
+        [string]$info.HostConfig.RestartPolicy.Name -cne "no" -or
+        $info.HostConfig.RestartPolicy.MaximumRetryCount -ne 0) { throw "unexpected_project_container" }
+    foreach ($field in @("Running", "Paused", "Restarting", "OOMKilled", "Dead")) {
+      if ($info.State.$field -isnot [bool] -or $info.State.$field) { throw "unexpected_project_container" }
+    }
+    foreach ($number in @($info.State.Pid, $info.State.ExitCode, $info.RestartCount,
+        $info.HostConfig.RestartPolicy.MaximumRetryCount)) {
+      if (($number -isnot [int] -and $number -isnot [long]) -or $number -ne 0) {
+        throw "unexpected_project_container"
+      }
+    }
+    foreach ($field in @("Privileged", "PublishAllPorts", "AutoRemove")) {
+      if ($info.HostConfig.$field -isnot [bool] -or $info.HostConfig.$field) { throw "unexpected_project_container" }
+    }
+    foreach ($field in @("Binds", "Mounts", "VolumesFrom", "Devices", "DeviceRequests", "DeviceCgroupRules", "CapAdd")) {
+      if (@($info.HostConfig.$field | Where-Object { $null -ne $_ }).Count) { throw "unexpected_project_container" }
+    }
+    foreach ($field in @("PortBindings", "Tmpfs")) {
+      if ($null -ne $info.HostConfig.$field -and @($info.HostConfig.$field.PSObject.Properties).Count) {
+        throw "unexpected_project_container"
+      }
+    }
+    if (@($info.Mounts | Where-Object { $null -ne $_ }).Count -or
+        [string]$info.HostConfig.PidMode -or [string]$info.HostConfig.UTSMode -or
+        [string]$info.HostConfig.IpcMode -cnotin @("", "private") -or
+        @($info.NetworkSettings.Ports.PSObject.Properties | Where-Object { $null -ne $_.Value }).Count) {
+      throw "unexpected_project_container"
+    }
+    if ($proof) {
+      if ($Service -cne "api" -or [string]$info.Config.Image -cne [string]$info.Image -or
+          [string]$info.HostConfig.NetworkMode -cne "none" -or
+          (@($info.NetworkSettings.Networks.PSObject.Properties.Name) -join ',') -cne "none" -or
+          $info.HostConfig.ReadonlyRootfs -isnot [bool] -or -not $info.HostConfig.ReadonlyRootfs -or
+          (@($info.HostConfig.CapDrop) -join ',') -cne "ALL" -or
+          (@($info.HostConfig.SecurityOpt) -join ',') -cne "no-new-privileges") {
+        throw "unexpected_project_container"
+      }
+    }
+    elseif ($Service -cne "migrate" -or [string]$journal.migration.container_id -cne $Id -or
+        [string]$info.Config.Image -cne "ruisheng-candidate/api:$($journal.candidate.candidate_id)" -or
+        [string]$info.Config.Labels.'com.docker.compose.oneoff' -cne "True" -or
+        [string]$info.HostConfig.NetworkMode -cne "ruisheng-prod_default") {
+      throw "unexpected_project_container"
+    }
+  }
+  catch {
+    if ($_.Exception.Message -cin @("service_health_timeout", "native_command_timeout")) { throw }
+    throw "unexpected_project_container"
+  }
+}
+
 function Assert-NoUnexpectedProjectContainers {
   param([Parameter(Mandatory)][DateTimeOffset]$Deadline)
   $timeout = Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 30 `
     -ErrorCode "service_health_timeout"
   $output = Invoke-DockerText -Arguments @(
-    "ps", "-a", "--filter", "label=com.docker.compose.project=ruisheng-prod",
-    "--format", '{{.Names}}|{{.Label "com.docker.compose.service"}}|{{.State}}'
+    "ps", "-a", "--no-trunc", "--filter", "label=com.docker.compose.project=ruisheng-prod",
+    "--format", '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.service"}}|{{.State}}'
   ) -TimeoutSeconds $timeout
   $seen = @{}
+  $seenIds = @{}
+  $script:RetainedUpgradeContainersPresent = $false
   foreach ($line in @($output -split "`r?`n" | Where-Object { $_ })) {
-    $parts = @($line -split '\|', 3)
-    if ($parts.Count -ne 3 -or [string]$parts[1] -notin $PolicyServices) {
+    [void](Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 30 -ErrorCode "service_health_timeout")
+    $parts = @($line -split '\|', 4)
+    if ($parts.Count -ne 4 -or [string]$parts[0] -cnotmatch '^[0-9a-f]{64}$' -or
+        $seenIds.ContainsKey([string]$parts[0]) -or [string]$parts[2] -notin $PolicyServices) {
       throw "unexpected_project_container"
     }
-    $service = [string]$parts[1]
+    $seenIds[[string]$parts[0]] = $true
+    $service = [string]$parts[2]
+    if ([string]$parts[1] -cmatch '^ruisheng-(?:migration-proof|migrate)-') {
+      if ([string]$parts[3] -cne "exited") { throw "unexpected_project_container" }
+      Assert-RetainedUpgradeContainer -Id $parts[0] -Name $parts[1] -Service $service -Deadline $Deadline
+      $script:RetainedUpgradeContainersPresent = $true
+      continue
+    }
     if ($seen.ContainsKey($service)) { throw "unexpected_project_container" }
     if ($service -in $PersistentServices -and
-        [string]$parts[0] -cne [string]$ContainerNames[$service]) {
+        [string]$parts[1] -cne [string]$ContainerNames[$service]) {
       throw "unexpected_project_container"
     }
-    if ($service -eq "migrate" -and [string]$parts[2] -cne "exited") {
+    if ($service -eq "migrate" -and [string]$parts[3] -cne "exited") {
       throw "unexpected_project_container"
     }
     $seen[$service] = $true
@@ -865,8 +1285,11 @@ function Acquire-LeasedLock {
           )) -ExpectedName $Name
       }
       catch { throw "lock_conflict_unrecognized" }
-      $expired = [DateTimeOffset]::Parse([string]$existing.expires_at) -lt [DateTimeOffset]::UtcNow
-      if (-not $expired -or (Test-MatchingProcess -Record $existing)) { throw "lock_conflict_active" }
+      # Reclaim an orphaned lease immediately when its recorded owner process
+      # no longer exists; waiting for the full lease makes the desktop shortcut
+      # appear broken after a reboot or forced terminal close.
+      $ownerMatches = Test-MatchingProcess -Record $existing
+      if ($ownerMatches) { throw "lock_conflict_active" }
       $tombstone = "$Path.stale.$OperationId.$([Guid]::NewGuid().ToString('N'))"
       try { [IO.File]::Move($Path, $tombstone) }
       catch { throw "lock_conflict_race" }
@@ -1049,8 +1472,8 @@ function Close-VerifiedInputGuards {
 }
 
 function Wait-DependenciesHealthy {
-  param([Parameter(Mandatory)]$ExpectedHashes, [Parameter(Mandatory)]$OriginalActive)
-  $deadline = [DateTimeOffset]::UtcNow.AddSeconds([Math]::Min(120, $StartupTimeoutSeconds))
+  param([Parameter(Mandatory)]$ExpectedHashes, [Parameter(Mandatory)]$OriginalActive,
+    [DateTimeOffset]$Deadline = [DateTimeOffset]::UtcNow.AddSeconds([Math]::Min(120, $StartupTimeoutSeconds)))
   do {
     Assert-NoConfigurationDrift -Expected $ExpectedHashes
     Assert-LocksOwned
@@ -1069,8 +1492,8 @@ function Wait-DependenciesHealthy {
 }
 
 function Wait-AllHealthy {
-  param([Parameter(Mandatory)]$ExpectedHashes, [Parameter(Mandatory)]$OriginalActive)
-  $deadline = [DateTimeOffset]::UtcNow.AddSeconds($StartupTimeoutSeconds)
+  param([Parameter(Mandatory)]$ExpectedHashes, [Parameter(Mandatory)]$OriginalActive,
+    [DateTimeOffset]$Deadline = [DateTimeOffset]::UtcNow.AddSeconds($StartupTimeoutSeconds))
   do {
     Assert-NoConfigurationDrift -Expected $ExpectedHashes
     Assert-LocksOwned
@@ -1087,22 +1510,397 @@ function Wait-AllHealthy {
   throw "service_health_timeout"
 }
 
+function Test-RetainedArrayEqual {
+  param([AllowNull()][object[]]$Left, [AllowNull()][object[]]$Right)
+  $leftItems = @($Left | Where-Object { $null -ne $_ })
+  $rightItems = @($Right | Where-Object { $null -ne $_ })
+  if ($leftItems.Count -ne $rightItems.Count) { return $false }
+  for ($index = 0; $index -lt $leftItems.Count; $index++) {
+    if ([string]$leftItems[$index] -cne [string]$rightItems[$index]) { return $false }
+  }
+  return $true
+}
+
+function Get-RetainedBindSource {
+  param([Parameter(Mandatory)][string]$Source)
+  $path = $Source.Replace('\', '/')
+  if ($path -cmatch '^([A-Za-z]):/(.*)$') {
+    return ("windows:/$($Matches[1])/$($Matches[2])").ToLowerInvariant()
+  }
+  if ($path -cmatch '^/(?:run/desktop/mnt/host|host_mnt)/([A-Za-z])/(.*)$') {
+    return ("windows:/$($Matches[1])/$($Matches[2])").ToLowerInvariant()
+  }
+  return $path
+}
+
+function Get-RetainedStartConfigurations {
+  param([Parameter(Mandatory)]$Model, [Parameter(Mandatory)][DateTimeOffset]$Deadline)
+  $configurations = @{}
+  foreach ($service in $PersistentServices) {
+    $modelService = $Model.services.PSObject.Properties[$service].Value
+    $timeout = Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 30 -ErrorCode "service_health_timeout"
+    $images = @(ConvertFrom-JsonPreservingDateStrings -Json (Invoke-DockerText -Arguments @(
+      "image", "inspect", [string]$ExpectedImages[$service].image_id
+    ) -TimeoutSeconds $timeout))
+    if ($images.Count -ne 1 -or [string]$images[0].Id -cne [string]$ExpectedImages[$service].image_id -or
+        $null -eq $modelService) { throw "retained_upgrade_requires_controlled_start" }
+    $defaults = $images[0].Config
+    $environment = New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    foreach ($entry in @($defaults.Env)) {
+      if ($null -eq $entry) { continue }
+      $pair = [string]$entry -split '=', 2
+      if ($pair.Count -ne 2 -or $environment.ContainsKey($pair[0])) { throw "retained_upgrade_requires_controlled_start" }
+      $environment.Add($pair[0], $pair[1])
+    }
+    foreach ($property in @($modelService.environment.PSObject.Properties)) {
+      if ($null -eq $property) { continue }
+      if ($null -eq $property.Value) { [void]$environment.Remove($property.Name) }
+      else { $environment[$property.Name] = [string]$property.Value }
+    }
+    $entrypoint = $defaults.Entrypoint
+    $command = $defaults.Cmd
+    if ($null -ne $modelService.entrypoint) { $entrypoint = $modelService.entrypoint; $command = @() }
+    if ($null -ne $modelService.command) { $command = $modelService.command }
+    if ($entrypoint -is [string] -or $command -is [string]) { throw "retained_upgrade_requires_controlled_start" }
+    $mounts = @()
+    foreach ($volume in @($modelService.volumes)) {
+      if ($null -eq $volume) { continue }
+      if ([string]$volume.volume.subpath) { throw "retained_upgrade_requires_controlled_start" }
+      $source = [string]$volume.source
+      if ([string]$volume.type -ceq "volume") {
+        $source = [string]$Model.volumes.PSObject.Properties[$source].Value.name
+        if (-not $source) { throw "retained_upgrade_requires_controlled_start" }
+      }
+      elseif ([string]$volume.type -ceq "bind") { $source = Get-RetainedBindSource -Source $source }
+      else { throw "retained_upgrade_requires_controlled_start" }
+      $mounts += [pscustomobject]@{ type = [string]$volume.type; source = $source;
+        target = [string]$volume.target; readonly = [bool]$volume.read_only }
+    }
+    $networkKeys = @($modelService.networks.PSObject.Properties.Name)
+    if ($networkKeys.Count -ne 1 -or [string]$modelService.network_mode) { throw "retained_upgrade_requires_controlled_start" }
+    $network = [string]$Model.networks.PSObject.Properties[$networkKeys[0]].Value.name
+    if (-not $network) { throw "retained_upgrade_requires_controlled_start" }
+    $devices = @()
+    foreach ($device in @($modelService.devices)) {
+      if ($null -eq $device) { continue }
+      if (-not [string]$device.source -or -not [string]$device.target) { throw "retained_upgrade_requires_controlled_start" }
+      $devices += "$($device.source)|$($device.target)|$($device.permissions)"
+    }
+    $configurations[$service] = [pscustomobject]@{
+      environment = $environment; entrypoint = $entrypoint; command = $command; mounts = $mounts; network = $network
+      user = $(if ($null -ne $modelService.user) { [string]$modelService.user } else { [string]$defaults.User })
+      working_dir = $(if ($null -ne $modelService.working_dir) { [string]$modelService.working_dir } else { [string]$defaults.WorkingDir })
+      privileged = [bool]$modelService.privileged; readonly = [bool]$modelService.read_only
+      devices = @($devices | Sort-Object); cap_add = @($modelService.cap_add | Sort-Object)
+      cap_drop = @($modelService.cap_drop | Sort-Object); security_opt = @($modelService.security_opt | Sort-Object)
+    }
+  }
+  return $configurations
+}
+
+function Assert-RetainedStartConfiguration {
+  param([Parameter(Mandatory)]$Info, [Parameter(Mandatory)]$Expected)
+  foreach ($mountOption in @($Info.HostConfig.Mounts | Where-Object { $null -ne $_ })) {
+    if ([string]$mountOption.VolumeOptions.Subpath) { throw "retained_upgrade_requires_controlled_start" }
+  }
+  if (-not (Test-RetainedArrayEqual -Left $Info.Config.Entrypoint -Right $Expected.entrypoint) -or
+      -not (Test-RetainedArrayEqual -Left $Info.Config.Cmd -Right $Expected.command) -or
+      [string]$Info.Config.User -cne [string]$Expected.user -or
+      [string]$Info.Config.WorkingDir -cne [string]$Expected.working_dir) { throw "retained_upgrade_requires_controlled_start" }
+  $environment = New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+  foreach ($entry in @($Info.Config.Env)) {
+    if ($null -eq $entry) { continue }
+    $pair = [string]$entry -split '=', 2
+    if ($pair.Count -ne 2 -or $environment.ContainsKey($pair[0])) { throw "retained_upgrade_requires_controlled_start" }
+    $environment.Add($pair[0], $pair[1])
+  }
+  if ($environment.Count -ne $Expected.environment.Count) { throw "retained_upgrade_requires_controlled_start" }
+  foreach ($key in $Expected.environment.Keys) {
+    if (-not $environment.ContainsKey($key) -or $environment[$key] -cne $Expected.environment[$key]) {
+      throw "retained_upgrade_requires_controlled_start"
+    }
+  }
+  $mounts = @($Info.Mounts | Where-Object { $null -ne $_ })
+  if ($mounts.Count -ne $Expected.mounts.Count) { throw "retained_upgrade_requires_controlled_start" }
+  foreach ($expectedMount in $Expected.mounts) {
+    $matching = @($mounts | Where-Object { [string]$_.Destination -ceq $expectedMount.target })
+    if ($matching.Count -ne 1) { throw "retained_upgrade_requires_controlled_start" }
+    $mount = $matching[0]
+    $source = if ([string]$mount.Type -ceq "volume") { [string]$mount.Name } else {
+      Get-RetainedBindSource -Source ([string]$mount.Source)
+    }
+    if ([string]$mount.Type -cne $expectedMount.type -or $source -cne $expectedMount.source -or
+        $mount.RW -isnot [bool] -or $mount.RW -eq $expectedMount.readonly) { throw "retained_upgrade_requires_controlled_start" }
+  }
+  if ([string]$Info.HostConfig.NetworkMode -cne [string]$Expected.network -or
+      (@($Info.NetworkSettings.Networks.PSObject.Properties.Name) -join ',') -cne [string]$Expected.network -or
+      $Info.HostConfig.Privileged -isnot [bool] -or $Info.HostConfig.Privileged -ne $Expected.privileged -or
+      $Info.HostConfig.ReadonlyRootfs -isnot [bool] -or $Info.HostConfig.ReadonlyRootfs -ne $Expected.readonly -or
+      $Info.HostConfig.PublishAllPorts -ne $false -or $Info.HostConfig.AutoRemove -ne $false -or
+      [string]$Info.HostConfig.PidMode -or [string]$Info.HostConfig.UTSMode -or
+      [string]$Info.HostConfig.IpcMode -cnotin @("", "private") -or
+      @($Info.HostConfig.DeviceRequests | Where-Object { $null -ne $_ }).Count -or
+      @($Info.HostConfig.DeviceCgroupRules | Where-Object { $null -ne $_ }).Count -or
+      @($Info.HostConfig.VolumesFrom | Where-Object { $null -ne $_ }).Count -or
+      ($null -ne $Info.HostConfig.Tmpfs -and @($Info.HostConfig.Tmpfs.PSObject.Properties).Count)) {
+    throw "retained_upgrade_requires_controlled_start"
+  }
+  $devices = @($Info.HostConfig.Devices | Where-Object { $null -ne $_ } | ForEach-Object {
+    "$($_.PathOnHost)|$($_.PathInContainer)|$($_.CgroupPermissions)"
+  } | Sort-Object)
+  if (-not (Test-RetainedArrayEqual -Left $devices -Right $Expected.devices) -or
+      -not (Test-RetainedArrayEqual -Left @($Info.HostConfig.CapAdd | Sort-Object) -Right $Expected.cap_add) -or
+      -not (Test-RetainedArrayEqual -Left @($Info.HostConfig.CapDrop | Sort-Object) -Right $Expected.cap_drop) -or
+      -not (Test-RetainedArrayEqual -Left @($Info.HostConfig.SecurityOpt | Sort-Object) -Right $Expected.security_opt)) {
+    throw "retained_upgrade_requires_controlled_start"
+  }
+}
+
+function Get-RetainedStartService {
+  param([Parameter(Mandatory)][string]$Service, [Parameter(Mandatory)][DateTimeOffset]$Deadline,
+    [Parameter(Mandatory)]$Configuration, [string]$ExpectedId = "",
+    [switch]$AllowSerialDeviceStartFailure)
+  $timeout = Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 30 -ErrorCode "service_health_timeout"
+  $identity = if ($ExpectedId) { $ExpectedId } else { [string]$ContainerNames[$Service] }
+  try {
+    $items = @(ConvertFrom-JsonPreservingDateStrings -Json (Invoke-DockerText -Arguments @(
+      "container", "inspect", $identity
+    ) -TimeoutSeconds $timeout))
+  }
+  catch {
+    if ($_.Exception.Message -ceq "native_command_timeout") { throw }
+    throw "retained_upgrade_requires_controlled_start"
+  }
+  if ($items.Count -ne 1) { throw "retained_upgrade_requires_controlled_start" }
+  $info = $items[0]
+  $expected = $ExpectedImages[$Service]
+  if ([string]$info.Id -cnotmatch '^[0-9a-f]{64}$' -or ($ExpectedId -and [string]$info.Id -cne $ExpectedId) -or
+      [string]$info.Name -cne "/$($ContainerNames[$Service])" -or
+      [string]$info.Image -cne [string]$expected.image_id -or
+      [string]$info.Config.Image -cne [string]$expected.candidate_reference -or
+      [string]$info.Config.Labels.'com.docker.compose.project' -cne "ruisheng-prod" -or
+      [string]$info.Config.Labels.'com.docker.compose.service' -cne $Service -or
+      [string]$info.State.Status -cnotin @("running", "exited") -or
+      $info.State.Running -isnot [bool] -or $info.State.Running -ne ([string]$info.State.Status -ceq "running") -or
+      ([string]$info.State.Error -and -not ($AllowSerialDeviceStartFailure -and $Service -ceq 'gw' -and
+        (Test-SerialDeviceStartFailure -State $info.State))) -or
+      ($info.State.Running -and $info.State.Pid -le 0) -or
+      (-not $info.State.Running -and $info.State.Pid -ne 0)) { throw "retained_upgrade_requires_controlled_start" }
+  foreach ($field in @("Paused", "Restarting", "Dead", "OOMKilled")) {
+    if ($info.State.$field -isnot [bool] -or $info.State.$field) { throw "retained_upgrade_requires_controlled_start" }
+  }
+  if ($info.State.Pid -isnot [int] -and $info.State.Pid -isnot [long]) {
+    throw "retained_upgrade_requires_controlled_start"
+  }
+  Assert-RetainedStartConfiguration -Info $info -Expected $Configuration
+  return $info
+}
+
+function Test-SerialDeviceStartFailure {
+  param([Parameter(Mandatory)]$State)
+  # Docker's missing-device startup failure is distinct from an application exit
+  # or an operator's ordinary stop. Do not recover any other stopped state.
+  # Docker Desktop reports this exact pre-start failure as 128 on the current
+  # engine and 255 on older engines; the error text remains the authoritative
+  # discriminator.
+  if ($State.Status -cne 'exited' -or $State.Running -isnot [bool] -or $State.Running -or
+      ($State.ExitCode -isnot [int] -and $State.ExitCode -isnot [long]) -or
+      $State.ExitCode -notin @(128, 255) -or
+      ($State.Pid -isnot [int] -and $State.Pid -isnot [long]) -or $State.Pid -ne 0) { return $false }
+  foreach ($field in @('Paused','Restarting','Dead','OOMKilled')) {
+    if ($State.$field -isnot [bool] -or $State.$field) { return $false }
+  }
+  return $State.Error -is [string] -and $State.Error -cmatch (
+    '^error gathering device information while adding custom device "/dev/ruisheng-[A-Za-z0-9._-]{1,64}": no such file or directory$'
+  )
+}
+
+function Assert-SerialRecoveryHardware {
+  param([Parameter(Mandatory)][string]$Port, [Parameter(Mandatory)][DateTimeOffset]$Deadline)
+  if ($Port -cnotmatch '^/dev/ruisheng-[A-Za-z0-9._-]{1,64}$') { throw 'serial_recovery_port_invalid' }
+  $statePath = 'C:\Ruisheng\audit\serial-hardware-state.json'
+  foreach ($path in @('C:\Ruisheng','C:\Ruisheng\audit',$statePath)) { Assert-SiteSerialPath -Path $path }
+  $file = Get-Item -LiteralPath $statePath -Force
+  if ($file.PSIsContainer -or $file.Length -gt 4096) { throw 'serial_recovery_hardware_unready' }
+  try { $state = ConvertFrom-JsonPreservingDateStrings -Json ([IO.File]::ReadAllText($statePath)) }
+  catch { throw 'serial_recovery_hardware_unready' }
+  $ftdi = $state.schema_version -eq 1 -and $state.vendor_id -ceq '0403' -and
+    $state.product_id -ceq '6001' -and $state.serial_number -cmatch '^[A-Za-z0-9._-]{1,64}$'
+  $ch340 = $state.schema_version -eq 2 -and $state.vendor_id -ceq '1A86' -and
+    $state.product_id -ceq '7523' -and $state.instance_id -cmatch '^USB\\VID_1A86&PID_7523\\[A-Z0-9&._-]{1,160}$'
+  if ((-not $ftdi -and -not $ch340) -or $state.result -cne 'ready' -or $state.stable_path -cne $Port -or
+      $state.device_path -cnotmatch '^/dev/tty(?:USB|ACM)[0-9]+$' -or
+      $state.bus_id -cnotmatch '^[0-9]+-[0-9]+$') { throw 'serial_recovery_hardware_unready' }
+  if ($ch340) {
+    $configPath = 'C:\Ruisheng\site\serial-hardware.json'
+    foreach ($path in @('C:\Ruisheng\site',$configPath)) { Assert-SiteSerialPath -Path $path }
+    if ((Get-Item -LiteralPath $configPath).Length -gt 4096) { throw 'serial_recovery_hardware_unready' }
+    $config = ConvertFrom-JsonPreservingDateStrings -Json ([IO.File]::ReadAllText($configPath))
+    $policy = if ($config.adapter.PSObject.Properties.Name -contains 'identity_policy') {
+      [string]$config.adapter.identity_policy
+    } else { 'exact_instance' }
+    if ($config.schema_version -ne 2 -or $config.adapter.vendor_id -ine $state.vendor_id -or
+        $config.adapter.product_id -ine $state.product_id -or $config.adapter.stable_path -cne $Port -or
+        $policy -notin @('exact_instance','single_present_device')) {
+      throw 'serial_recovery_hardware_unready'
+    }
+    if ($policy -ceq 'exact_instance' -and $config.adapter.instance_id -ine $state.instance_id) {
+      throw 'serial_recovery_hardware_unready'
+    }
+    if ($policy -ceq 'single_present_device') {
+      if ($state.identity_policy -cne 'single_present_device' -or
+          $state.configured_instance_id -ine $config.adapter.instance_id) {
+        throw 'serial_recovery_hardware_unready'
+      }
+    }
+  }
+  try { $age = ([DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse($state.timestamp)).TotalSeconds }
+  catch { throw 'serial_recovery_hardware_unready' }
+  if ($age -lt 0 -or $age -gt 20) { throw 'serial_recovery_hardware_stale' }
+  $timeout = Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 15 -ErrorCode 'service_health_timeout'
+  $node = Invoke-NativeResult -FilePath (Join-Path ([Environment]::SystemDirectory) 'wsl.exe') `
+    -Arguments @('-d','docker-desktop','-u','root','--','test','-c',$Port) -TimeoutSeconds $timeout
+  if ($node.ExitCode -ne 0) { throw 'serial_recovery_hardware_unready' }
+}
+
+function Invoke-SerialGatewayRecovery {
+  param([Parameter(Mandatory)]$ExpectedHashes, [Parameter(Mandatory)]$OriginalActive,
+    [Parameter(Mandatory)][string]$ExpectedHead, [Parameter(Mandatory)][DateTimeOffset]$Deadline,
+    [Parameter(Mandatory)]$ComposeModel)
+  if ($ExpectedHead -cne '0013_serial_polling_profile') { throw 'serial_recovery_schema_invalid' }
+  Assert-RetainedStartGuards -ExpectedHashes $ExpectedHashes -OriginalActive $OriginalActive -Deadline $Deadline
+  $configurations = Get-RetainedStartConfigurations -Model $ComposeModel -Deadline $Deadline
+  $ports = @($ComposeModel.services.gw.devices)
+  if ($ports.Count -ne 1 -or $ports[0].source -cne $ports[0].target -or
+      $ports[0].permissions -cne 'rw') { throw 'serial_recovery_port_invalid' }
+  $port = [string]$ports[0].source
+  $expectedError = 'error gathering device information while adding custom device "' + $port + '": no such file or directory'
+  $ids = @{}
+  foreach ($service in $PersistentServices) {
+    $info = Get-RetainedStartService -Service $service -Configuration $configurations[$service] -Deadline $Deadline `
+      -AllowSerialDeviceStartFailure
+    if ($service -ceq 'gw') {
+      if (-not (Test-SerialDeviceStartFailure -State $info.State) -or $info.State.Error -cne $expectedError -or
+          $info.HostConfig.RestartPolicy.Name -cne 'unless-stopped') { throw 'serial_recovery_not_eligible' }
+    }
+    elseif (-not $info.State.Running) { throw 'serial_recovery_peer_stopped' }
+    $ids[$service] = [string]$info.Id
+  }
+  Wait-DependenciesHealthy -ExpectedHashes $ExpectedHashes -OriginalActive $OriginalActive -Deadline $Deadline
+  $timeout = Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 30 -ErrorCode 'service_health_timeout'
+  $head = Invoke-DockerText -Arguments @('exec',$ids.postgres,'psql','-X','-v','ON_ERROR_STOP=1',
+    '-U','ruisheng_admin','-d','ruisheng','-Atqc','SELECT version_num FROM alembic_version') -TimeoutSeconds $timeout
+  if ($head -cne $ExpectedHead) { throw 'serial_recovery_schema_invalid' }
+  Assert-SerialRecoveryHardware -Port $port -Deadline $Deadline
+  Write-LauncherAudit -Event 'serial_recovery_started' -Result 'executing'
+  Assert-RetainedStartGuards -ExpectedHashes $ExpectedHashes -OriginalActive $OriginalActive -Deadline $Deadline
+  foreach ($service in $PersistentServices) {
+    $info = Get-RetainedStartService -Service $service -ExpectedId $ids[$service] `
+      -Configuration $configurations[$service] -Deadline $Deadline -AllowSerialDeviceStartFailure
+    if ($service -ceq 'gw') {
+      if (-not (Test-SerialDeviceStartFailure -State $info.State) -or $info.State.Error -cne $expectedError -or
+          $info.HostConfig.RestartPolicy.Name -cne 'unless-stopped') { throw 'serial_recovery_state_changed' }
+    }
+    elseif (-not $info.State.Running) { throw 'serial_recovery_peer_stopped' }
+  }
+  Assert-SerialRecoveryHardware -Port $port -Deadline $Deadline
+  $timeout = Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 30 -ErrorCode 'service_health_timeout'
+  [void](Invoke-DockerText -Arguments @('start',$ids.gw) -TimeoutSeconds $timeout -Mutation)
+  $health = Wait-AllHealthy -ExpectedHashes $ExpectedHashes -OriginalActive $OriginalActive -Deadline $Deadline
+  Assert-RetainedStartGuards -ExpectedHashes $ExpectedHashes -OriginalActive $OriginalActive -Deadline $Deadline
+  foreach ($service in $PersistentServices) {
+    [void](Get-RetainedStartService -Service $service -ExpectedId $ids[$service] `
+      -Configuration $configurations[$service] -Deadline $Deadline)
+  }
+  return $health
+}
+
+function Assert-RetainedStartGuards {
+  param([Parameter(Mandatory)]$ExpectedHashes, [Parameter(Mandatory)]$OriginalActive,
+    [Parameter(Mandatory)][DateTimeOffset]$Deadline)
+  [void](Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 30 -ErrorCode "service_health_timeout")
+  Renew-Locks
+  Assert-LocksOwned
+  Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot
+  Assert-NoConfigurationDrift -Expected $ExpectedHashes
+  Assert-ActiveReleaseUnchanged -Before $OriginalActive `
+    -After (Resolve-ActiveRelease -ResolvedSiteRoot $SiteRoot).Pointer
+  Assert-LoadedImageIdentity -Images $ExpectedImages -Deadline $Deadline
+  Assert-NoUnexpectedProjectContainers -Deadline $Deadline
+  Assert-RunningPortBindings -Deadline $Deadline
+}
+
+function Invoke-RetainedUpgradeStart {
+  param([Parameter(Mandatory)]$ExpectedHashes, [Parameter(Mandatory)]$OriginalActive,
+    [Parameter(Mandatory)][string]$ExpectedHead, [Parameter(Mandatory)][DateTimeOffset]$Deadline,
+    [Parameter(Mandatory)]$ComposeModel)
+  if ($ExpectedHead -cne "0013_serial_polling_profile") { throw "retained_upgrade_requires_controlled_start" }
+  Assert-RetainedStartGuards -ExpectedHashes $ExpectedHashes -OriginalActive $OriginalActive -Deadline $Deadline
+  $configurations = Get-RetainedStartConfigurations -Model $ComposeModel -Deadline $Deadline
+  $ids = @{}
+  foreach ($service in $PersistentServices) {
+    $info = Get-RetainedStartService -Service $service -Configuration $configurations[$service] -Deadline $Deadline
+    $ids[$service] = [string]$info.Id
+  }
+  Write-LauncherAudit -Event "launcher_started" -Result "executing"
+  foreach ($service in @("postgres", "redis", "gw", "api", "web")) {
+    Assert-RetainedStartGuards -ExpectedHashes $ExpectedHashes -OriginalActive $OriginalActive -Deadline $Deadline
+    # Recheck the entire fixed set before each mutation; a replaced peer is not a safe partial start.
+    foreach ($peer in $PersistentServices) {
+      [void](Get-RetainedStartService -Service $peer -ExpectedId $ids[$peer] -Configuration $configurations[$peer] -Deadline $Deadline)
+    }
+    if ($service -ceq "gw") {
+      Wait-DependenciesHealthy -ExpectedHashes $ExpectedHashes -OriginalActive $OriginalActive -Deadline $Deadline
+      $timeout = Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 30 -ErrorCode "service_health_timeout"
+      $head = Invoke-DockerText -Arguments @("exec", $ids.postgres, "psql", "-X", "-v", "ON_ERROR_STOP=1",
+        "-U", "ruisheng_admin", "-d", "ruisheng", "-Atqc", "SELECT version_num FROM alembic_version") -TimeoutSeconds $timeout
+      if ($head -cne $ExpectedHead) { throw "retained_upgrade_requires_controlled_start" }
+      Assert-RetainedStartGuards -ExpectedHashes $ExpectedHashes -OriginalActive $OriginalActive -Deadline $Deadline
+    }
+    $info = Get-RetainedStartService -Service $service -ExpectedId $ids[$service] -Configuration $configurations[$service] -Deadline $Deadline
+    if (-not $info.State.Running) {
+      $timeout = Get-RemainingTimeoutSeconds -Deadline $Deadline -Maximum 30 -ErrorCode "service_health_timeout"
+      [void](Invoke-DockerText -Arguments @("start", $ids[$service]) -TimeoutSeconds $timeout -Mutation)
+    }
+  }
+  $health = Wait-AllHealthy -ExpectedHashes $ExpectedHashes -OriginalActive $OriginalActive -Deadline $Deadline
+  Assert-RetainedStartGuards -ExpectedHashes $ExpectedHashes -OriginalActive $OriginalActive -Deadline $Deadline
+  foreach ($service in $PersistentServices) {
+    [void](Get-RetainedStartService -Service $service -ExpectedId $ids[$service] -Configuration $configurations[$service] -Deadline $Deadline)
+  }
+  return $health
+}
+
 $activeRelease = $null
 $auditReady = $false
 $succeeded = $false
 $resultCandidate = ""
 try {
+  if ($RecoverSerialGateway) {
+    $NoBrowser = $true
+    $NoUi = $true
+    Initialize-DockerEnvironment
+    $DockerPath = Find-DockerExecutable
+    # The scheduled check never starts Docker Desktop or a manually stopped app.
+    $stateJson = Invoke-DockerText -Arguments @('container','inspect','--format','{{json .State}}','ruisheng-gw') -TimeoutSeconds 15
+    if (-not (Test-SerialDeviceStartFailure -State (ConvertFrom-JsonPreservingDateStrings -Json $stateJson))) {
+      Write-Output 'SKIPPED serial_gateway_recovery_not_needed'
+      exit 0
+    }
+  }
+  $SiteRoot = Resolve-SiteRoot
+  Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot
   Write-Stage "Checking Docker Desktop"
   Initialize-DockerEnvironment
   $DockerPath = Find-DockerExecutable
   Assert-LocalDockerContext
-  Start-OrReuseDockerDesktop
+  if (-not $RecoverSerialGateway) { Start-OrReuseDockerDesktop }
 
   Write-Stage "Verifying the active release"
   $SiteRoot = Resolve-SiteRoot
   $activeRelease = Resolve-ActiveRelease -ResolvedSiteRoot $SiteRoot
   $CandidateRoot = [string]$activeRelease.Root
-  $ExpectedImages = $activeRelease.Images
+  $CandidateImages = $activeRelease.Images
   $resultCandidate = [string]$activeRelease.Pointer.candidate_id
   $StateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
   $SharedLockPath = Join-Path $StateDirectory ".remote-maintenance.lock"
@@ -1120,6 +1918,7 @@ try {
     "-f", $SourceComposeFile, "-f", $SourceOverrideFile, "--env-file", $SourceEnvFile
   )
   $sourceModel = Get-ComposeModel -ComposeArguments $sourceComposeBase
+  $ExpectedImages = Resolve-EffectiveImages -Model $sourceModel -CandidateImages $CandidateImages
   Assert-ComposePolicy -Model $sourceModel -Images $ExpectedImages
   Assert-LoadedImageIdentity -Images $ExpectedImages
   Assert-NoConfigurationDrift -Expected $sourceHashes
@@ -1133,6 +1932,7 @@ try {
   Write-Stage "Acquiring maintenance leases"
   Acquire-LeasedLock -Path $SharedLockPath -Name "shared-maintenance"
   Acquire-LeasedLock -Path $LegacyLockPath -Name "legacy-hotfix"
+  Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot
   Assert-ActiveReleaseUnchanged -Before $activeRelease.Pointer `
     -After (Resolve-ActiveRelease -ResolvedSiteRoot $SiteRoot).Pointer
   Assert-NoConfigurationDrift -Expected $sourceHashes
@@ -1147,6 +1947,18 @@ try {
   Assert-RunningPortBindings -Deadline $healthDeadline
   if (@($health | Where-Object { -not $_.ready }).Count -eq 0) {
     $auditResult = "already_ready"
+  }
+  elseif ($RecoverSerialGateway) {
+    Write-Stage 'Recovering gateway after serial device startup failure'
+    $health = Invoke-SerialGatewayRecovery -ExpectedHashes $sourceHashes -OriginalActive $activeRelease.Pointer `
+      -ExpectedHead ([string]$activeRelease.Manifest.alembic_head) -Deadline $healthDeadline -ComposeModel $sourceModel
+    $auditResult = 'serial_gateway_recovered'
+  }
+  elseif ($RetainedUpgradeContainersPresent) {
+    Write-Stage "Starting the verified existing services"
+    $health = Invoke-RetainedUpgradeStart -ExpectedHashes $sourceHashes -OriginalActive $activeRelease.Pointer `
+      -ExpectedHead ([string]$activeRelease.Manifest.alembic_head) -Deadline $healthDeadline -ComposeModel $sourceModel
+    $auditResult = "succeeded"
   }
   else {
     $VerifiedInputDirectory = Join-Path $StateDirectory "$OperationId.desktop-launcher-inputs"

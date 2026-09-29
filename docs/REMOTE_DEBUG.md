@@ -30,19 +30,35 @@
 
 通过登录页提交无效测试凭据时，真实 API 返回 HTTP 401、业务码 `-101`。Web 应显示“用户名或密码错误”，且不得把这次登录失败广播成已有会话过期；其他受保护 API 的 HTTP 401 或 `-101` 仍会清理已有会话。
 
+目标 Windows 默认执行策略为 Restricted 时，调试工具仅对受控 SSH 子进程传入 `-ExecutionPolicy Bypass`，不修改系统或用户全局策略，订阅校验、文件 ACL 和公钥认证仍照常执行。长租期的剩余毫秒数必须以浮点重载截断到最多 5000 毫秒后再转换为整数，否则一年租约会在 PowerShell 5.1 下溢出并关闭隧道。启动后应继续复核 `Status` 和实际网页访问，不能只依据转发端口瞬间可连接判断成功。
+
 ## 桌面一键启动
+
+安装器将快捷方式固定指向 `C:\Program Files\PowerShell\7\pwsh.exe`，在写入安装文件前确认该程序存在且主版本为 7。目标机当前为 PowerShell 7.6.5，普通用户桌面启动已验收。安装 PowerShell 7 不会自动迁移既有快捷方式；既有站点需备份后单独切换并验收。
 
 目标机桌面上的“润盛监控系统”快捷方式供现场用户启动本机应用。双击后，启动器会复用已运行的 Docker Desktop；Docker 尚未就绪时会启动当前登录用户的 Docker Desktop 并限时等待。随后它只从 `C:\Ruisheng\candidates` 下唯一受保护站点的 `active-release.json` 解析活动候选，不扫描或猜测最新版本。
 
 启动器在任何 Compose 变更前核对站点、状态目录、活动指针和发布文件 ACL，并交叉检查 Manifest、Compose 闭集、`pull_policy: never`、已加载镜像、已有容器镜像及回环端口。需要恢复服务时，它按 `postgres/redis -> migrate -> gw/api/web -> health` 执行，并依次取得 `shared-maintenance` 和 `legacy-hotfix` 租约锁；配置、指针、锁或镜像身份发生漂移会立即停止。服务已经健康时只复核状态并打开 `http://127.0.0.1/`，不会重建或删除卷。
 
-日常双击不需要管理员权限，也不会出现 UAC；安装目录仅 Administrators 和 SYSTEM 可写，`lenovo` 只有读取执行权限。启动日志使用独立的 `C:\Ruisheng\launcher-audit`，不会修改远程维护审计目录。安装器不保存 SSH 密钥、不自连 SSH，也不会修改开机任务、Docker 全局设置或串口配置。管理员进行无浏览器验收时可运行：
+0012到0013升级会保留迁移校验容器和一次性迁移器作为执行证据。校验容器继承的 `api` 标签不表示它是第二个 API 服务。启动器只在同站点受保护 journal 已为 `committed`、迁移阶段为 `completed`，且操作 ID、完整容器 ID、名称、镜像和成功退出状态均匹配时识别这些留存容器；校验容器还必须无网络、只读、无挂载、无宿主端口和设备。普通重复服务、未知容器及状态或权限不合格的留存仍报 `unexpected_project_container`，不得通过删除容器或修改标签、journal 消除报错。
+
+存在这些合格留存时，启动器对停止服务使用专门路径：先完整核验五个既有服务，依据受保护 Compose 和固定镜像默认值逐项比较实际命令、入口、环境、用户、工作目录、挂载卷名/路径/读写、网络及权限/设备配置，确认数据来源和执行配置一致后，按完整 ID 启动已停止的 PostgreSQL 和 Redis；依赖健康且只读查询的数据库版本与活动候选的 `0013_serial_polling_profile` 一致后，再按 ID 启动已停止的 GW、API、Web。该路径沿用双租约、配置/指针/镜像检查和统一截止时间，不运行 Compose 或迁移，不重启已运行服务，并保留所有升级容器。缺少既有服务、身份或配置/状态不安全、数据库版本不匹配时，返回 `retained_upgrade_requires_controlled_start`，需根据现场状态进行受控恢复；若版本不匹配时数据库和缓存已启动，它们保持原状，不会继续启动应用。配置比较不输出环境值或密钥。
+
+日常双击不需要管理员权限，也不会出现 UAC；安装目录仅 Administrators 和 SYSTEM 可写，`lenovo` 只有读取执行权限。启动日志使用独立的 `C:\Ruisheng\launcher-audit`，不会修改远程维护审计目录。安装器不保存 SSH 密钥、不自连 SSH；默认不会修改开机任务、Docker 全局设置或串口配置。管理员进行无浏览器验收时可运行：
 
 ```powershell
-& "C:\Program Files\Ruisheng\Launcher\start_ruisheng_local.ps1" -NoBrowser -NoUi
+& "C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\Ruisheng\Launcher\start_ruisheng_local.ps1" -NoBrowser -NoUi
 ```
 
 输出 `READY` 只表示本机五个服务已按活动候选就绪，不代表生产放行。失败时保留容器、卷、候选和审计现场，并只显示不含环境密钥的错误代码。
+
+### 串口缺失导致启动失败后的自动恢复
+
+安装器的可选参数 `-EnableSerialRecovery` 注册 `Ruisheng-Serial-Gateway-Recovery`，使用现场 Docker 用户的 S4U 身份，每分钟及开机90秒后检查一次。任务隐藏运行、不允许并发，单次最多4分钟；重新注册前保存既有任务XML。省略该参数时保留既有任务配置。
+
+任务调用启动器的 `-RecoverSerialGateway -NoUi -NoBrowser` 模式。网关处于正常运行、普通人工停止或其他错误状态时直接跳过，不启动Docker Desktop。只有Docker明确报告给网关添加已配置串口时出现 `no such file or directory`、退出码255、重启策略为 `unless-stopped`，且另外四项服务已运行，才尝试恢复原网关容器。操作沿用版本、镜像、完整容器ID、执行配置、双租约锁及升级标记检查；数据库必须为活动候选的0013版本，受保护的硬件ready记录不超过20秒，且WSL中的别名确实指向字符设备。启动前重新核对这些条件，恢复后复核全部服务健康。过程不运行迁移、不重建容器。
+
+维护整站仍使用 `StopApp`。如要保留一个已因串口缺失而启动失败的网关处于停止状态，先禁用该恢复任务；对已经停止的容器再次执行Docker stop不一定留下可区别的状态，不能作为暂停自动恢复的方式。重新启用前确认维护已结束。此机制处理启动竞态，不修复运行中的UART帧错误、串口超时或拔插后仍运行但串口已失效的容器。现场故障恢复的实际时延需用后续事件或受控演练验收。
 
 ## 人工收款后的软件租约
 
@@ -80,6 +96,8 @@ uv run python tools/entitlement.py issue `
 
 目标机现有固定 Python 3.11 在 `-I -S` 隔离模式下不提供 `cryptography`，因此首次纳管必须另行构建最小依赖目录，不能向现有 qualification runtime 根安装包。使用 Python 3.11 在受保护的本机暂存区安装固定版本 `cryptography` 及其必需依赖 `cffi`、`pycparser`，移除缓存后，为 `vendor` 内每个文件生成按区分大小写相对路径排序的清单。清单每行必须是小写 SHA-256、一个制表符和使用 `/` 的相对路径，并以一个 LF 结尾：
 
+首次安装前还须确认目标机 `C:\ProgramData\Ruisheng\runtime\python.exe` 本身具有受保护的显式 Administrators/SYSTEM 权限，而不只是从父目录继承；仅有继承权限会被 verifier 拒绝。若需要固定现有权限，应由管理员先核验文件签名、哈希和原有 ACL，保留变更记录，只转换已经确认的权限并复核文件字节不变。不要替换共享 Python 运行时，也不要放宽 verifier 的 ACL 检查。本机依赖目录及所有子项也必须符合发布工具的精确权限要求，不能夹带其他账号或沙箱组的权限。
+
 ```powershell
 $Stage = "C:\ProtectedRelease\entitlement-runtime"
 py -3.11 -m pip install --only-binary=:all: --target "$Stage\vendor" `
@@ -87,11 +105,14 @@ py -3.11 -m pip install --only-binary=:all: --target "$Stage\vendor" `
 Get-ChildItem -LiteralPath "$Stage\vendor" -Directory -Filter __pycache__ -Recurse |
   Remove-Item -Recurse -Force
 $VendorRoot = (Resolve-Path "$Stage\vendor").Path
-[string[]]$Lines = @(Get-ChildItem -LiteralPath $VendorRoot -File -Recurse | ForEach-Object {
+$Hashes = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+Get-ChildItem -LiteralPath $VendorRoot -File -Recurse | ForEach-Object {
   $Relative = $_.FullName.Substring($VendorRoot.Length + 1).Replace("\", "/")
-  "{0}`t{1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $Relative
-})
-[Array]::Sort($Lines, [StringComparer]::Ordinal)
+  $Hashes.Add($Relative, (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())
+}
+[string[]]$Paths = @($Hashes.Keys)
+[Array]::Sort($Paths, [StringComparer]::Ordinal)
+$Lines = foreach ($Relative in $Paths) { "{0}`t{1}" -f $Hashes[$Relative], $Relative }
 [IO.File]::WriteAllText("$Stage\vendor-manifest.sha256", (($Lines -join "`n") + "`n"), [Text.Encoding]::ASCII)
 ```
 
@@ -103,7 +124,9 @@ $VendorRoot = (Resolve-Path "$Stage\vendor").Path
 
 本机两个远程入口不从 `PATH` 解析安全工具：SSH、SCP 和 ssh-keygen 固定到 Windows System32，并要求有效的 Microsoft Authenticode 签名。runtime 入口还要求受保护的 `C:\ProgramData\Ruisheng\publisher-trust` 根及 `release-allowed-signers` 只能由当前发布账号、Administrators 或 SYSTEM 写入。日常 grant 安装默认使用仓库 `.venv\Scripts\python.exe`，要求有效的 Python Software Foundation Authenticode 签名并以 `-I -S -B` 运行；它只显式注入受保护且通过规范清单、闭集、ACL 和逐文件哈希复核的 `C:\ProgramData\Ruisheng\entitlement-build\vendor`，不会加载虚拟环境或用户 site-packages 的 `.pth`。仓库位置不同才用绝对 `-LocalPythonPath` 覆盖，不能传相对路径。runtime 包和 grant 都先复制到仅当前用户、Administrators 与 SYSTEM 可写的本机快照，保持文件句柄直到传输完成；源文件随后被替换也不会改变已批准上传内容。快照根、闭集文件和删除边界异常时会拒绝，不会递归删除边界外路径。
 
-签名包准备完成后，本机只需执行受审查的远程入口，不需要在目标机输入命令。该入口仅接受 Tailscale 地址和 public-key-only SSH，上传目录会先收紧为 Administrators/SYSTEM，成功回执明确声明未重启服务且未修改设备配置：
+签名包准备完成后，本机以管理员权限执行受审查的远程入口，以便设置受保护的快照权限，不需要在目标机输入命令。该入口仅接受 Tailscale 地址和 public-key-only SSH，上传目录会先收紧为 Administrators/SYSTEM，成功回执明确声明未重启服务且未修改设备配置：
+
+目标机默认禁止脚本执行时，两个权益远程入口只为其单次 PowerShell 进程传入 `-ExecutionPolicy Bypass`，不修改计算机或用户的长期策略。此参数不替代发布签名、固定信任锚、文件哈希或 ACL 校验。Windows SSH 会话中的 OpenSSH 验签使用受验证的固定 `cmd.exe /d /q /v:off` 从清单文件读取输入，避免匿名管道挂起；传入命令处理器的所有路径均须通过严格字符白名单。
 
 ```powershell
 .\tools\remote_entitlement_runtime_install.ps1 `
@@ -236,7 +259,7 @@ $Reason = "approved signed full release upgrade"
   -CandidatePath $Candidate -SiteRoot $SiteRoot -OperationId $Operation -DryRun
 ```
 
-首版只允许候选 Alembic head 与目标数据库 head 完全一致。Apply 前必须核对活动版本指针、候选逻辑身份、平台、资源与锁，并针对同一操作 ID、候选和原因取得当次批准：
+默认只允许候选 Alembic head 与目标数据库 head 完全一致。此次批准的0012到0013例外及其验证进度见下文；其他迁移边仍拒绝。Apply 前必须核对活动版本指针、候选逻辑身份、平台、资源与锁，并针对同一操作 ID、候选和原因取得当次批准：
 
 ```powershell
 .\tools\remote_full_upgrade.ps1 -Action Apply -Target $Target `
@@ -258,7 +281,7 @@ $Reason = "approved signed full release upgrade"
 
 目标机固定 verifier 返回退出码 `2`、publisher `VERIFIED` 和 `B-04 remains BLOCKED` 是预期结果：它只证明签名与完整包通过，网络边界仍由 updater 独立检查，B-04 现场验收没有因此解除。切换前会生成数据库逻辑备份、角色备份和 SHA-256 回执；只修改六个发布字段，其他站点配置逐字保留。成功时最后提交受保护的 `active-release.json`，其候选 ID、逻辑身份、源码提交、候选根、站点根和操作 ID 是后续维护与热修的唯一版本来源。
 
-失败时状态机持锁恢复旧环境和旧服务；它不执行 `down`、不删卷，也不把镜像恢复称为数据库恢复。中断或锁丢失返回 `uncertain`，此时保留现场并使用相同操作 ID、完全相同的原因和新的当次批准执行 Recover：
+同head路径失败时，状态机持锁恢复旧环境和旧服务；它不执行 `down`、不删卷，也不把镜像恢复称为数据库恢复。跨版本路径不能沿用这一回退判断。中断或锁丢失时保留现场，使用相同操作 ID、完全相同的原因和新的当次批准执行 Recover：
 
 ```powershell
 .\tools\remote_full_upgrade.ps1 -Action Recover -Target $Target `
@@ -266,6 +289,24 @@ $Reason = "approved signed full release upgrade"
 ```
 
 `recovery_failed` 时不得手工改指针或删除 journal、候选、备份、锁和审计。该工具不会定时检测更新或自动拉取，也不替代 B-04、B-07、B-08 的现场验收。
+
+### 0012到0013的受控例外
+
+此次例外仅对应 `0012_alarm_notification_runtime -> 0013_serial_polling_profile`，不提供任意目标revision或数据库回灌参数。[批准规格](superpowers/specs/spec-bounded-schema-upgrade.md)要求固定迁移文件摘要、已验签候选及相同的PostgreSQL/Redis镜像身份。当前仍处于隔离验证阶段，尚未在目标部署；进度与失败证据见[实施记录](reports/2026-09-08-bounded-schema-upgrade.md)。
+
+正式执行前必须安装并核验受保护的桌面启动器及 `C:\Program Files\Ruisheng\Launcher\schema-upgrade-guard.json` 凭据，保留替换前文件和摘要，并检查目标实际启动入口。只更新仓库脚本不等于目标已具备保护，不能手工编造凭据绕过门禁。
+
+维护状态保存在站点 `.remote-maintenance-state/full-upgrade-maintenance.json`，操作明细保存在 `full-upgrade-<operation_id>.json`。`active` 标记没有自动过期机制；锁租期已过、操作系统重启或双击图标都不是解除条件。升级期间保存并临时禁止原应用角色登录、停止已识别应用并禁用自动重启；桌面、远程启停、热修和管理员初始化入口必须拒绝旁路操作，只读Status仍可查询。
+
+备份必须使用一致快照，实际还原到无生产网络、无对外端口、无生产卷挂载的独立同镜像Timescale实例，并验证内容、结构和权限。还原失败、资源不足或校验不符时不得迁移生产库；隔离还原资产停止后保留，生产备份、角色备份和环境快照也保留。恢复决策如下：
+
+| 实际数据库状态 | Recover行为 |
+|---|---|
+| 仍为0012，迁移已终止，且未尝试启动新应用 | 核验源结构和身份，恢复原程序及原角色状态 |
+| 已为0013且结构完整 | 保留现有数据，只完成同一已验签新候选的恢复与提交 |
+| 迁移仍运行、head或结构不明、身份漂移或失锁 | 保留维护保护和恢复材料，不猜测回退结果 |
+
+新应用已经写入的配置、软删后复用地址记录和历史数据，不得由旧备份覆盖。`recovery_failed` 可以在问题解决并再次获准后按相同操作重试Recover；不得通过删除维护标记或直接运行旧Compose来“解锁”。正式成功必须同时核验数据库0013、五服务内部健康、镜像/源码身份、活动指针和审计；这些结果不能替代现场设备与点位含义验收。
 
 ## 当前门禁
 

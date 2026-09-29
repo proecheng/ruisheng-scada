@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "installation": {
+    "ok": true,
+    "at": "2026-09-17T10:01:53.6422490+08:00",
+    "source_commit": "933218ba72d76c8980bc14e4d073579aa0c49b29",
+    "launcher_sha256": "d795d5cc53e807c4a766fbb21cf910f0843cc9bb0ab4c41141b2c44b4f5490e6",
+    "stage": "C:\\Ruisheng\\tools\\serial-recovery-933218ba72d76c8980bc14e4d073579aa0c49b29",
+    "task_name": "Ruisheng-Serial-Gateway-Recovery",
+    "task_state": "Ready",
+    "task_user": "lenovo",
+    "task_logon": "S4U",
+    "action": "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"C:\\Program Files\\Ruisheng\\Launcher\\start_ruisheng_local.ps1\" -RecoverSerialGateway -NoUi -NoBrowser -StartupTimeoutSeconds 120",
+    "healthy_noop_verified": true,
+    "services_unchanged": true,
+    "services": [
+      {
+        "id": "c089b4db9777b21c67f776c002bffabb09b3a97a3d6e34f8bad0ec66f7a06f07",
+        "name": "/ruisheng-api",
+        "image": "sha256:94300d0e2c5255aa324d068dd743aa8a438373283a8b0caae997af055ba10e80",
+        "started": "2026-09-16T09:44:01.706208422Z",
+        "status": "running"
+      },
+      {
+        "id": "2bb398f0970aecc19163a65db169055e927956a9b29af9178126ee831de1d87a",
+        "name": "/ruisheng-gw",
+        "image": "sha256:43ee186a7b543c5e72be6b999b7442a77ce6a765d7fe6c1ccca362e731db74f7",
+        "started": "2026-09-16T16:47:31.665303736Z",
+        "status": "running"
+      },
+      {
+        "id": "1fbd666acf9bfa7be9c432ee1e8f6e18c0544233da74ec6b14caaf46326c6240",
+        "name": "/ruisheng-postgres",
+        "image": "sha256:50a2abfa8bad354f4bc1567c6edf7426586fd99ee8cd8982bbaee157a460c6b1",
+        "started": "2026-09-16T09:44:01.718096112Z",
+        "status": "running"
+      },
+      {
+        "id": "75acd4e5409336ed9fb8fbd87eb5d116f176907d26a9f17d2913739eb2787d03",
+        "name": "/ruisheng-redis",
+        "image": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+        "started": "2026-09-16T09:44:01.70325203Z",
+        "status": "running"
+      },
+      {
+        "id": "d7d78a4cc05f5cf5130082b00f2702890a57732e4912019b30eb86077fa8cb7d",
+        "name": "/ruisheng-web",
+        "image": "sha256:d87040574072eb806ebab3007fb33ed7abee3170c4940e98bc9d892d6c868d7c",
+        "started": "2026-09-16T09:44:01.715015111Z",
+        "status": "running"
+      }
+    ],
+    "original_launcher_sha256": "c9a27920b676d82d6ca1a6d1dd786bcc03bab25288f44e4f9cd1d22aba6a7cb4",
+    "backup_launcher": "C:\\Ruisheng\\tools\\serial-recovery-933218ba72d76c8980bc14e4d073579aa0c49b29\\launcher.previous.ps1",
+    "backup_receipt": "C:\\Ruisheng\\tools\\serial-recovery-933218ba72d76c8980bc14e4d073579aa0c49b29\\guard.previous.json",
+    "active_candidate_id": "deploy-20260915.4",
+    "live_failure_injection_performed": false,
+    "leases_released": true
+  },
+  "scheduler_verification": {
+    "at": "2026-09-17T10:04:10.5034504+08:00",
+    "task_name": "Ruisheng-Serial-Gateway-Recovery",
+    "state": "Ready",
+    "last_run": "2026-09-17T10:03:52.0000000+08:00",
+    "last_result": 0,
+    "next_run": "2026-09-17T10:04:51.0000000+08:00",
+    "enabled": true,
+    "execution_limit": "PT4M",
+    "multiple_instances": "IgnoreNew",
+    "actions": [
+      {
+        "Execute": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+        "Arguments": "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"C:\\Program Files\\Ruisheng\\Launcher\\start_ruisheng_local.ps1\" -RecoverSerialGateway -NoUi -NoBrowser -StartupTimeoutSeconds 120"
+      }
+    ],
+    "triggers": [
+      {
+        "type": "MSFT_TaskTimeTrigger",
+        "enabled": true,
+        "interval": "PT1M",
+        "duration": null,
+        "delay": null
+      },
+      {
+        "type": "MSFT_TaskBootTrigger",
+        "enabled": true,
+        "interval": null,
+        "duration": null,
+        "delay": "PT1M30S"
+      }
+    ],
+    "launcher_sha256": "d795d5cc53e807c4a766fbb21cf910f0843cc9bb0ab4c41141b2c44b4f5490e6",
+    "receipt_matches": true,
+    "guard_version": "bounded-schema-v1",
+    "shared_lock": false,
+    "legacy_lock": false
+  },
+  "read_only_runtime_preflight": {
+    "at": "2026-09-17T09:57:27.3403431+08:00",
+    "read_only": true,
+    "candidate": "deploy-20260915.4",
+    "services": [
+      {
+        "service": "postgres",
+        "id": "1fbd666acf9bfa7be9c432ee1e8f6e18c0544233da74ec6b14caaf46326c6240",
+        "status": "running",
+        "started": "2026-09-16T09:44:01.718096112Z",
+        "configuration_verified": true
+      },
+      {
+        "service": "redis",
+        "id": "75acd4e5409336ed9fb8fbd87eb5d116f176907d26a9f17d2913739eb2787d03",
+        "status": "running",
+        "started": "2026-09-16T09:44:01.70325203Z",
+        "configuration_verified": true
+      },
+      {
+        "service": "gw",
+        "id": "2bb398f0970aecc19163a65db169055e927956a9b29af9178126ee831de1d87a",
+        "status": "running",
+        "started": "2026-09-16T16:47:31.665303736Z",
+        "configuration_verified": true
+      },
+      {
+        "service": "api",
+        "id": "c089b4db9777b21c67f776c002bffabb09b3a97a3d6e34f8bad0ec66f7a06f07",
+        "status": "running",
+        "started": "2026-09-16T09:44:01.706208422Z",
+        "configuration_verified": true
+      },
+      {
+        "service": "web",
+        "id": "d7d78a4cc05f5cf5130082b00f2702890a57732e4912019b30eb86077fa8cb7d",
+        "status": "running",
+        "started": "2026-09-16T09:44:01.715015111Z",
+        "configuration_verified": true
+      }
+    ],
+    "hardware_verified": true
+  },
+  "sample_snapshot_at": "2026-09-17T10:04:12.5379939+08:00",
+  "last_hour": {
+    "label": "last_1h",
+    "starts": "2026-09-17T01:04:11.441038+00:00",
+    "ends": "2026-09-17T02:04:01.441038+00:00",
+    "rounds": 641,
+    "first_sample": "2026-09-17T01:04:15.786259+00:00",
+    "last_sample": "2026-09-17T02:03:57.194878+00:00",
+    "complete_rounds": 641,
+    "null_values": 0,
+    "median_interval_seconds": 5.067208,
+    "p95_interval_seconds": 9.9757925,
+    "max_interval_seconds": 20.216023,
+    "long_gap_count": 68,
+    "estimated_missing_between_samples": 72,
+    "trailing_age_seconds": 4.24616
+  },
+  "same_window_timeout_events": 72,
+  "logs_possibly_truncated": false,
+  "validation": {
+    "unique_tests_passed": 51,
+    "initial_run": {
+      "passed": 50,
+      "failed": 1,
+      "failure": "old assertion forbade any optional task registration"
+    },
+    "final_rerun": {
+      "passed": 11,
+      "failed": 0
+    },
+    "live_failure_injection": false
+  },
+  "sources": [
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\serial-recovery-installation.json",
+      "sha256": "5da29fbcdf9f28da4b929e6704dd6fa2d045bc694d4e461484780eb12b5b727c"
+    },
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\serial-recovery-postcheck.json",
+      "sha256": "949e9fbeecfe25919314d2674f8ef16561ecaf3b14f189a3b2d00ebb6a8f1623"
+    },
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\serial-recovery-runtime-check.json",
+      "sha256": "c40ae845807c6eca0c30b47d75af34b0eeccf9330142aca4f354094a1257378c"
+    },
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\serial-recovery-tests.xml",
+      "sha256": "04d3ded6036431bdfde790f19b7ba44fd40fd87adb0284bf5cad12e002ac79dd"
+    },
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\serial-recovery-tests-final.xml",
+      "sha256": "d90c773d6b13e4ac67bf86ecdc3253f9b0eab92e030b55eeeb4aac6b32cbacd6"
+    },
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-serial-recovery-installed.json",
+      "sha256": "088ea785f33498cca658c1801e58680987820528b2d672a4347720127c15840b"
+    }
+  ]
+}

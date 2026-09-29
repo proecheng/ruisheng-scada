@@ -3,24 +3,28 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response
 from ruisheng_shared.errors.codes import BizError, ErrCode
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config_changes import mark_config_changed, publish_config_changed
 from ..core.rbac import CurrentUser, check_ca, check_role
 from ..core.response import ApiResponse, ok
 from ..core.tenant import apply_tenant_context
 from ..db.repositories import devices as devices_repo
+from ..db.repositories import points as points_repo
 from ..db.repositories import timeseries as ts_repo
-from ..deps import get_current_user, get_session
+from ..deps import get_current_user, get_redis, get_session
 from .schemas.devices import (
     DeviceCreateRequest,
     DeviceEnabledRequest,
     DeviceOut,
     DeviceUpdateRequest,
+    validate_device_transport,
 )
+from .schemas.points import validate_point_read_profile
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
@@ -66,6 +70,7 @@ async def create_device(
     body: DeviceCreateRequest,
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    r: Any = Depends(get_redis),
 ) -> ApiResponse:
     check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
     async with session.begin():
@@ -85,6 +90,8 @@ async def create_device(
         if "dev_ip" in create_fields:
             create_fields["dev_ip"] = str(create_fields["dev_ip"])
         d = await devices_repo.create_device(session, **create_fields, usr_group=user.usr_group)
+        config_version = await mark_config_changed(session, d.dev_number)
+    await publish_config_changed(r, d.dev_number, config_version)
     return ok(data=DeviceOut.model_validate(d).model_dump())
 
 
@@ -94,6 +101,7 @@ async def update_device(
     body: DeviceUpdateRequest,
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    r: Any = Depends(get_redis),
 ) -> ApiResponse:
     check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
     check_ca(user, bit=0x02)
@@ -106,7 +114,7 @@ async def update_device(
         raise BizError(ErrCode.BAD_PARAM, "no fields to update")
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
-        d = await devices_repo.get_by_dev_number(session, dev_number)
+        d = await devices_repo.get_by_dev_number(session, dev_number, for_update=True)
         if d is None:
             raise BizError(ErrCode.BAD_PARAM, "device not found")
         if (
@@ -118,6 +126,23 @@ async def update_device(
         target_transport = updates.get("transport_type", d.transport_type)
         target_serial_port = updates.get("serial_port", d.serial_port)
         target_modbus_addr = updates.get("modbus_addr", d.modbus_addr)
+        target_read_profile = str(updates.get("read_profile", d.read_profile))
+        try:
+            validate_device_transport(
+                transport_type=str(target_transport),
+                serial_port=str(target_serial_port) if target_serial_port is not None else None,
+                read_profile=target_read_profile,
+            )
+            if target_read_profile == "zero_origin_38":
+                for point in await points_repo.list_points(session, dev_number):
+                    validate_point_read_profile(
+                        target_read_profile,
+                        fun_code=point.fun_code,
+                        point_number=point.point_number,
+                        value_type=point.value_type,
+                    )
+        except ValueError as exc:
+            raise BizError(ErrCode.BAD_PARAM, str(exc)) from exc
         if target_transport == "serial" and isinstance(target_serial_port, str):
             endpoint = await devices_repo.get_serial_endpoint(
                 session,
@@ -127,10 +152,8 @@ async def update_device(
             if endpoint is not None and endpoint.dev_number != dev_number:
                 raise BizError(ErrCode.BAD_PARAM, "serial_port and modbus_addr already in use")
         await devices_repo.update_device_fields(session, d, updates)
-        await session.execute(
-            text("UPDATE devices SET update_flag = 1 WHERE dev_number = :d"),
-            {"d": dev_number},
-        )
+        config_version = await mark_config_changed(session, dev_number)
+    await publish_config_changed(r, dev_number, config_version)
     return ok(data=DeviceOut.model_validate(d).model_dump())
 
 
@@ -140,12 +163,13 @@ async def set_device_enabled(
     body: DeviceEnabledRequest,
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    r: Any = Depends(get_redis),
 ) -> ApiResponse:
     check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
     check_ca(user, bit=0x02)
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
-        d = await devices_repo.get_by_dev_number(session, dev_number)
+        d = await devices_repo.get_by_dev_number(session, dev_number, for_update=True)
         if d is None:
             raise BizError(ErrCode.BAD_PARAM, "device not found")
         await devices_repo.update_device_fields(
@@ -153,10 +177,10 @@ async def set_device_enabled(
             d,
             {
                 "is_enabled": body.is_enabled,
-                "is_online": d.is_online if body.is_enabled else False,
-                "update_flag": 1,
             },
         )
+        config_version = await mark_config_changed(session, dev_number)
+    await publish_config_changed(r, dev_number, config_version)
     return ok(data=DeviceOut.model_validate(d).model_dump())
 
 
@@ -165,14 +189,17 @@ async def delete_device(
     dev_number: str,
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    r: Any = Depends(get_redis),
 ) -> ApiResponse:
     check_role(user, allowed=("Company", "GroupCompany", "Administrators"))
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
-        d = await devices_repo.get_by_dev_number(session, dev_number)
+        d = await devices_repo.get_by_dev_number(session, dev_number, for_update=True)
         if d is None:
             raise BizError(ErrCode.BAD_PARAM, "device not found")
         await devices_repo.soft_delete(session, d)
+        config_version = await mark_config_changed(session, dev_number)
+    await publish_config_changed(r, dev_number, config_version)
     return ok(data={"deleted": dev_number})
 
 
@@ -234,9 +261,15 @@ async def history(
             offset=offset,
             limit=limit,
         )
-    if interval > 1:
+    downsampled = interval > 1
+    if downsampled:
         response.headers["X-Downsampled"] = "true"
         response.headers["X-Sample-Interval-S"] = str(interval)
     return ok(
-        data={"rows": rows, "next_offset": offset + len(rows) if len(rows) == limit else None}
+        data={
+            "rows": rows,
+            "next_offset": offset + len(rows) if len(rows) == limit else None,
+            "downsampled": downsampled,
+            "sample_interval_s": interval,
+        }
     )

@@ -1,0 +1,13 @@
+{
+  "operation_id": "1c95b8c8-8f92-4e8b-962f-207800c7e9c9",
+  "reason": "approved point pipeline fixes and bounded FC3 profile extension",
+  "target": "lenovo@100.109.90.21",
+  "site_root": "C:\\Ruisheng\\candidates\\site-deploy-20260831.1",
+  "previous_candidate": "deploy-20260905.2",
+  "candidate_id": "deploy-20260907.1",
+  "release_worktree": "C:\\ProgramData\\Ruisheng\\publisher-build\\point-pipeline-release-20260907",
+  "operator_worktree": "C:\\ProgramData\\Ruisheng\\publisher-build\\point-pipeline-operator-20260907",
+  "authorization": "Current thread user explicitly approved signed fix deployment and expanded read-only register testing on 2026-09-07.",
+  "excluded_actions": ["device register writes", "OS restart", "Docker Desktop restart", "production point import", "account creation", "subscription changes", "schema changes", "GitHub push or merge"],
+  "extended_scope": "b09-9600-8n1-unit1-fc3-r0-5-r6-26-r27-35"
+}

@@ -44,7 +44,7 @@ while ($true) {
     ).TotalMilliseconds
   } catch { exit 42 }
   if ($remaining -le 0) { exit 42 }
-  Start-Sleep -Milliseconds ([int][Math]::Min(5000, [Math]::Ceiling($remaining)))
+  Start-Sleep -Milliseconds ([int][Math]::Min([double]5000, [Math]::Ceiling($remaining)))
 }
 '@
   return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
@@ -203,7 +203,8 @@ function Start-Tunnel {
     "-L", "127.0.0.1:${GwDevicePort}:127.0.0.1:5020",
     $Target,
     "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-    "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", (Get-RemoteSupportGuard)
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", (Get-RemoteSupportGuard)
   )
   $process = Start-Process -FilePath $SshPath -ArgumentList $sshArguments -PassThru `
     -WindowStyle Hidden -RedirectStandardOutput $StdoutLog -RedirectStandardError $StderrLog
@@ -330,7 +331,7 @@ Write-Output "web=$([int]$web.StatusCode)"
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($remoteScript))
   & $SshPath -T -F NUL -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 `
     $Target C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe `
-    -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded
+    -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded
   if ($LASTEXITCODE -ne 0) { throw "Remote service health check failed." }
 }
 

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from dataclasses import replace
 
+import pytest
 from ruisheng_gw.scheduler.bus_lock import BusLocks
 from ruisheng_gw.scheduler.clock import FakeClock
-from ruisheng_gw.scheduler.poller import poll_once, poller_loop
+from ruisheng_gw.scheduler.poller import _build_poll_reads, poll_once, poller_loop
 from ruisheng_gw.transport.session import PendingRead
 
 
@@ -87,6 +89,46 @@ async def test_poll_once_writes_frame() -> None:
     assert sess.write_log[0][0] == 7
 
 
+async def test_tcp_poll_waiting_for_lock_cannot_overwrite_new_serial_transaction():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ruisheng_gw.domain.device import Device
+    from ruisheng_gw.domain.registry import Registry, RegistryEntry
+    from ruisheng_gw.transport.session import SessionMap
+
+    registry = Registry()
+    entry = RegistryEntry(
+        device=Device(dev_number="DEV-001", usr_group="ug"), update_interval_decisec=10
+    )
+    _add_default_point(entry)
+    registry._entries["DEV-001"] = entry
+    sessions = SessionMap()
+    old_writer = MagicMock()
+    old_writer.drain = AsyncMock()
+    sessions.bind(dev_number="DEV-001", writer=old_writer, bus_id="TCP")
+    locks = BusLocks(timeout_sec=5)
+    async with locks.acquire("TCP"):
+        task = asyncio.create_task(
+            poll_once(
+                dev_number="DEV-001",
+                entry=entry,
+                session=sessions,
+                bus_locks=locks,
+                registry=registry,
+            )
+        )
+        await _drain()
+        assert not task.done()
+        new_entry = replace(entry, transport_type="serial", serial_port="COM4")
+        registry._entries["DEV-001"] = new_entry
+        sessions.bind_serial(dev_number="DEV-001", writer=MagicMock(), bus_id="COM4")
+        pending = PendingRead("DEV-001", 3, 0, 1, registry_entry=new_entry, bus_id="COM4")
+        sessions.set_pending_read("DEV-001", pending)
+    await asyncio.wait_for(task, timeout=5)
+    old_writer.write.assert_not_called()
+    assert sessions.get("DEV-001").pending_read is pending
+
+
 async def test_poll_once_uses_configured_fun_code_and_address() -> None:
     sess = FakeSession()
     sess.writer = sess
@@ -161,6 +203,66 @@ async def test_poller_loop_respects_interval() -> None:
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.parametrize("addr", [1, 7, 247])
+def test_fixed_profile_does_not_shrink_for_sparse_display_points(addr):
+    from ruisheng_gw.domain.device import Device
+    from ruisheng_gw.domain.registry import RegistryEntry
+
+    entry = RegistryEntry(
+        device=Device(dev_number="S", usr_group="tenant"),
+        update_interval_decisec=10,
+        transport_type="serial",
+        serial_port="COM3",
+        modbus_addr=addr,
+        read_profile="zero_origin_38",
+    )
+    _add_default_point(entry)
+    entry.points[1] = replace(
+        entry.points[1], point=replace(entry.points[1].point, point_number=35)
+    )
+    reads = _build_poll_reads(entry)
+    assert [(read.fun_code, read.start_addr, read.quantity) for read in reads] == [(3, 0, 38)]
+
+
+@pytest.mark.parametrize("value_type", ["有符号字节", "无符号字节"])
+def test_fixed_profile_polls_full_word_byte_types(value_type):
+    from ruisheng_gw.domain.device import Device
+    from ruisheng_gw.domain.registry import RegistryEntry
+
+    entry = RegistryEntry(
+        device=Device(dev_number="S", usr_group="tenant"),
+        update_interval_decisec=10,
+        transport_type="serial",
+        serial_port="COM3",
+        read_profile="zero_origin_38",
+    )
+    _add_default_point(entry)
+    entry.points[1] = replace(
+        entry.points[1], point=replace(entry.points[1].point, value_type=value_type)
+    )
+    reads = _build_poll_reads(entry)
+    assert [(read.fun_code, read.start_addr, read.quantity) for read in reads] == [(3, 0, 38)]
+
+
+@pytest.mark.parametrize(
+    "changes", [{"fun_code": 4}, {"point_number": 38}, {"point_number": 37, "value_type": "双字"}]
+)
+def test_fixed_profile_rejects_invalid_point_ranges(changes):
+    from ruisheng_gw.domain.device import Device
+    from ruisheng_gw.domain.registry import RegistryEntry
+
+    entry = RegistryEntry(
+        device=Device(dev_number="S", usr_group="tenant"),
+        update_interval_decisec=10,
+        transport_type="serial",
+        serial_port="COM3",
+        read_profile="zero_origin_38",
+    )
+    _add_default_point(entry)
+    entry.points[1] = replace(entry.points[1], point=replace(entry.points[1].point, **changes))
+    assert _build_poll_reads(entry) == []
 
 
 async def test_poller_skips_when_writer_none() -> None:

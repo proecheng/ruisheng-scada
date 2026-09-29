@@ -1,0 +1,32 @@
+{
+  "candidate_id": "deploy-20260907.1",
+  "source_commit": "2150b5ee904760ce0af4483c201009b8744669a2",
+  "operator_commit": "1c3459c",
+  "logical_identity": "sha256:961c3a28b4b1380c2e100c04b70f9b2a825ba2e2cda05960a77d1ee43218a810",
+  "sha256sums_sha256": "76dbdf969bb7cc159bcca4401639062e4fc02050549065f3e65dc4d67eb35a76",
+  "signature_sha256": "d2eedffbf5ef53aea47048430fabd5e80bff29f5ae97949356387f23ddec037f",
+  "bytes": 543858089,
+  "alembic_head": "0012_alarm_notification_runtime",
+  "platform": "linux/amd64",
+  "key_fingerprint": "SHA256:Go/TiuSZ89zJvTCzVick7GT6gP6yrOK+CRdYMRp07Fk",
+  "publisher": "ruisheng-release",
+  "namespace": "ruisheng-candidate-v1",
+  "gw_image_id": "sha256:becb5435ecff9449f7fe9d39e655d0d8d33c7cb14629a33247ed0a0b29c420b6",
+  "probe_sha256": "c2d90ecce3c5a221725866f187e3ed1cd9b332ef484da4c67e335e12229f4eff",
+  "runner_sha256": "b783a8fec467b76f26a10404474e659f917e50efc06cf780fbc76375fbd6f7a6",
+  "local_verification": {
+    "release_signature_upgrade_modbus_gateway": {"passed":654,"skipped":2},
+    "api_and_shared": {"passed":593,"skipped":8},
+    "operator_upgrade_suite": {"passed":60,"skipped":0},
+    "modified_source_ruff_mypy": "passed",
+    "delta_roundtrip_all_five": "passed",
+    "temporary_signer_stopped": true
+  },
+  "transport": {
+    "type": "zstd patch-from existing signed archives, followed by exact SHA-256 and normal publisher verification",
+    "old_candidate_unchanged": true,
+    "original_bulk_upload_stopped_before_target_apply": true,
+    "retained_partial_upload": "C:\\Users\\lenovo\\AppData\\Local\\Temp\\ruisheng-point-release-20260907-delta\\previous-upload",
+    "delta_bytes": 111421417
+  }
+}

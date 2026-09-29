@@ -1,0 +1,167 @@
+{
+  "candidate_id": "deploy-20260907.2",
+  "source_commit": "4de3d31c5766f0f04905756965f83c564ecce4cc",
+  "logical_identity": "sha256:69cd4b9383d4b45d911eed070aaac1ca68292ab134bb123b7da015b598d76ffd",
+  "images": [
+    {
+      "component": "postgres",
+      "old_sha256": "cd114aa1242ca3f2f53cb08141708313454cb5ae783ad4de3acf99fcfdd5c693",
+      "new_sha256": "e4ca04c4591e2a6f4b63c4fdba4c67f6d1c910a0abf6c48876be246e1fbfda43",
+      "image_id": "sha256:50a2abfa8bad354f4bc1567c6edf7426586fd99ee8cd8982bbaee157a460c6b1",
+      "patch_sha256": "c64bcea1f66bd30081b1e97a7f46cfa03343dca44c7905220509ab172d06e4bd",
+      "patch_bytes": 366294
+    },
+    {
+      "component": "redis",
+      "old_sha256": "c95401e12023caf124380960be7e5426f7dd6271595b6144d75aca3360764126",
+      "new_sha256": "2ca52e1250d79f932d973d87bc3f70449c87c9c3134777715c2a84c38d5ad0f6",
+      "image_id": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "patch_sha256": "1d270fbb02ad86123fab60d62a6ba13fdfd57418027de438631b8b0ab1d16662",
+      "patch_bytes": 18787
+    },
+    {
+      "component": "api",
+      "old_sha256": "d4fc10e3648bab5ba296fda8067bc49e39f29fe03513667b02038906d38dffb6",
+      "new_sha256": "413673f43de9bd37a944f57ac5edf39232b002c9b1163ba426616f85290b0790",
+      "image_id": "sha256:33d948f176ddc7d47ec8840d6baff4892bb9b95014444590d3ae7f1dc2989ce3",
+      "patch_sha256": "497807fd29010e7efa1db88023e0aba16378bf585821984caea4bfc829f9d8c4",
+      "patch_bytes": 130402
+    },
+    {
+      "component": "gw",
+      "old_sha256": "7caf587be0053c0d184ee1c177843687e57019f58916aadea6bc45ec3f553bfe",
+      "new_sha256": "b7f62d592c758645939a8eb3ccff424dfb8c7a18170da39d2c2facb13a9d0035",
+      "image_id": "sha256:becb5435ecff9449f7fe9d39e655d0d8d33c7cb14629a33247ed0a0b29c420b6",
+      "patch_sha256": "a17d9c6f1654c4cfa14d6f56c4069cc97175106e090d6af3fbe80a173e5bbd4d",
+      "patch_bytes": 101991
+    },
+    {
+      "component": "web",
+      "old_sha256": "c80466f0bc2e0b0e100e0e317c674a8dca954b5d66763d7fbedae8ade12f6117",
+      "new_sha256": "39e508062e819ab71836166f19699adeba8a32214e6bd5493397e028df0ca2c1",
+      "image_id": "sha256:15499a12b59107bbfa94fd270c44ba4f34e81194e0c7864ed88be8d710bc905b",
+      "patch_sha256": "a2879cd5e9146b2f8ea6aca8a856b9073c7627edb5bb7152142fcb422c2c9ca3",
+      "patch_bytes": 35716
+    }
+  ],
+  "tools": [
+    {
+      "name": "zstd.exe",
+      "sha256": "959e8299adfbbc039f7d2aede537666aba5e605dec1169f582d88898554a728e"
+    },
+    {
+      "name": "zstd.dll",
+      "sha256": "166f5159df543d6278e71d13d3a56a6013d28cb847b23d3cde0305672c559c2a"
+    },
+    {
+      "name": "zlib.dll",
+      "sha256": "7d86de8659d728d0cc22615ea37248ca83b24af64a9fc19ecc4548105308ee0a"
+    },
+    {
+      "name": "VCRUNTIME140.dll",
+      "sha256": "184146852727a9db4eea06178716bec3cdbb1015c911f6b0f915b184ad7775b2"
+    }
+  ],
+  "metadata_zip_sha256": "051d81eb136af8b6b2140f1e3ad5bb158007305a8dca070a050e8716ef6096fc",
+  "metadata": [
+    {
+      "name": ".env.prod.example",
+      "sha256": "d9ee60a53324b187d600ca4be326ce8c8149042422a17809db6d1b8ca96381b3"
+    },
+    {
+      "name": "docker-compose.prod.yml",
+      "sha256": "b99b9a6f44e5d3bd94d4f2158f8f7549ce5c74453d3f18ba27c5c699834a2da3"
+    },
+    {
+      "name": "install_serial_hardware_task.ps1",
+      "sha256": "6946a9fb179841ceeb957a92b533933bc64088737c9f25ec042790c4897db97a"
+    },
+    {
+      "name": "MANIFEST.json",
+      "sha256": "c625c0835beab3827e1d6b06feb9e10c0fc08e22de5f0cf201233d18bf1468dc"
+    },
+    {
+      "name": "MANIFEST.md",
+      "sha256": "e15722b0a8f86c6eecd381c24ea556cb82c6d6c141e17fcf4c64149596b98d48"
+    },
+    {
+      "name": "nginx.conf",
+      "sha256": "dbfd0f630ae5d8f280e6371b2ac9066833d3ed0de535bf52621538f42e740349"
+    },
+    {
+      "name": "probe_modbus_rtu.py",
+      "sha256": "4994ed81e7f44725873314d82c3249fa8e903204b79c9404de2d44341b0b99d9"
+    },
+    {
+      "name": "qualification-toolchain.tar.gz",
+      "sha256": "813bb46d5c93cf439c21239a304a2dc837d969d147ef8fab0ae0175097e12f33"
+    },
+    {
+      "name": "run_modbus_probe.ps1",
+      "sha256": "524c7ed8eb3112c153f95770f74e23141ff55203b22d8463455ac00ffefac9a6"
+    },
+    {
+      "name": "serial_hardware_attach.ps1",
+      "sha256": "429cb0902fa6a24aa604b30ac9e0d53dc37575afb576159d9cd3176017be38ac"
+    },
+    {
+      "name": "setup-customer.md",
+      "sha256": "bf51a398888407a7e7514a91af16d7d9fd315a0c8f9fccd7c86fb9c7523ce000"
+    },
+    {
+      "name": "SHA256SUMS",
+      "sha256": "b7fea500b5e00aa4fac2c4bbd47472ece7d25182c28e30c9631205e4f0a519bf"
+    },
+    {
+      "name": "SHA256SUMS.sig",
+      "sha256": "17b7fa15d6e9a5becb0fab221f7997958083039fd4771c09ecfe8e6b232eb632"
+    },
+    {
+      "name": "site-acceptance-profile.md.example",
+      "sha256": "dc25984cff2f038e80e5ead58fd0cfd995c40d5f5c37d32e0deb901d7826e5a7"
+    },
+    {
+      "name": "site-health-acl.conf.example",
+      "sha256": "a4d87dfe4be5a49cf78e09d16717c70814164158b2b90f3fff41435bc5ce6f12"
+    },
+    {
+      "name": "site-modbus-probe.json.example",
+      "sha256": "58285528f487c612c5dbebae6c0ae6fe801ca1d4d14aaf8917210e08ab4171d1"
+    },
+    {
+      "name": "site-network.override.yml",
+      "sha256": "64e4604309325637520d1225136f17819edf33f6a43c0c57ee7a90bef04b38ae"
+    },
+    {
+      "name": "site-serial-hardware.json.example",
+      "sha256": "c180c5eb66520ba61958e702a8ab1269ce3212c0645f86da61fe75006ab5414f"
+    },
+    {
+      "name": "site-serial.env.example",
+      "sha256": "39e32a34ffab6bf3b43f43ac495b00842579e2e5503e856d657fffcc06e9b871"
+    },
+    {
+      "name": "site-serial.override.yml",
+      "sha256": "01b0b09b64d91916ab5d295eec1528d0a0c75e4c3de087ed96e792499efb1149"
+    },
+    {
+      "name": "validate_serial_hardware.py",
+      "sha256": "207f96aba65672bcf241ed0af7387e47535e56aed6735da4fb80a7c10617f73a"
+    },
+    {
+      "name": "validate-network-boundary.py",
+      "sha256": "c376382814fce63a0216999e684e5d6202e6ec163add33c42587ccf80fc69d66"
+    },
+    {
+      "name": "verify-candidate.ps1",
+      "sha256": "d11bbe1b802edefdd786e57d166579a39cf2cf3c9025af6d91775d4ef5b1efdc"
+    },
+    {
+      "name": "verify-candidate.sh",
+      "sha256": "cf3e54f67057c28ffd897a9c7907f6df4d0d47d896639550178572351ac0a5e4"
+    }
+  ],
+  "config_sha256": "9e8e4491ba06ca09794e8776def10af50156a91aedbd81b985829d7ca299c752",
+  "sha256sums_sha256": "b7fea500b5e00aa4fac2c4bbd47472ece7d25182c28e30c9631205e4f0a519bf",
+  "signature_sha256": "17b7fa15d6e9a5becb0fab221f7997958083039fd4771c09ecfe8e6b232eb632"
+}

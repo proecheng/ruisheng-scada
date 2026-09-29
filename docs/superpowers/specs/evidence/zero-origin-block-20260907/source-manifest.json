@@ -1,0 +1,22 @@
+{
+  "branch": "codex/zero-origin-block-20260907",
+  "source_commit": "5d83607bc6d5bf90234ac713aa5dab6b96eb3461",
+  "base_commit": "4de3d31c5766f0f04905756965f83c564ecce4cc",
+  "files": [
+    {
+      "path": "tools/probe_modbus_rtu.py",
+      "sha256": "bd08b5c326859ccc0e9d455393d4e8a5055ea20e1bd6630df6a5739c34ac8b14",
+      "workspace_copy_matches": true
+    },
+    {
+      "path": "tools/run_modbus_probe.ps1",
+      "sha256": "925b22a4c72483dd17e7382a4be6197fe9fb08b5b36d7e38fd61e4a7df1a6f7d",
+      "workspace_copy_matches": true
+    },
+    {
+      "path": "tests/tools/test_modbus_probe.py",
+      "sha256": "cce6db6b9934d5ef0f2995f3a449a71c6208eb0865e0c31301a98d1dae6df957",
+      "workspace_copy_matches": true
+    }
+  ]
+}

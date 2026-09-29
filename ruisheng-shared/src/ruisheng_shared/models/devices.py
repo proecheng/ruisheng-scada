@@ -47,6 +47,14 @@ class Device(Base, TimestampMixin, SoftDeleteMixin):
             name="transport_type",  # → ck_devices_transport_type
         ),
         CheckConstraint(
+            "read_profile IN ('point_groups', 'zero_origin_38')",
+            name="read_profile",
+        ),
+        CheckConstraint(
+            "read_profile != 'zero_origin_38' OR transport_type = 'serial'",
+            name="read_profile_transport",
+        ),
+        CheckConstraint(
             "(transport_type = 'serial' AND serial_port IS NOT NULL)"
             " OR (transport_type = 'tcp' AND serial_port IS NULL)",
             name="serial_port_consistency",  # → ck_devices_serial_port_consistency
@@ -63,7 +71,7 @@ class Device(Base, TimestampMixin, SoftDeleteMixin):
             "serial_port",
             "modbus_addr",
             unique=True,
-            postgresql_where=text("transport_type = 'serial'"),
+            postgresql_where=text("transport_type = 'serial' AND deleted_at IS NULL"),
         ),
     )
 
@@ -80,6 +88,9 @@ class Device(Base, TimestampMixin, SoftDeleteMixin):
         server_default="tcp",
     )
     serial_port: Mapped[str | None] = mapped_column(String(50))
+    read_profile: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="point_groups", server_default="point_groups"
+    )
     modbus_addr: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     baud_rate: Mapped[int | None] = mapped_column(Integer)
     group_company: Mapped[str | None] = mapped_column(String(100))

@@ -14,14 +14,16 @@ import json
 import os
 import signal
 import sys
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
     from ruisheng_gw.config import Config
-    from ruisheng_gw.domain.registry import RegistryEntry
+    from ruisheng_gw.domain.registry import Registry, RegistryEntry
+    from ruisheng_gw.ingest import FrameIngestor
+    from ruisheng_gw.transport.session import SessionMap
 
 PollerFactory = Callable[[], Coroutine[Any, Any, None]]
 
@@ -29,8 +31,68 @@ PollerFactory = Callable[[], Coroutine[Any, Any, None]]
 # hardcoded literal — 与 G7 #28-B 两版本字段分离一致
 # 升 shared 时 gw PR 必须同步改此常量
 REQUIRED_SHARED_SCHEMA_VERSION: int = 20260415
-EXPECTED_ALEMBIC_HEAD: str = "0012_alarm_notification_runtime"
+EXPECTED_ALEMBIC_HEAD: str = "0013_serial_polling_profile"
 _PEER_HOST_PORT_LEN = 2
+
+
+async def _ingest_session_frame(
+    ingestor: FrameIngestor, sessions: SessionMap, dev_number: str, frame: bytes
+) -> None:
+    session = sessions.get(dev_number)
+    pending = session.pending_read if session else None
+    await ingestor.process_frame_for_pending(
+        dev_number=dev_number, frame=frame, pending_read=pending
+    )
+    current = sessions.get(dev_number)
+    if current is not None and current.pending_read is pending:
+        sessions.set_pending_read(dev_number, None)
+
+
+async def _periodic_configuration_refresh(
+    *, refresh: Callable[[], Awaitable[None]], lock: asyncio.Lock, interval_sec: float, log: Any
+) -> None:
+    while True:
+        try:
+            async with lock:
+                await refresh()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("device configuration refresh or alarm counter reset failed")
+        await asyncio.sleep(interval_sec)
+
+
+async def _subscribe_configuration_changes(
+    *,
+    refresh: Callable[[], Awaitable[None]],
+    lock: asyncio.Lock,
+    registry: Registry,
+    redis: Any,
+    log: Any,
+) -> None:
+    while True:
+        try:
+            async with redis.pubsub() as pubsub:
+                await pubsub.subscribe("channel:config:changed")
+                while True:
+                    message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if message is None:
+                        continue
+                    raw = message.get("data")
+                    payload = json.loads(raw) if isinstance(raw, str | bytes) else {}
+                    if not isinstance(payload, dict):
+                        continue
+                    dev_number = payload.get("dev_number")
+                    version = payload.get("version")
+                    if isinstance(dev_number, str) and dev_number and isinstance(version, int):
+                        async with lock:
+                            if registry.needs_config_reload(dev_number, version):
+                                await refresh()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("config change subscriber failed")
+            await asyncio.sleep(2)
 
 
 def _remove_socket(path: str) -> None:
@@ -78,6 +140,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     from aiohttp import web  # noqa: PLC0415
     from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
 
+    from ruisheng_gw.control_worker import ControlWorker  # noqa: PLC0415
     from ruisheng_gw.domain.registry import Registry  # noqa: PLC0415
     from ruisheng_gw.health import (  # noqa: PLC0415
         HealthState,
@@ -87,6 +150,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     from ruisheng_gw.ingest import FrameIngestor  # noqa: PLC0415
     from ruisheng_gw.logging_setup import get_logger  # noqa: PLC0415
     from ruisheng_gw.persistence.batch_writer import BatchWriter  # noqa: PLC0415
+    from ruisheng_gw.persistence.device_status import serial_status_loop  # noqa: PLC0415
     from ruisheng_gw.persistence.repository import Repository  # noqa: PLC0415
     from ruisheng_gw.persistence.wal import Wal  # noqa: PLC0415
     from ruisheng_gw.protocol.exceptions import ProtocolError  # noqa: PLC0415
@@ -142,6 +206,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
 
     # 3. Load Registry
     registry = await Registry.load_from_db(engine)
+    status_task = asyncio.create_task(serial_status_loop(engine, registry))
 
     # 4. Wire BatchWriter
     clock = RealClock()
@@ -178,56 +243,32 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         relation_value_max_age_sec=float(config.relation_value_max_age_sec),
     )
     config_reload_lock = asyncio.Lock()
+    pending_counter_resets: set[str] = set()
 
-    async def _reload_alarm_rules(dev_numbers: set[str]) -> set[str]:
-        async with config_reload_lock:
-            refreshed = await registry.reload_alarm_rules(engine, dev_numbers)
-            await repo.reset_lx_counters_for_devices(refreshed)
-            return refreshed
+    async def _refresh_configuration() -> None:
+        refreshed = await registry.reload_serial_configuration(engine)
+        ingestor.invalidate_devices(refreshed)
+        pending_counter_resets.update(refreshed)
+        await repo.reset_lx_counters_for_devices(pending_counter_resets)
+        pending_counter_resets.clear()
 
-    async def _alarm_registry_loop() -> None:
-        while True:
-            try:
-                async with config_reload_lock:
-                    refreshed = await registry.reload_alarm_rules_if_changed(engine)
-                    await repo.reset_lx_counters_for_devices(refreshed)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("alarm registry reload failed")
-            await asyncio.sleep(config.alarm_reload_interval_sec)
-
-    registry_task = asyncio.create_task(_alarm_registry_loop())
-
-    async def _config_changed_loop() -> None:
-        while True:
-            try:
-                async with redis.pubsub() as pubsub:
-                    await pubsub.subscribe("channel:config:changed")
-                    while True:
-                        message = await pubsub.get_message(
-                            ignore_subscribe_messages=True,
-                            timeout=1.0,
-                        )
-                        if message is None:
-                            continue
-                        raw = message.get("data")
-                        payload = json.loads(raw) if isinstance(raw, str | bytes) else {}
-                        dev_number = payload.get("dev_number")
-                        version = payload.get("version")
-                        if isinstance(dev_number, str) and dev_number and isinstance(version, int):
-                            async with config_reload_lock:
-                                if not registry.needs_config_reload(dev_number, version):
-                                    continue
-                                refreshed = await registry.reload_alarm_rules(engine, {dev_number})
-                                await repo.reset_lx_counters_for_devices(refreshed)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("config change subscriber failed")
-                await asyncio.sleep(2)
-
-    config_task = asyncio.create_task(_config_changed_loop())
+    registry_task = asyncio.create_task(
+        _periodic_configuration_refresh(
+            refresh=_refresh_configuration,
+            lock=config_reload_lock,
+            interval_sec=config.alarm_reload_interval_sec,
+            log=log,
+        )
+    )
+    config_task = asyncio.create_task(
+        _subscribe_configuration_changes(
+            refresh=_refresh_configuration,
+            lock=config_reload_lock,
+            registry=registry,
+            redis=redis,
+            log=log,
+        )
+    )
 
     async def _outbox_loop() -> None:
         while True:
@@ -301,7 +342,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
             entry = (
                 registry.get(bound_dev_number) if bound_dev_number else None
             ) or registry.tcp_device_for_modbus_addr(frame[0])
-            if entry is None:
+            if entry is None or entry.transport_type != "tcp":
                 log.warning("tcp frame ignored: unknown or ambiguous slave", slave=frame[0])
                 return
             if not _log_and_check_tcp_source(entry, event="tcp frame ignored: source ip mismatch"):
@@ -309,13 +350,7 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
             dev_number = entry.device.dev_number
             bound_dev_number = dev_number
             session_map.bind(dev_number=dev_number, writer=writer, bus_id=bus_id)
-            pending_read = session_map.get(dev_number).pending_read  # type: ignore[union-attr]
-            await ingestor.process_frame_for_pending(
-                dev_number=dev_number,
-                frame=frame,
-                pending_read=pending_read,
-            )
-            session_map.set_pending_read(dev_number, None)
+            await _ingest_session_frame(ingestor, session_map, dev_number, frame)
 
         async def _on_frame(frame: bytes) -> None:
             if not frame:
@@ -335,17 +370,14 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
             on_frame=_on_frame,
             heartbeat_timeout_sec=float(config.heartbeat_timeout_sec),
         )
-        await conn.read_loop()
+        try:
+            await conn.read_loop()
+        finally:
+            if bound_dev_number is not None:
+                session_map.remove_if_writer(bound_dev_number, writer)
 
     async def _serial_frame(dev_number: str, frame: bytes) -> None:
-        entry = session_map.get(dev_number)
-        pending_read = entry.pending_read if entry else None
-        await ingestor.process_frame_for_pending(
-            dev_number=dev_number,
-            frame=frame,
-            pending_read=pending_read,
-        )
-        session_map.set_pending_read(dev_number, None)
+        await _ingest_session_frame(ingestor, session_map, dev_number, frame)
 
     def _make_poller(entry: RegistryEntry, dev_number: str) -> PollerFactory:
         async def _run() -> None:
@@ -355,11 +387,14 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
                 session=session_map,
                 bus_locks=bus_locks,
                 clock=clock,
+                registry=registry,
             )
 
         return _run
 
     for entry in registry.entries():
+        if entry.transport_type != "tcp":
+            continue
         dev_number = entry.device.dev_number
         supervisor.start_poller(
             dev_number=dev_number,
@@ -381,9 +416,11 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         bus = SerialBus(
             port=sp_cfg.port,
             baud_rate=sp_cfg.baud_rate,
+            read_timeout_retries=sp_cfg.read_timeout_retries,
             registry=registry,
             session_map=session_map,
             on_frame=_serial_frame,
+            clock=clock,
         )
         serial_buses.append(bus)
         task = asyncio.create_task(bus.start())
@@ -398,6 +435,8 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
 
         task.add_done_callback(_on_bus_done)
         serial_tasks.append(task)
+
+    control_task = asyncio.create_task(ControlWorker(engine, redis, registry, serial_buses).run())
 
     # 6. Wait for SIGTERM/SIGINT
     stop_event = asyncio.Event()
@@ -420,6 +459,8 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
     finally:
         # 7. Graceful shutdown
         log.info("shutting down")
+        control_task.cancel()
+        await asyncio.gather(control_task, return_exceptions=True)
         supervisor.shutdown_sync()
         for bus in serial_buses:
             await bus.shutdown()
@@ -429,10 +470,12 @@ async def run_server(config: Config) -> None:  # noqa: C901, PLR0915
         outbox_task.cancel()
         registry_task.cancel()
         config_task.cancel()
+        status_task.cancel()
         await asyncio.gather(
             outbox_task,
             registry_task,
             config_task,
+            status_task,
             return_exceptions=True,
         )
         await server.shutdown()

@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "active_release": {
+    "schema_version": 1,
+    "candidate_id": "deploy-20260917.1",
+    "logical_identity": "sha256:64e66c758a137891b30fc894ea5ad880d47136ae810f74b22026edbf7466cc6d",
+    "source_commit": "3a3ad8dcd2333f72d9d15eab3c305d3350371b6a",
+    "candidate_root": "C:\\Ruisheng\\candidates\\deploy-20260917.1",
+    "site_root": "C:\\Ruisheng\\candidates\\site-deploy-20260831.1",
+    "committed_at": "2026-09-17T03:53:04.0805185+00:00",
+    "operation_id": "ca28148c-5c97-496a-b102-5ef361ad602d"
+  },
+  "before": {
+    "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-serial-retry-predeploy.json",
+    "sha256": "9bc659f74b05984d63ff1ad84bee84a3cd2240c1039eaa92cab79745acb90df8",
+    "metrics": {
+      "label": "last_1h",
+      "starts": "2026-09-17T02:32:13.644148+00:00",
+      "ends": "2026-09-17T03:32:03.644148+00:00",
+      "rounds": 632,
+      "first_sample": "2026-09-17T02:32:16.959933+00:00",
+      "last_sample": "2026-09-17T03:31:57.425553+00:00",
+      "complete_rounds": 632,
+      "null_values": 0,
+      "median_interval_seconds": 5.067521,
+      "p95_interval_seconds": 9.975226500000002,
+      "max_interval_seconds": 20.157969,
+      "long_gap_count": 71,
+      "estimated_missing_between_samples": 81,
+      "trailing_age_seconds": 6.218595
+    },
+    "events_in_same_window": {
+      "serial response timeout": 82
+    },
+    "log_possibly_truncated": false,
+    "estimated_missing_fraction": 0.11360448807854137
+  },
+  "after": {
+    "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-serial-retry-observed.json",
+    "sha256": "3f0028cd8395d14fade976108392bcba5aa0b5d47c3d113e395a37308fa636cf",
+    "metrics": {
+      "label": "current_release",
+      "starts": "2026-09-17T03:53:04.080518+00:00",
+      "ends": "2026-09-17T04:03:20.156852+00:00",
+      "rounds": 122,
+      "first_sample": "2026-09-17T03:53:06.841516+00:00",
+      "last_sample": "2026-09-17T04:03:18.840336+00:00",
+      "complete_rounds": 122,
+      "null_values": 0,
+      "median_interval_seconds": 5.035871,
+      "p95_interval_seconds": 6.026635,
+      "max_interval_seconds": 9.860577,
+      "long_gap_count": 1,
+      "estimated_missing_between_samples": 1,
+      "trailing_age_seconds": 1.316516
+    },
+    "events_in_same_window": {
+      "serial response timeout": 9,
+      "serial retry attempt": 8,
+      "serial retry recovered": 7,
+      "serial retry exhausted": 1
+    },
+    "log_possibly_truncated": false,
+    "estimated_missing_fraction": 0.008130081300813009
+  },
+  "cutover": {
+    "last_before_gateway_start": "2026-09-17T03:52:49.831986+00:00",
+    "first_after_gateway_start": "2026-09-17T03:52:55.701136+00:00",
+    "gap_seconds": 5.86915
+  },
+  "isolated_acceptance": {
+    "passed": true,
+    "signature_verified": true,
+    "internal_network_verified": true,
+    "host_ports_published": false,
+    "owned_containers_stopped": true,
+    "production_unchanged": true,
+    "validation_computer": "WIN-OAUCM8UQUGH",
+    "alembic_head": "0013_serial_polling_profile",
+    "web_http": 200
+  },
+  "deployment_status": "committed",
+  "recovery_task": {
+    "at": "2026-09-17T12:00:13.0541031+08:00",
+    "task": "Ruisheng-Serial-Gateway-Recovery",
+    "state": "Ready",
+    "last_run": "2026-09-17T11:59:52.0000000+08:00",
+    "last_result": 0,
+    "next_run": "2026-09-17T12:00:51.0000000+08:00",
+    "launcher_sha256": "d795d5cc53e807c4a766fbb21cf910f0843cc9bb0ab4c41141b2c44b4f5490e6"
+  },
+  "services": [
+    {
+      "name": "/ruisheng-gw",
+      "id": "bcbb7f9b7a8dd09ddf38ede9196c4e0ba4232a5617695bbca3f1d0c90287e0bb",
+      "image": "sha256:b792ec9eba8ab537593387865921ed2def5e0bf4915c4e520163160fb0653044",
+      "status": "running",
+      "started": "2026-09-17T03:52:53.905206961Z",
+      "restarts": 0
+    },
+    {
+      "name": "/ruisheng-api",
+      "id": "5441daa06a3258cd158f158c2de3776db273c0794d53c9e4783f16085da36d94",
+      "image": "sha256:94300d0e2c5255aa324d068dd743aa8a438373283a8b0caae997af055ba10e80",
+      "status": "running",
+      "started": "2026-09-17T03:52:53.89354282Z",
+      "restarts": 0
+    },
+    {
+      "name": "/ruisheng-postgres",
+      "id": "3df6e0e82be12ba6bbb44e1c1451aa5277c01750278329f384c2965167aa3047",
+      "image": "sha256:50a2abfa8bad354f4bc1567c6edf7426586fd99ee8cd8982bbaee157a460c6b1",
+      "status": "running",
+      "started": "2026-09-17T03:52:47.143098799Z",
+      "restarts": 0
+    },
+    {
+      "name": "/ruisheng-redis",
+      "id": "48db7cd96283a4f9e7288ab50604232831e058fbdd959e968223184ae7e058f5",
+      "image": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "status": "running",
+      "started": "2026-09-17T03:52:47.14593743Z",
+      "restarts": 0
+    },
+    {
+      "name": "/ruisheng-web",
+      "id": "abc48e940809bf98b03a0dffe4ed6d029f95c82bf097211d24811dc0f871fb0d",
+      "image": "sha256:d87040574072eb806ebab3007fb33ed7abee3170c4940e98bc9d892d6c868d7c",
+      "status": "running",
+      "started": "2026-09-17T03:52:54.070963384Z",
+      "restarts": 0
+    }
+  ],
+  "validation": {
+    "unique_regression_cases_passed": 290,
+    "ruff": "passed",
+    "mypy": "passed"
+  },
+  "limitations": [
+    "Before and after windows differ in length; short observation is not 24/48h acceptance.",
+    "Missing rounds are estimates between first/last samples, not physical request counters.",
+    "Serial/UART root cause remains unresolved; retries recover data while preserving timeout events.",
+    "The prior 7h9m outage remains part of overall unavailability."
+  ],
+  "latest_observation": {
+    "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-serial-retry-followup.json",
+    "sha256": "165d3a6a9ac9a869b995b5338af5a93522632e258254d4d7afe89ab5d5f71a3a",
+    "window": {
+      "label": "current_release",
+      "starts": "2026-09-17T03:53:04.080518+00:00",
+      "ends": "2026-09-17T04:33:34.360773+00:00",
+      "rounds": 478,
+      "first_sample": "2026-09-17T03:53:06.841516+00:00",
+      "last_sample": "2026-09-17T04:33:33.836996+00:00",
+      "complete_rounds": 478,
+      "null_values": 0,
+      "median_interval_seconds": 5.0361,
+      "p95_interval_seconds": 6.0267198,
+      "max_interval_seconds": 11.2031,
+      "long_gap_count": 6,
+      "estimated_missing_between_samples": 6,
+      "trailing_age_seconds": 0.523777
+    },
+    "events": {
+      "serial response timeout": 44,
+      "serial retry attempt": 38,
+      "serial retry recovered": 32,
+      "serial retry exhausted": 6
+    },
+    "missing_fraction": 0.012396694214876033,
+    "log_possibly_truncated": false,
+    "services_identity_and_started_unchanged": true,
+    "active_release_unchanged": true,
+    "timeout_count_includes_retry_timeouts": true
+  },
+  "comparisons": {
+    "predeploy_last_1h_missing_fraction": 0.11360448807854137,
+    "initial_10m_missing_fraction": 0.008130081300813009,
+    "followup_missing_fraction": 0.012396694214876033
+  }
+}

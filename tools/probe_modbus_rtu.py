@@ -1,7 +1,7 @@
 """Budgeted, read-only Modbus RTU protocol probe.
 
 The executable scope is intentionally narrower than the general Modbus codec.  It
-can only emit the two approved FC3 requests and defaults to a zero-I/O dry run.
+can only emit the selected closed FC3 profile and defaults to a zero-I/O dry run.
 """
 
 from __future__ import annotations
@@ -28,6 +28,31 @@ APPROVED_UNIT_ID = 1
 APPROVED_FUNCTION_CODE = 3
 APPROVED_REQUESTS = ((0, 6, False), (27, 9, True))
 APPROVED_SCOPE_ID = "b06-9600-8n1-unit1-fc3-r0-5-r27-35"
+EXTENDED_SCOPE_ID = "b09-9600-8n1-unit1-fc3-r0-5-r6-26-r27-35"
+EXTENDED_REQUESTS = ((0, 6, False), (6, 21, True), (27, 9, True))
+CORRELATION_SCOPE_ID = "b10-address-correlation-fc3-r0-35-v1"
+CORRELATION_REQUESTS = (
+    (0, 27, False),
+    (6, 21, True),
+    (0, 27, True),
+    (18, 18, True),
+    (27, 9, True),
+    (18, 18, True),
+)
+ZERO_ORIGIN_SCOPE_ID = "b11-zero-origin-block-fc3-r0-35-v1"
+ZERO_ORIGIN_REQUESTS = (
+    (0, 36, False),
+    (0, 27, True),
+    (0, 36, True),
+    (0, 6, True),
+    (0, 36, True),
+)
+APPROVED_PROFILES = {
+    APPROVED_SCOPE_ID: APPROVED_REQUESTS,
+    EXTENDED_SCOPE_ID: EXTENDED_REQUESTS,
+    CORRELATION_SCOPE_ID: CORRELATION_REQUESTS,
+    ZERO_ORIGIN_SCOPE_ID: ZERO_ORIGIN_REQUESTS,
+}
 READ_FUNCTION_CODES = frozenset({1, 2, 3, 4})
 STANDARD_EXCEPTION_CODES = frozenset({1, 2, 3, 4, 5, 6, 8, 10, 11})
 CONCLUSION = "仅证明区间可读，型号/点名/倍率未决"
@@ -39,6 +64,7 @@ APPROVED_MAX_REQUESTS = 4
 APPROVED_RETRIES = 1
 APPROVED_INTERVAL_MS = 500
 APPROVED_MAX_RESPONSE_BYTES = 64
+ZERO_ORIGIN_MAX_RESPONSE_BYTES = 80
 MIN_RTU_FRAME_BYTES = 3
 EXCEPTION_FRAME_BYTES = 5
 INTER_BYTE_QUIET_SECONDS = 0.05
@@ -208,6 +234,10 @@ def load_config(path: Path) -> ProbeConfig:  # noqa: PLR0912, PLR0915
         {"max_requests", "max_retries_per_request", "min_interval_ms", "max_response_bytes"},
     )
     approval_raw = _object(root["approval"], "approval", {"scope_id", "approved_by", "approved_at"})
+    scope_id = _text(approval_raw["scope_id"], "approval.scope_id")
+    approved_requests = APPROVED_PROFILES.get(scope_id)
+    if approved_requests is None:
+        raise ProbeError("approval.scope_id does not match an executable scope")
 
     adapter = Adapter(
         vendor_id=_text(adapter_raw["vendor_id"], "adapter.vendor_id").lower(),
@@ -276,7 +306,7 @@ def load_config(path: Path) -> ProbeConfig:  # noqa: PLR0912, PLR0915
             (request.start_address, request.register_count, request.requires_previous_valid)
             for request in requests
         )
-        != APPROVED_REQUESTS
+        != approved_requests
     ):
         raise ProbeError("scope.requests do not match the approved ordered register ranges")
 
@@ -288,25 +318,29 @@ def load_config(path: Path) -> ProbeConfig:  # noqa: PLR0912, PLR0915
         min_interval_ms=_integer(budget_raw["min_interval_ms"], "budget.min_interval_ms"),
         max_response_bytes=_integer(budget_raw["max_response_bytes"], "budget.max_response_bytes"),
     )
-    if budget.max_requests != APPROVED_MAX_REQUESTS:
-        raise ProbeError("budget.max_requests must remain 4")
+    max_requests = len(approved_requests) * (APPROVED_RETRIES + 1)
+    if budget.max_requests != max_requests:
+        raise ProbeError(f"budget.max_requests must remain {max_requests} for this scope")
     if budget.max_retries_per_request != APPROVED_RETRIES:
         raise ProbeError("budget.max_retries_per_request must remain 1")
     if budget.min_interval_ms != APPROVED_INTERVAL_MS:
         raise ProbeError("budget.min_interval_ms must remain 500")
     largest_response = max(5 + 2 * request.register_count for request in requests)
-    if largest_response > APPROVED_MAX_RESPONSE_BYTES:
+    receive_limit = (
+        ZERO_ORIGIN_MAX_RESPONSE_BYTES
+        if scope_id == ZERO_ORIGIN_SCOPE_ID
+        else APPROVED_MAX_RESPONSE_BYTES
+    )
+    if largest_response > receive_limit:
         raise ProbeError("approved response does not fit the fixed receive budget")
-    if budget.max_response_bytes != APPROVED_MAX_RESPONSE_BYTES:
-        raise ProbeError("budget.max_response_bytes must remain 64")
+    if budget.max_response_bytes != receive_limit:
+        raise ProbeError(f"budget.max_response_bytes must remain {receive_limit} for this scope")
 
     approval = Approval(
         scope_id=_text(approval_raw["scope_id"], "approval.scope_id"),
         approved_by=_text(approval_raw["approved_by"], "approval.approved_by"),
         approved_at=_text(approval_raw["approved_at"], "approval.approved_at"),
     )
-    if approval.scope_id != APPROVED_SCOPE_ID:
-        raise ProbeError("approval.scope_id does not match the executable scope")
     if "CHANGE_ME" in approval.approved_by.upper():
         raise ProbeError("approval.approved_by is unresolved")
     try:
@@ -329,11 +363,13 @@ def compute_crc16(data: bytes) -> int:
     return crc
 
 
-def request_frame(unit_id: int, function_code: int, request: Request) -> bytes:
+def request_frame(
+    unit_id: int, function_code: int, request: Request, *, scope_id: str = APPROVED_SCOPE_ID
+) -> bytes:
     if unit_id != APPROVED_UNIT_ID or function_code != APPROVED_FUNCTION_CODE:
         raise ProbeError("request is outside the approved read-only scope")
     if (request.start_address, request.register_count, request.requires_previous_valid) not in (
-        APPROVED_REQUESTS
+        APPROVED_PROFILES.get(scope_id, ())
     ):
         raise ProbeError("request range is outside the approved scope")
     body = bytes(
@@ -540,7 +576,9 @@ def normalized_plan(config: ProbeConfig) -> dict[str, object]:
         "budget": asdict(config.budget),
         "approval": asdict(config.approval),
         "frames": [
-            request_frame(config.unit_id, config.function_code, request).hex()
+            request_frame(
+                config.unit_id, config.function_code, request, scope_id=config.approval.scope_id
+            ).hex()
             for request in config.requests
         ],
     }
@@ -626,7 +664,9 @@ def execute_probe(  # noqa: PLR0912, PLR0915
                     )
                     if remaining > 0:
                         time.sleep(remaining)
-                frame = request_frame(config.unit_id, config.function_code, request)
+                frame = request_frame(
+                    config.unit_id, config.function_code, request, scope_id=config.approval.scope_id
+                )
                 port.reset_input_buffer()
                 try:
                     written = port.write(frame)

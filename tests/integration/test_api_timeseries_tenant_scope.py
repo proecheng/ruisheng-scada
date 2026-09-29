@@ -33,7 +33,8 @@ def tenant_a_user() -> CurrentUser:
 
 @pytest.fixture
 async def tenant_timeseries(dev_engine, gw_engine, seed_tenants):
-    recorded_at = datetime(2026, 8, 18, 23, 59, 59, 999999, tzinfo=UTC)
+    # Last instant of Beijing civil day 2026-08-18. The next microsecond is 2026-08-19.
+    recorded_at = datetime(2026, 8, 18, 15, 59, 59, 999999, tzinfo=UTC)
     async with dev_engine.connect() as conn, conn.begin():
         await conn.execute(text("SELECT set_config('app.role', 'Administrators', true)"))
         await conn.execute(

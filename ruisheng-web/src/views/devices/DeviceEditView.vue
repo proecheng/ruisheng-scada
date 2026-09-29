@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { getDevice, updateDevice, type DeviceUpdatePayload } from '@/api/devices'
+import { getDevice, updateDevice, type DeviceUpdatePayload, type DeviceReadProfile } from '@/api/devices'
 import { listDeviceTemplates, type DeviceTemplate } from '@/api/templates'
 import { useToast } from '@/composables/useToast'
 import LoadingSkeleton from '@/components/LoadingSkeleton.vue'
@@ -16,6 +16,7 @@ const isSubmitting = ref(false)
 const devName = ref('')
 const devType = ref('')
 const transportType = ref<'tcp' | 'serial'>('tcp')
+const readProfile = ref<DeviceReadProfile>('point_groups')
 const serialPort = ref('')
 const devIp = ref('')
 const modbusAddr = ref<string | number>('1')
@@ -51,6 +52,7 @@ onMounted(async () => {
     devName.value = device.dev_name ?? ''
     devType.value = device.dev_type ?? ''
     transportType.value = device.transport_type ?? 'tcp'
+    readProfile.value = device.read_profile ?? 'point_groups'
     serialPort.value = device.serial_port ?? ''
     devIp.value = device.dev_ip ?? ''
     modbusAddr.value = device.modbus_addr ?? 1
@@ -89,6 +91,7 @@ function buildPayload(): DeviceUpdatePayload {
     dev_name: optionalText(devName.value),
     dev_type: optionalText(devType.value),
     transport_type: transportType.value,
+    read_profile: transportType.value === 'serial' ? readProfile.value : 'point_groups',
     serial_port: transportType.value === 'serial' ? port : null,
     dev_ip: transportType.value === 'tcp' ? (optionalText(devIp.value) ?? null) : null,
     modbus_addr: addr,
@@ -127,12 +130,9 @@ async function submit(): Promise<void> {
     <form v-else class="device-form" @submit.prevent="submit">
       <fieldset>
         <legend>基础信息</legend>
-        <label>
+        <label class="enabled-field">
+          <input v-model="isEnabled" type="checkbox" />
           启用设备
-          <select v-model="isEnabled">
-            <option :value="true">启用</option>
-            <option :value="false">停用</option>
-          </select>
         </label>
         <label>
           设备名称
@@ -159,6 +159,13 @@ async function submit(): Promise<void> {
         <label v-if="transportType === 'serial'">
           串口号
           <input v-model="serialPort" type="text" required autocomplete="off" />
+        </label>
+        <label v-if="transportType === 'serial'">
+          读取方案
+          <select v-model="readProfile">
+            <option value="point_groups">按点位分组</option>
+            <option value="zero_origin_38">自研设备38寄存器</option>
+          </select>
         </label>
         <label v-if="transportType === 'tcp'">
           设备来源 IP
@@ -205,15 +212,22 @@ async function submit(): Promise<void> {
 <style scoped>
 .device-edit { background: #fff; padding: 16px; border-radius: 6px; }
 .page-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
-.back { background: none; border: 1px solid #ccc; padding: 4px 10px; border-radius: 4px; cursor: pointer; }
-h2 { font-size: 18px; }
+.back { flex-shrink: 0; background: none; border: 1px solid #ccc; padding: 4px 10px; border-radius: 4px; cursor: pointer; }
+h2 { min-width: 0; overflow-wrap: anywhere; font-size: 18px; }
 .device-form { display: grid; gap: 14px; max-width: 920px; }
-fieldset { border: 1px solid #e5e7eb; border-radius: 6px; padding: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+fieldset { min-width: 0; border: 1px solid #e5e7eb; border-radius: 6px; padding: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 legend { padding: 0 6px; font-size: 13px; font-weight: 600; color: var(--color-text-secondary); }
 label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--color-text-secondary); }
 input, select { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; color: var(--color-text); background: #fff; }
+.enabled-field { flex-direction: row; align-items: center; gap: 8px; }
+.enabled-field input { width: 16px; height: 16px; }
 .actions { display: flex; justify-content: flex-end; gap: 8px; }
 .actions button { padding: 7px 16px; border-radius: 4px; border: none; background: var(--color-primary); color: #fff; cursor: pointer; }
 .actions button:disabled { opacity: 0.55; cursor: not-allowed; }
 .actions .secondary { background: #fff; color: var(--color-text); border: 1px solid #ccc; }
+@media (max-width: 640px) {
+  .device-edit { padding: 12px; }
+  fieldset { grid-template-columns: 1fr; }
+  .actions button { flex: 1; }
+}
 </style>

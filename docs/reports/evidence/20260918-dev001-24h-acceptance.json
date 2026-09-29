@@ -1,0 +1,905 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-09-18T12:02:13.591880+08:00",
+  "target": "WIN-OAUCM8UQUGH",
+  "address": "100.109.90.21",
+  "conclusion": "partial_improvement_stability_failed_and_final_segment_evidence_insufficient",
+  "acceptance_passed": false,
+  "original_window": {
+    "starts": "2026-09-17T11:53:04.080518+08:00",
+    "ends": "2026-09-18T11:53:04.080518+08:00",
+    "seconds": 86400
+  },
+  "observed_window": {
+    "label": "current_release",
+    "starts": "2026-09-17T03:53:04.080518+00:00",
+    "ends": "2026-09-18T02:55:19.783754+00:00",
+    "rounds": 16303,
+    "first_sample": "2026-09-17T03:53:06.841516+00:00",
+    "last_sample": "2026-09-18T02:55:19.778705+00:00",
+    "complete_rounds": 16303,
+    "null_values": 0,
+    "median_interval_seconds": 5.0362089999999995,
+    "p95_interval_seconds": 6.105788199999998,
+    "max_interval_seconds": 45.076404,
+    "long_gap_count": 187,
+    "estimated_missing_between_samples": 196,
+    "trailing_age_seconds": 0.005049
+  },
+  "coverage": {
+    "seconds": 82935.703236,
+    "missing_to_original_deadline_seconds": 3464.296764,
+    "leading_seconds": 2.760998,
+    "trailing_seconds": 0.005049,
+    "newest_10_seconds_excluded_by_collector": true,
+    "full_24h_data_or_event_totals_available": false
+  },
+  "events_in_observed_window": {
+    "serial response timeout": 1707,
+    "serial retry attempt": 1511,
+    "serial retry recovered": 1315,
+    "serial retry exhausted": 196,
+    "serial ingestion timeout": 0,
+    "serial ingestion failed": 0,
+    "serial exception": 0,
+    "serial send did not complete": 0
+  },
+  "retry_recovery_fraction": 0.8702845797485109,
+  "estimated_missing_fraction": 0.011879507848960543,
+  "event_coverage_proof": {
+    "method": "Union of all saved same-container events; latest untruncated anchor and exact matching event overlap through each subsequent tail.",
+    "recognized_event_coverage_continuous": true,
+    "gateway_id": "bcbb7f9b7a8dd09ddf38ede9196c4e0ba4232a5617695bbca3f1d0c90287e0bb",
+    "gateway_started_at": "2026-09-17T03:52:53.905206961Z",
+    "anchor_snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-072519.json",
+    "anchor_sha256": "3c39f9d92a00887818dbb5c86878e3abbfd2410bf2873e5f7bb7173109274ec2",
+    "anchor_untruncated": true,
+    "applicable_saved_snapshot_count": 49,
+    "applicable_sources": [
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-serial-retry-started.json",
+        "sha256": "403d3c238666ace0ff87330fd74eb9b279f2230e96ee118e3a61e52e24375a2c"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-serial-retry-observed.json",
+        "sha256": "3f0028cd8395d14fade976108392bcba5aa0b5d47c3d113e395a37308fa636cf"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-serial-retry-followup.json",
+        "sha256": "165d3a6a9ac9a869b995b5338af5a93522632e258254d4d7afe89ab5d5f71a3a"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-125630.json",
+        "sha256": "88267eccaf877b18f9f2a0523b3a20d4a90174e60644d4565a1568df2ab76e5e"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-132423.json",
+        "sha256": "92603c4df40330acd1fae7a9720563f1d282f8d0856c66f7a797edd617f81368"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-135518.json",
+        "sha256": "3f327268c94ccaa69ce3040288d7b814ce1bc0ca071fc7225c10eb19922b1e6a"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-142603.json",
+        "sha256": "fbc556bb935edbb7dc084acb5550dc3d298e5cd8f4b34d2f56a8617c8add9a90"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-145424.json",
+        "sha256": "b5fb57431b3fcef8e76b5ca5f1e5feea0f6ff388a3aedc200d58d564fcfcd561"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-152543.json",
+        "sha256": "7fd697e06cd59162dd8569dcee178da2ea699e30d646ccc235289205de22a7df"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-attribution-final.json",
+        "sha256": "735cbecafab25d0a3771fb80ce76e106b26b2c52e23a9ec73d644d95d466bc57"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-161243.json",
+        "sha256": "345381537a5f0884bf528d2b47299acdebe6b63b6812562fb59e0015f48c6a79"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-162405.json",
+        "sha256": "f2022aef834ffaf7c4ddb07838ab60980673aa42e99c2e49b394289ba5496320"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-165534.json",
+        "sha256": "c4600abade759b42fe83b1a0ea47ba708e9665c098cf6c166d3fcbf947343041"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-172433.json",
+        "sha256": "49378d5eae1f5e5de91e5e7c89dd2c389343c1070fcc4346a3f227d7b57945b8"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-175433.json",
+        "sha256": "9e1868d31dd60c7c82e99f48fa18276494261023cf4b0d65607bba1b510512f2"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-182505.json",
+        "sha256": "20016e323175a0abd75f7ab11adf2fcd6a71ee040b0d2b39e65619a2f20afde8"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-185407.json",
+        "sha256": "25759bd919b2f96cd5cfa0b4280318a7ce7cb7fbbf4796d381dd6b70c6a96875"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-192505.json",
+        "sha256": "f24f7cc97194c0a99920cc4ce90c5bf5534e9595f6a9fb6696155a178c0ac57d"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-195439.json",
+        "sha256": "6b8186ee8dd67407c6b2c21f9caf0e43d52a1e73aef95b973930230c1d316de9"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-202450.json",
+        "sha256": "fe5a777b2ac3eedd8c5a3c9f9e16412e901d854223755b394263bca7cb6c0096"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-205342.json",
+        "sha256": "b7e6c80d486cce911245871982c127b70eda546463292938be67bdbdcaa6544b"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-212340.json",
+        "sha256": "dd12452c9365c49455165f35f970ac10e831d8d2f756a1cfaa0ea2d8bde9990c"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-215416.json",
+        "sha256": "ed65ea243eae0a87260f82d98fc9979c38b167d95a651133c3c211f4c1d6994e"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-222343.json",
+        "sha256": "f91cb01106bb7b4545c50a39e92518b71fc2cfb81af49626d8b87edd4bcb8c7b"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-225516.json",
+        "sha256": "7aaa1ca6abd0a70f1b6a4008f024c207a2768e4bbc10fbcfabf75edd10c94b3f"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-232501.json",
+        "sha256": "fb69cb99362f86b0a1fff00d83a0641b35f2ee9f91a4f5701958d720c7d3eece"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-235446.json",
+        "sha256": "c09dda990659942df97ead1d521de386afc47901d30e4a389b2094251ecc4027"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-002539.json",
+        "sha256": "5eb87e5dd8cc5e1c63a3d949a83eb966b9e05625a461b2c06134cbcb6a4bdf6c"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-005408.json",
+        "sha256": "3f99da2d521a2f0cdf935da7f8171bba5ca8d46da24862776b861697ab161060"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-012439.json",
+        "sha256": "8d511ebb2f4d757bc36e07835ec007f47a75ece1cddb0ceb9136c5b101b410df"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-015440.json",
+        "sha256": "2222d349134792ba2bcf8103c5dc23a4fd3d2989d85b297d09d16eedcf86f21f"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-022540.json",
+        "sha256": "fe760326afed4acaa9356aee41b98c51d577d5c7b2e3c762802e189c3a42c3c0"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-025444.json",
+        "sha256": "9576ee3e6c838de4fe2aa3576b77d2ea50e0f674d4f8041a0cb288bd66267fca"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-032413.json",
+        "sha256": "fe7d6a65fb2a788993f0121f347b6a904d77b303559680c6254c6baef90d6441"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-035513.json",
+        "sha256": "a061cbada126794835249a6a9c0cf31b452593bb049a169c75314d0cfee10c68"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-042413.json",
+        "sha256": "e06b42bb3f1bc3832670018160df90e9950259080e2c2dfd59e411f3591369cf"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-045445.json",
+        "sha256": "6655095fe228b1becd217f6695df3234ac49f777cba6502fc470bf0a81c80a2a"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-052551.json",
+        "sha256": "35d493a7a19bbc8bffdd433dcc51fe8c59a4617aee972b6e558517bb46930f70"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-055348.json",
+        "sha256": "9082bf40cb59ea0bf0bfa6684c5654ae3752ea21086cac2f6a4da009704e91ef"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-062448.json",
+        "sha256": "5e754e54bc58d3d1c08d657fef228ddd43ed99c7678b046a35a4c986667810a8"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-065547.json",
+        "sha256": "79705e9fe7ae59435137178a40fa3b9d96aea706da1b6e05e43a105c00b0fc71"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-072519.json",
+        "sha256": "3c39f9d92a00887818dbb5c86878e3abbfd2410bf2873e5f7bb7173109274ec2"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-075348.json",
+        "sha256": "a08ba451b3d843238ec0ba1a177986b4c3f981b502f61e496b1d02084a6a0927"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-082349.json",
+        "sha256": "63838ae5ddfd5bb16d06718470857e3247c9dfdc65ac827376b6843c6b94279e"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-085519.json",
+        "sha256": "579cf94e4f0ed8f0263c1d3b75bb998ee1e3ef6459876603cd485da5ef808fd5"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-092518.json",
+        "sha256": "4d74145634f634aca29d1ef74d826121aea38c748efd0985a11f8dee5ca9e457"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-095452.json",
+        "sha256": "cf5126d1be88c41ced8c8891f55220f3b84e6f21cdabb01c19ddb2cb71f8fc22"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-102427.json",
+        "sha256": "72e3f2872b81247fdf2a880877f3e5fc661d44ef7b35129161320d64d87c385b"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-105428.json",
+        "sha256": "e8440bfec8c64af0a43604de339e4dcbb1b85844082a481cb9f7de8ece08280c"
+      }
+    ],
+    "overlap_chain": [
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-075348.json",
+        "sha256": "a08ba451b3d843238ec0ba1a177986b4c3f981b502f61e496b1d02084a6a0927",
+        "matching_overlap_events": 3877,
+        "overlap_starts": "2026-09-17T04:23:01.763378+00:00",
+        "overlap_ends": "2026-09-17T23:24:47.646342+00:00",
+        "possibly_truncated": true
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-082349.json",
+        "sha256": "63838ae5ddfd5bb16d06718470857e3247c9dfdc65ac827376b6843c6b94279e",
+        "matching_overlap_events": 3922,
+        "overlap_starts": "2026-09-17T04:44:13.461968+00:00",
+        "overlap_ends": "2026-09-17T23:55:42.886740+00:00",
+        "possibly_truncated": true
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-085519.json",
+        "sha256": "579cf94e4f0ed8f0263c1d3b75bb998ee1e3ef6459876603cd485da5ef808fd5",
+        "matching_overlap_events": 3864,
+        "overlap_starts": "2026-09-17T05:30:08.211563+00:00",
+        "overlap_ends": "2026-09-18T00:23:06.475526+00:00",
+        "possibly_truncated": true
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-092518.json",
+        "sha256": "4d74145634f634aca29d1ef74d826121aea38c748efd0985a11f8dee5ca9e457",
+        "matching_overlap_events": 3893,
+        "overlap_starts": "2026-09-17T06:02:48.720927+00:00",
+        "overlap_ends": "2026-09-18T00:54:51.238498+00:00",
+        "possibly_truncated": true
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-095452.json",
+        "sha256": "cf5126d1be88c41ced8c8891f55220f3b84e6f21cdabb01c19ddb2cb71f8fc22",
+        "matching_overlap_events": 3901,
+        "overlap_starts": "2026-09-17T06:26:46.311244+00:00",
+        "overlap_ends": "2026-09-18T01:24:50.911826+00:00",
+        "possibly_truncated": true
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-102427.json",
+        "sha256": "72e3f2872b81247fdf2a880877f3e5fc661d44ef7b35129161320d64d87c385b",
+        "matching_overlap_events": 3905,
+        "overlap_starts": "2026-09-17T06:53:10.294298+00:00",
+        "overlap_ends": "2026-09-18T01:54:56.751501+00:00",
+        "possibly_truncated": true
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-105428.json",
+        "sha256": "e8440bfec8c64af0a43604de339e4dcbb1b85844082a481cb9f7de8ece08280c",
+        "matching_overlap_events": 3854,
+        "overlap_starts": "2026-09-17T07:34:18.287399+00:00",
+        "overlap_ends": "2026-09-18T02:23:35.206942+00:00",
+        "possibly_truncated": true
+      }
+    ],
+    "unique_events_across_saved_snapshots": 4732,
+    "latest_tail_alone_is_complete": false,
+    "scope_note": "Known event labels for this gateway container only. Counts in each report are separately restricted to its DB cutoff. A truncated latest tail alone is not a full-window total."
+  },
+  "post_db_cutoff_events_excluded": [
+    {
+      "at": "2026-09-18T02:55:25.594446637Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T02:55:25.795774898Z",
+      "event": "serial retry attempt"
+    },
+    {
+      "at": "2026-09-18T02:55:25.922816600Z",
+      "event": "serial retry recovered"
+    }
+  ],
+  "active_last_confirmed": {
+    "schema_version": 1,
+    "candidate_id": "deploy-20260917.1",
+    "logical_identity": "sha256:64e66c758a137891b30fc894ea5ad880d47136ae810f74b22026edbf7466cc6d",
+    "source_commit": "3a3ad8dcd2333f72d9d15eab3c305d3350371b6a",
+    "candidate_root": "C:\\Ruisheng\\candidates\\deploy-20260917.1",
+    "site_root": "C:\\Ruisheng\\candidates\\site-deploy-20260831.1",
+    "committed_at": "2026-09-17T03:53:04.0805185+00:00",
+    "operation_id": "ca28148c-5c97-496a-b102-5ef361ad602d"
+  },
+  "service_identity_checks": {
+    "same_ids_images_started_at_in_49_successful_snapshots": true,
+    "health_snapshot_count": 46,
+    "health_sources": [
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-1256-v2.json",
+        "sha256": "f72d30199b123429411eebede5e3b004ae7cc18a684a600ededfba60feb84228"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-132423.json",
+        "sha256": "2a9a3fb700e6f1d36fa7970c029ecc0638572fff8b684456e8b729dc4cb40ce2"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-135518.json",
+        "sha256": "5b98cc8588b90f647d853a1b9780a1b538b1de66afce1e900d144f36bac9dac6"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-142603.json",
+        "sha256": "589ae554397befa2801c527dddcd17f0d6f8e1a7f9bebe8e32c4dcfafff87f15"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-145424.json",
+        "sha256": "738f1f19d2dea973837e368af76e11e9f9dae350e7ab545e977d1f851901d709"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-152543.json",
+        "sha256": "d936a8664103f9d129b55398756832b5dc8976d21968ffddbc6e4227977a625a"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-161243.json",
+        "sha256": "092ea8e22cbcd3251949a34444f16590d6bda5a6539033c14d79612d247c36a7"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-162405.json",
+        "sha256": "a5a6478081d1f6a551eb23b7efa901828db566768077df0a95c47d17856e28b8"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-165534.json",
+        "sha256": "ad39da442662eb3b35e52ab1c026536ab1b71a235ac968034d8e997342a91ce9"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-172433.json",
+        "sha256": "ac28eadb9683702a7d0477951a3b62b69aa8878c6a908ec3338b5c0260751cc7"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-175433.json",
+        "sha256": "efd155ded1684b4208c661005cc6050168375eb61041b9f88b43d6a1e2c021c0"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-182505.json",
+        "sha256": "b22608579ee7d5c694f67eb35df32809e3f2594b83a40ce0360be6cbadfb039e"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-185407.json",
+        "sha256": "dafd61abf77a6e6d55b7dd87093b29aaffffc11560308c3b2d856720cc9ba0ae"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-192505.json",
+        "sha256": "c50a9924b222abf52af9fc170bcad6a36adef4be8119b3eb79a172a08bf583ed"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-195439.json",
+        "sha256": "346768d8387ad3374ed91b351f0373655b5902e912a7d8e3c12c4121bf701b9d"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-202450.json",
+        "sha256": "59cf7315545dedcee1b0a7b8226135c1d87ddd88357a0a15010e8adff6db7bee"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-205342.json",
+        "sha256": "7dda5a25483a6d63183198eea86e8bffb87cf0ce2ad9ae620fd899d56c236d3f"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-212340.json",
+        "sha256": "0ed85b6e54eb92b70221e8ac70de8ce3bdd781242e2e6025f17f6c055a172f59"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-215416.json",
+        "sha256": "8733306ccae20f74b20484eebc14cc28533d08102e711bbbb64428c62854c36a"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-222343.json",
+        "sha256": "3ae5f2ddfd17c9def7f5beaa73a0882fe76266e6c08d55acbae3f6e66f005ca2"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-225516.json",
+        "sha256": "7ec8f44c5b2b7e468f0c2ced2103d47891719dbab8158ae3400bedd873762dd8"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-232501.json",
+        "sha256": "d585085b4df2f3b0bceb32b90e020c38b0910466656d2d1bdf9883e935d3dd75"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260917-235446.json",
+        "sha256": "302a12031608a9980868613014479ad52f0c3adb905e02ba6423c0c7792471dc"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-002539.json",
+        "sha256": "09d64ec33ce6aa5de1dfb01f68dca17cb519205209e976082f3e01c8fb0f4d0d"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-005408.json",
+        "sha256": "0dabb0910373c09ef396c017281e14a28fe100e0623eae19769dc59717e9d06b"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-012439.json",
+        "sha256": "c1fa4b4fcd31c13ba093ea2185aaa9f0b37d94498efd0ae352e8e813d5b56015"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-015440.json",
+        "sha256": "5df267bd603c91bbe90ae0dbefaa5a551257b77de6d7af81b6e488f50805e63c"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-022540.json",
+        "sha256": "04de027b0b05e7216b976ede98407caccc3d8fa9a62399817ad0a10c31c87a18"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-025444.json",
+        "sha256": "1b1886164043e45a33372738f179d89a0bc27572d2b96ebd20fd7c355a3f95f3"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-032413.json",
+        "sha256": "cef350eb6a0502aecc8884a2fd3874780f3136e44a95cf681ec3019ddad090ba"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-035513.json",
+        "sha256": "b7b819f16ace9936d1b8c0c4c7e39aac246fafb43ae19552ae73c5f7a2df4bf0"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-042413.json",
+        "sha256": "358636551a4c90dd9fc68a42ea117214e9468c7f4ea676c05c92fdc0c2e2821d"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-045445.json",
+        "sha256": "b3fabc7d99d91667f8c659bc51698cee0550600c5c971ac48f56ffff2ee9a491"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-052551.json",
+        "sha256": "40ed981f0cda8bab0c970dd196eac1b82715cbcb41e9d4bb88ec92d08b565ae1"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-055348.json",
+        "sha256": "f1bf0cc3262db458815af8e55185ad02ea690dd7897f88c30218156d2204cceb"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-062448.json",
+        "sha256": "4447dcc8db4bb8490aab10665d2dbdd4359ebba18db1f10521cd710a7756e37d"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-065547.json",
+        "sha256": "af6417944653b384ac6dc3bc48f2bd2ed2751bbbe0a5836d4faed5d739adb320"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-072519.json",
+        "sha256": "1e8ae9ca70d3b7be5f7fdcd51822cae2526ea4c1cd8299c4fe9282103d5b9ca0"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-075348.json",
+        "sha256": "bb9ffdd585e9b63e6b5e2da8aa189214f1e5c00f442593cf8b5c95c345d99132"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-082349-initial.json",
+        "sha256": "cf4f2f713bdfe1b931fbc7d627def486f819079d110d5361162bf65d83a89e1d"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-082349.json",
+        "sha256": "5f91e516711e53c434987a883e64903a9c7555df329ef9f05ff5dabf2877ba44"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-085519.json",
+        "sha256": "7972eb5f07175a919e15b8f415839b67482eb73a41eddab282338372a4bfb2a9"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-092518.json",
+        "sha256": "4ea5fe79325de34af31c754613a7552f7db8300bfce20198acd22a4c6cd67abd"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-095452.json",
+        "sha256": "d8309b99c4f2e6b59f63e43916cbafbe9067ee6f06a0b1e50b6ee7f2e97b2c11"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-102427.json",
+        "sha256": "2cbdad9ad43a9dc1562492c1753a1d711fa264c0125f54eefcf56b372294c6a2"
+      },
+      {
+        "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-105428.json",
+        "sha256": "7cd8379f41b71ff05c33346b9379b414741061c9600ee3854b764b6a4f3065ae"
+      }
+    ],
+    "latest_services": [
+      {
+        "name": "/ruisheng-gw",
+        "id": "bcbb7f9b7a8dd09ddf38ede9196c4e0ba4232a5617695bbca3f1d0c90287e0bb",
+        "image": "sha256:b792ec9eba8ab537593387865921ed2def5e0bf4915c4e520163160fb0653044",
+        "status": "running",
+        "started": "2026-09-17T03:52:53.905206961Z",
+        "restarts": 0,
+        "oom_killed": false,
+        "error": "",
+        "health": null,
+        "mounts": [
+          {
+            "Type": "volume",
+            "Source": "/var/lib/docker/volumes/ruisheng-prod_ruisheng-gw-wal/_data",
+            "Destination": "/var/lib/ruisheng-gw/wal",
+            "RW": true
+          }
+        ],
+        "devices": [
+          {
+            "PathOnHost": "/dev/ruisheng-rs485",
+            "PathInContainer": "/dev/ruisheng-rs485",
+            "CgroupPermissions": "rw"
+          }
+        ]
+      },
+      {
+        "name": "/ruisheng-api",
+        "id": "5441daa06a3258cd158f158c2de3776db273c0794d53c9e4783f16085da36d94",
+        "image": "sha256:94300d0e2c5255aa324d068dd743aa8a438373283a8b0caae997af055ba10e80",
+        "status": "running",
+        "started": "2026-09-17T03:52:53.89354282Z",
+        "restarts": 0,
+        "oom_killed": false,
+        "error": "",
+        "health": null,
+        "mounts": [],
+        "devices": []
+      },
+      {
+        "name": "/ruisheng-postgres",
+        "id": "3df6e0e82be12ba6bbb44e1c1451aa5277c01750278329f384c2965167aa3047",
+        "image": "sha256:50a2abfa8bad354f4bc1567c6edf7426586fd99ee8cd8982bbaee157a460c6b1",
+        "status": "running",
+        "started": "2026-09-17T03:52:47.143098799Z",
+        "restarts": 0,
+        "oom_killed": false,
+        "error": "",
+        "health": {
+          "status": "healthy",
+          "failing_streak": 0
+        },
+        "mounts": [
+          {
+            "Type": "volume",
+            "Source": "/var/lib/docker/volumes/ruisheng-prod_ruisheng-pgdata/_data",
+            "Destination": "/var/lib/postgresql/data",
+            "RW": true
+          }
+        ],
+        "devices": []
+      },
+      {
+        "name": "/ruisheng-redis",
+        "id": "48db7cd96283a4f9e7288ab50604232831e058fbdd959e968223184ae7e058f5",
+        "image": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+        "status": "running",
+        "started": "2026-09-17T03:52:47.14593743Z",
+        "restarts": 0,
+        "oom_killed": false,
+        "error": "",
+        "health": {
+          "status": "healthy",
+          "failing_streak": 0
+        },
+        "mounts": [
+          {
+            "Type": "volume",
+            "Source": "/var/lib/docker/volumes/ruisheng-prod_ruisheng-redisdata/_data",
+            "Destination": "/data",
+            "RW": true
+          }
+        ],
+        "devices": []
+      },
+      {
+        "name": "/ruisheng-web",
+        "id": "abc48e940809bf98b03a0dffe4ed6d029f95c82bf097211d24811dc0f871fb0d",
+        "image": "sha256:d87040574072eb806ebab3007fb33ed7abee3170c4940e98bc9d892d6c868d7c",
+        "status": "running",
+        "started": "2026-09-17T03:52:54.070963384Z",
+        "restarts": 0,
+        "oom_killed": false,
+        "error": "",
+        "health": null,
+        "mounts": [
+          {
+            "Type": "bind",
+            "Source": "C:\\Ruisheng\\candidates\\site-deploy-20260831.1\\site-health-acl.conf",
+            "Destination": "/etc/nginx/site-health-acl.conf",
+            "RW": false
+          }
+        ],
+        "devices": []
+      }
+    ],
+    "latest_checks": {
+      "active_pointer_consistent": true,
+      "service_ids_images_started_at_unchanged": true,
+      "five_services_running": true,
+      "postgres_redis_healthy": true,
+      "other_services_healthcheck_not_configured": true,
+      "point_configuration_unchanged": true,
+      "expected_points": 38,
+      "null_values": 0,
+      "serial_device_stat_character_device": true,
+      "hardware_attestation": {
+        "schema_version": 1,
+        "result": "ready",
+        "timestamp": "2026-09-18T10:56:09.1391408+08:00",
+        "vendor_id": "0403",
+        "product_id": "6001",
+        "serial_number": "AI06JYFW",
+        "stable_path": "/dev/ruisheng-rs485",
+        "device_path": "/dev/ttyUSB0",
+        "bus_id": "4-1"
+      },
+      "hardware_attestation_age_seconds": 1.951728,
+      "maintenance_locks_clear": true,
+      "oom_killed": false,
+      "service_errors": [],
+      "host_free_physical_memory_kib": 21375988,
+      "system_disk_free_bytes": 112796921856,
+      "mounts_equal_previous_health_snapshot": true,
+      "recovery_task": {
+        "last_run": "2026-09-18T10:55:52.0000000+08:00",
+        "last_result": 0,
+        "next_run": "2026-09-18T10:56:51.0000000+08:00",
+        "name": "Ruisheng-Serial-Gateway-Recovery",
+        "state": "Ready"
+      },
+      "api_gateway_web_direct_probe_this_check": false,
+      "direct_probe_note": "Separate readiness probes succeeded in prior attribution crosscheck at 16:01; not repeated or claimed as fresh in this routine check."
+    },
+    "latest_health_at": "2026-09-18T10:56:11.0908686+08:00",
+    "current_state_unknown_after_last_successful_evidence": true,
+    "restart_count_zero_alone_not_used_as_proof": true
+  },
+  "last_hour": {
+    "label": "last_1h",
+    "starts": "2026-09-18T01:55:29.783754+00:00",
+    "ends": "2026-09-18T02:55:19.783754+00:00",
+    "rounds": 710,
+    "first_sample": "2026-09-18T01:55:30.183551+00:00",
+    "last_sample": "2026-09-18T02:55:19.778705+00:00",
+    "complete_rounds": 710,
+    "null_values": 0,
+    "median_interval_seconds": 5.036019,
+    "p95_interval_seconds": 6.1229552,
+    "max_interval_seconds": 11.199907,
+    "long_gap_count": 5,
+    "estimated_missing_between_samples": 5,
+    "trailing_age_seconds": 0.005049
+  },
+  "last_hour_events": {
+    "serial response timeout": 82,
+    "serial retry attempt": 77,
+    "serial retry recovered": 72,
+    "serial retry exhausted": 5,
+    "serial ingestion timeout": 0,
+    "serial ingestion failed": 0,
+    "serial exception": 0,
+    "serial send did not complete": 0
+  },
+  "sampling_incidents": [
+    {
+      "id": "dev001-timeout-burst-20260918-0913",
+      "detected_at": "2026-09-18T09:25:41.6000665+08:00",
+      "sampling_gap": {
+        "previous": "2026-09-18T01:12:51.205958+00:00",
+        "recorded_at": "2026-09-18T01:13:36.282362+00:00",
+        "seconds": 45.076404
+      },
+      "estimated_missing_in_gap": 8,
+      "evidence": "D:\\江苏润盛\\docs\\reports\\evidence\\20260918-dev001-timeout-burst.json",
+      "sha256": "6875f833a470e6e645f57778cddfeb45902e44c166b4e61a038cf189d42aecd9",
+      "notification_reason": "New 45.076404-second sampling gap with eight consecutive exhausted retries at 09:13, now recovered; report the material increase from the previous 14.96305-second maximum while keeping the original deadline."
+    }
+  ],
+  "access_incidents": [
+    {
+      "id": "ssh-publickey-rejected-20260918-112557",
+      "detected_at": "2026-09-18T11:30:26.745259+08:00",
+      "status": "unresolved",
+      "summary": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-20260918-112557-summary.json",
+      "last_confirmed_db_cutoff": "2026-09-18T02:55:19.783754+00:00",
+      "notified": true
+    }
+  ],
+  "final_attempt": {
+    "schema_version": 1,
+    "at": "2026-09-18T12:02:13.591880+08:00",
+    "trigger": "heartbeat",
+    "trigger_at": "2026-09-18T03:53:26.996Z",
+    "kind": "final_deadline_observation_access_failure",
+    "connectivity": {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\connectivity-20260918-115404.json",
+      "sha256": "84d8cb0b36ec1908b0b4f7c715b048581b6121cd10f99ab107f108f15db0b544"
+    },
+    "collector_attempts": 1,
+    "collector_exit_code": 1,
+    "collector_error": "Invoke-SshScript Write: pipe ended",
+    "collector_result_source": "Current task tool result; no snapshot created. Persisted separately from SSH handshake output.",
+    "new_snapshot_created": false,
+    "known_host_key_matched": true,
+    "authentication_error": "Permission denied (publickey)",
+    "handshake_evidence": {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-20260918-115404-ssh-handshake.json",
+      "sha256": "d4b7134dc3550f3f5f6c536a21139e861d2588a8eb3f66257b291b686af7e591"
+    },
+    "remote_command_executed_by_handshake": false,
+    "last_successful_snapshot": {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-105428.json",
+      "sha256": "e8440bfec8c64af0a43604de339e4dcbb1b85844082a481cb9f7de8ece08280c"
+    },
+    "latest_confirmed_db_cutoff": "2026-09-18T02:55:19.783754+00:00",
+    "current_sampling_status": "unknown_after_last_successful_evidence",
+    "outage_inferred": false,
+    "changes": [],
+    "repair_performed": false,
+    "repair_reason": "No new evidenced platform defect; remote authentication failed before inspection. Preserve site state.",
+    "tests": "One guarded collector attempt and one bounded SSH handshake. Independent local event deduplication, DB aggregate consistency, hashes and service identity checks.",
+    "rollback_position": "No production mutation this turn. Existing signed deploy-20260915.4 rollback and deployment backup retained.",
+    "report": "D:\\江苏润盛\\docs\\reports\\2026-09-18-dev001-24h-acceptance.md",
+    "acceptance_passed": false,
+    "notification": "NOTIFY"
+  },
+  "outages_retained": [
+    {
+      "started_at": "2026-09-16T17:44:00+08:00",
+      "recovered_at": "2026-09-17T00:47:34.7528074+08:00",
+      "timezone_note": "China Standard Time",
+      "type": "gateway_stopped_missing_serial_alias",
+      "cause_evidence": "diagnostic_process_resource_exhaustion_and_mount_retry_window",
+      "operation_id": "06c8610f-ce74-4d71-b1a8-7710a704c3e6",
+      "separately_excluded_from_stability": true,
+      "sample_gap": {
+        "last_before_outage": "2026-09-16T17:38:29.763154+08:00",
+        "first_after_recovery": "2026-09-17T00:47:32.706134+08:00",
+        "seconds": 25742.94298
+      },
+      "counted_in_overall_unavailability": true,
+      "segmented_for_continuous_acceptance": true
+    }
+  ],
+  "root_cause_attribution": {
+    "at": "2026-09-17T16:01:28.4593819+08:00",
+    "report": "D:\\江苏润盛\\docs\\reports\\2026-09-17-dev001-timeout-attribution.md",
+    "verification": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\attribution-verification.json",
+    "verification_sha256": "0adad2735a40b9f5a49a1db7f3b64fe7b4c9b39045676626948fba037baad658",
+    "user_priority": "Attribute platform software versus acquisition-board firmware/RS485 link; fix only evidenced platform defects; otherwise provide actionable hardware/firmware guidance.",
+    "status": "captured_timeouts_precede_application_framing_specific_physical_component_not_isolated",
+    "captured_request_attempts": 111,
+    "captured_valid_responses": 108,
+    "matching_complete_database_rounds": 108,
+    "captured_timeouts": 3,
+    "captured_failure_categories": {
+      "uart_framing_error_and_partial_payload": 1,
+      "three_byte_response_without_crc": 1,
+      "no_payload": 1
+    },
+    "captured_recovered_retries": 3,
+    "captured_exhausted_retries": 0,
+    "all_deployed_source_hashes_match_reviewed_code": true,
+    "software_regression_passed": 49,
+    "production_code_changed": false,
+    "known_platform_defect_reproduced": false,
+    "firmware_guidance": [
+      "Verify complete 81-byte normal and 5-byte exception responses, CRC and binary lengths.",
+      "Hold TX buffer until real UART transmit-complete; verify DMA length and DE/RE direction timing.",
+      "Recover UART errors and RX DMA/interrupt state; instrument RX bytes, TX bytes, TC and DE using a separate debug channel."
+    ],
+    "limitation": "No exhausted retry captured. USB trace does not uniquely isolate MCU firmware versus wiring/converter/lower driver/USBIP; need board-side RX/TX/DE evidence. Do not assign all 28 earlier missing rounds to these three samples.",
+    "next_action": "Hand evidence and guidance to device engineer; continue original 24h acceptance without unsupported PC changes or repeated long captures.",
+    "trace_cleanup_confirmed": true,
+    "diagnostic_issue": {
+      "initial_capture": "Rejected by Windows Job due to descendant_left_running; supervisor cleaned the job, no retained capture counted.",
+      "followup": "Added bounded exit wait; six completed captures retained safeguards. Independent final check confirms no usbmon module or temporary capture directories.",
+      "sampling_impact": "No service identity/StartedAt/config change or long outage observed; unchanged acceptance segment."
+    }
+  },
+  "safe_closeout": {
+    "production_changes_this_turn": [],
+    "current_turn_collector_and_handshake_exited": true,
+    "prior_trace_cleanup_confirmed": true,
+    "remote_cleanup_and_health_reverification_at_deadline": "unavailable_due_to_public_key_rejection",
+    "automation_status": "PAUSED",
+    "extend_to_48h": false,
+    "automation_paused_at": "2026-09-18T12:08:30.773654+08:00",
+    "automation_pause_receipt": {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\final-24h-automation-pause-receipt.json",
+      "sha256": "523c530d2267d7419708dc55b1d264220302da5130be97686671d86dbde54974"
+    }
+  },
+  "next_steps": [
+    "Onsite administrator: check lenovo public-key authorization, ACLs and OpenSSH authentication logs; restore approved access without relaxing authentication.",
+    "Device engineer: capture board RX/TX/DE, CRC, TX byte count, DMA completion and real UART TC; isolate firmware/converter/wiring using one controlled variable at a time.",
+    "If access is restored and original DB/logs survive, assess missing original segment retrospectively.",
+    "After any sampling-affecting repair, require a new continuous 24h from actual recovery; no automatic extension of this acceptance."
+  ],
+  "second_device_acceptance": "deferred_no_second_physical_device",
+  "source_evidence": [
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-105428.json",
+      "sha256": "e8440bfec8c64af0a43604de339e4dcbb1b85844082a481cb9f7de8ece08280c"
+    },
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-105428.json",
+      "sha256": "7cd8379f41b71ff05c33346b9379b414741061c9600ee3854b764b6a4f3065ae"
+    },
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-20260918-105428-summary.json",
+      "sha256": "0d2d98919c6f05102cb7430833147093f643b3e74b77c4ff914be171e8ae4d72"
+    },
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\connectivity-20260918-115404.json",
+      "sha256": "84d8cb0b36ec1908b0b4f7c715b048581b6121cd10f99ab107f108f15db0b544"
+    },
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-20260918-115404-ssh-handshake.json",
+      "sha256": "d4b7134dc3550f3f5f6c536a21139e861d2588a8eb3f66257b291b686af7e591"
+    },
+    {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-20260918-115404-summary.json",
+      "sha256": "6314b606b89b5bc86ed1a4bcdd104a9ed24e3c82ad597a926868d693172399f6"
+    }
+  ],
+  "context_reports_before_finalization": [
+    {
+      "path": "D:\\江苏润盛\\docs\\reports\\2026-09-17-dev001-timeout-attribution.md",
+      "sha256": "16a26371f13104049373928230ef80f44c0c69bdba1f9b34c7300757331f9446"
+    },
+    {
+      "path": "D:\\江苏润盛\\docs\\reports\\2026-09-17-serial-read-retry.md",
+      "sha256": "a44cd30fb4c9ca81dd92613069dafe7ef9f830b2c4ea605de579e89e5a7be2cc"
+    },
+    {
+      "path": "D:\\江苏润盛\\docs\\reports\\2026-09-16-field-acceptance.md",
+      "sha256": "867cec48684a37d08488b42a67d6f602382dec48e02fe48fbfd9087f9bf5946d"
+    },
+    {
+      "path": "D:\\江苏润盛\\docs\\reports\\2026-09-16-single-device-serial-diagnosis.md",
+      "sha256": "6fa2a41812e92824fec3b96800b3d79913919a2faa11a9839c5f80fe4590602b"
+    },
+    {
+      "path": "D:\\江苏润盛\\docs\\reports\\2026-09-17-serial-gateway-recovery.md",
+      "sha256": "f989d1f957c85e6b8801ed94186581638eb523f2b76a15c155f88d87b1f7c693"
+    },
+    {
+      "path": "D:\\江苏润盛\\docs\\reports\\2026-09-17-dev001-field-isolation.md",
+      "sha256": "2003a2cf64cd544e0b137092554a607bd0bbb2161e00f7bb52fb75df1300361d"
+    }
+  ],
+  "local_validation": {
+    "db_aggregate_matched_saved_summary": true,
+    "db_raw_rows_requeried": false,
+    "independent_event_reconstruction": true,
+    "source_hashes_verified": true,
+    "script": {
+      "path": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\finalize-24h-20260918.py",
+      "sha256": "f2b09bcd0ff4e9d8e1234e009cbd85af93e86698fa419e7ee40dca08ef37d0e7"
+    }
+  }
+}

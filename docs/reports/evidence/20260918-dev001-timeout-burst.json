@@ -1,0 +1,531 @@
+{
+  "schema_version": 1,
+  "id": "dev001-timeout-burst-20260918-0913",
+  "detected_at": "2026-09-18T09:25:41.6000665+08:00",
+  "sampling_gap": {
+    "previous": "2026-09-18T01:12:51.205958+00:00",
+    "recorded_at": "2026-09-18T01:13:36.282362+00:00",
+    "seconds": 45.076404
+  },
+  "estimated_missing_in_gap": 8,
+  "gap_events": [
+    {
+      "at": "2026-09-18T01:12:56.832087373Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:12:57.032667684Z",
+      "event": "serial retry attempt"
+    },
+    {
+      "at": "2026-09-18T01:12:58.033648059Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:12:58.033690769Z",
+      "event": "serial retry exhausted"
+    },
+    {
+      "at": "2026-09-18T01:13:01.866801701Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:02.068549901Z",
+      "event": "serial retry attempt"
+    },
+    {
+      "at": "2026-09-18T01:13:03.069183160Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:03.069247821Z",
+      "event": "serial retry exhausted"
+    },
+    {
+      "at": "2026-09-18T01:13:06.896130696Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:07.096937835Z",
+      "event": "serial retry attempt"
+    },
+    {
+      "at": "2026-09-18T01:13:08.097930981Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:08.097968933Z",
+      "event": "serial retry exhausted"
+    },
+    {
+      "at": "2026-09-18T01:13:11.928745213Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:12.129548633Z",
+      "event": "serial retry attempt"
+    },
+    {
+      "at": "2026-09-18T01:13:13.130619047Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:13.130656972Z",
+      "event": "serial retry exhausted"
+    },
+    {
+      "at": "2026-09-18T01:13:16.961836806Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:17.162933857Z",
+      "event": "serial retry attempt"
+    },
+    {
+      "at": "2026-09-18T01:13:18.164053211Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:18.164106761Z",
+      "event": "serial retry exhausted"
+    },
+    {
+      "at": "2026-09-18T01:13:21.997968308Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:22.198541665Z",
+      "event": "serial retry attempt"
+    },
+    {
+      "at": "2026-09-18T01:13:23.199406073Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:23.199442560Z",
+      "event": "serial retry exhausted"
+    },
+    {
+      "at": "2026-09-18T01:13:27.030942130Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:27.231727624Z",
+      "event": "serial retry attempt"
+    },
+    {
+      "at": "2026-09-18T01:13:28.233270885Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:28.233310665Z",
+      "event": "serial retry exhausted"
+    },
+    {
+      "at": "2026-09-18T01:13:32.061321212Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:32.262375133Z",
+      "event": "serial retry attempt"
+    },
+    {
+      "at": "2026-09-18T01:13:33.262912241Z",
+      "event": "serial response timeout"
+    },
+    {
+      "at": "2026-09-18T01:13:33.262954263Z",
+      "event": "serial retry exhausted"
+    }
+  ],
+  "gap_event_counts": {
+    "serial response timeout": 16,
+    "serial retry attempt": 8,
+    "serial retry exhausted": 8
+  },
+  "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-092518.json",
+  "snapshot_sha256": "4d74145634f634aca29d1ef74d826121aea38c748efd0985a11f8dee5ca9e457",
+  "previous_snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-085519.json",
+  "health_snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\heartbeat-health-20260918-092518.json",
+  "health_sha256": "4ea5fe79325de34af31c754613a7552f7db8300bfce20198acd22a4c6cd67abd",
+  "active": {
+    "schema_version": 1,
+    "candidate_id": "deploy-20260917.1",
+    "logical_identity": "sha256:64e66c758a137891b30fc894ea5ad880d47136ae810f74b22026edbf7466cc6d",
+    "source_commit": "3a3ad8dcd2333f72d9d15eab3c305d3350371b6a",
+    "candidate_root": "C:\\Ruisheng\\candidates\\deploy-20260917.1",
+    "site_root": "C:\\Ruisheng\\candidates\\site-deploy-20260831.1",
+    "committed_at": "2026-09-17T03:53:04.0805185+00:00",
+    "operation_id": "ca28148c-5c97-496a-b102-5ef361ad602d"
+  },
+  "services": [
+    {
+      "name": "/ruisheng-gw",
+      "id": "bcbb7f9b7a8dd09ddf38ede9196c4e0ba4232a5617695bbca3f1d0c90287e0bb",
+      "image": "sha256:b792ec9eba8ab537593387865921ed2def5e0bf4915c4e520163160fb0653044",
+      "status": "running",
+      "started": "2026-09-17T03:52:53.905206961Z",
+      "restarts": 0,
+      "oom_killed": false,
+      "error": "",
+      "health": null,
+      "mounts": [
+        {
+          "Type": "volume",
+          "Source": "/var/lib/docker/volumes/ruisheng-prod_ruisheng-gw-wal/_data",
+          "Destination": "/var/lib/ruisheng-gw/wal",
+          "RW": true
+        }
+      ],
+      "devices": [
+        {
+          "PathOnHost": "/dev/ruisheng-rs485",
+          "PathInContainer": "/dev/ruisheng-rs485",
+          "CgroupPermissions": "rw"
+        }
+      ]
+    },
+    {
+      "name": "/ruisheng-api",
+      "id": "5441daa06a3258cd158f158c2de3776db273c0794d53c9e4783f16085da36d94",
+      "image": "sha256:94300d0e2c5255aa324d068dd743aa8a438373283a8b0caae997af055ba10e80",
+      "status": "running",
+      "started": "2026-09-17T03:52:53.89354282Z",
+      "restarts": 0,
+      "oom_killed": false,
+      "error": "",
+      "health": null,
+      "mounts": [],
+      "devices": []
+    },
+    {
+      "name": "/ruisheng-postgres",
+      "id": "3df6e0e82be12ba6bbb44e1c1451aa5277c01750278329f384c2965167aa3047",
+      "image": "sha256:50a2abfa8bad354f4bc1567c6edf7426586fd99ee8cd8982bbaee157a460c6b1",
+      "status": "running",
+      "started": "2026-09-17T03:52:47.143098799Z",
+      "restarts": 0,
+      "oom_killed": false,
+      "error": "",
+      "health": {
+        "status": "healthy",
+        "failing_streak": 0
+      },
+      "mounts": [
+        {
+          "Type": "volume",
+          "Source": "/var/lib/docker/volumes/ruisheng-prod_ruisheng-pgdata/_data",
+          "Destination": "/var/lib/postgresql/data",
+          "RW": true
+        }
+      ],
+      "devices": []
+    },
+    {
+      "name": "/ruisheng-redis",
+      "id": "48db7cd96283a4f9e7288ab50604232831e058fbdd959e968223184ae7e058f5",
+      "image": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "status": "running",
+      "started": "2026-09-17T03:52:47.14593743Z",
+      "restarts": 0,
+      "oom_killed": false,
+      "error": "",
+      "health": {
+        "status": "healthy",
+        "failing_streak": 0
+      },
+      "mounts": [
+        {
+          "Type": "volume",
+          "Source": "/var/lib/docker/volumes/ruisheng-prod_ruisheng-redisdata/_data",
+          "Destination": "/data",
+          "RW": true
+        }
+      ],
+      "devices": []
+    },
+    {
+      "name": "/ruisheng-web",
+      "id": "abc48e940809bf98b03a0dffe4ed6d029f95c82bf097211d24811dc0f871fb0d",
+      "image": "sha256:d87040574072eb806ebab3007fb33ed7abee3170c4940e98bc9d892d6c868d7c",
+      "status": "running",
+      "started": "2026-09-17T03:52:54.070963384Z",
+      "restarts": 0,
+      "oom_killed": false,
+      "error": "",
+      "health": null,
+      "mounts": [
+        {
+          "Type": "bind",
+          "Source": "C:\\Ruisheng\\candidates\\site-deploy-20260831.1\\site-health-acl.conf",
+          "Destination": "/etc/nginx/site-health-acl.conf",
+          "RW": false
+        }
+      ],
+      "devices": []
+    }
+  ],
+  "current_release_window": {
+    "label": "current_release",
+    "starts": "2026-09-17T03:53:04.080518+00:00",
+    "ends": "2026-09-18T01:25:30.317247+00:00",
+    "rounds": 15241,
+    "first_sample": "2026-09-17T03:53:06.841516+00:00",
+    "last_sample": "2026-09-18T01:25:29.989885+00:00",
+    "complete_rounds": 15241,
+    "null_values": 0,
+    "median_interval_seconds": 5.0362089999999995,
+    "p95_interval_seconds": 6.105882049999999,
+    "max_interval_seconds": 45.076404,
+    "long_gap_count": 177,
+    "estimated_missing_between_samples": 186,
+    "trailing_age_seconds": 0.327362
+  },
+  "window_event_counts": {
+    "serial response timeout": 1589,
+    "serial retry attempt": 1403,
+    "serial retry recovered": 1217,
+    "serial retry exhausted": 186,
+    "serial ingestion timeout": 0,
+    "serial ingestion failed": 0,
+    "serial exception": 0,
+    "serial send did not complete": 0
+  },
+  "log_coverage": {
+    "method": "Union of all saved same-container events; latest untruncated anchor and exact matching event overlap through each subsequent tail.",
+    "recognized_event_coverage_continuous": true,
+    "gateway_id": "bcbb7f9b7a8dd09ddf38ede9196c4e0ba4232a5617695bbca3f1d0c90287e0bb",
+    "gateway_started_at": "2026-09-17T03:52:53.905206961Z",
+    "anchor_snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-072519.json",
+    "anchor_sha256": "3c39f9d92a00887818dbb5c86878e3abbfd2410bf2873e5f7bb7173109274ec2",
+    "anchor_untruncated": true,
+    "applicable_saved_snapshot_count": 46,
+    "applicable_sources": [
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-serial-retry-started.json",
+        "sha256": "403d3c238666ace0ff87330fd74eb9b279f2230e96ee118e3a61e52e24375a2c"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-serial-retry-observed.json",
+        "sha256": "3f0028cd8395d14fade976108392bcba5aa0b5d47c3d113e395a37308fa636cf"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-serial-retry-followup.json",
+        "sha256": "165d3a6a9ac9a869b995b5338af5a93522632e258254d4d7afe89ab5d5f71a3a"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-125630.json",
+        "sha256": "88267eccaf877b18f9f2a0523b3a20d4a90174e60644d4565a1568df2ab76e5e"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-132423.json",
+        "sha256": "92603c4df40330acd1fae7a9720563f1d282f8d0856c66f7a797edd617f81368"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-135518.json",
+        "sha256": "3f327268c94ccaa69ce3040288d7b814ce1bc0ca071fc7225c10eb19922b1e6a"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-142603.json",
+        "sha256": "fbc556bb935edbb7dc084acb5550dc3d298e5cd8f4b34d2f56a8617c8add9a90"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-145424.json",
+        "sha256": "b5fb57431b3fcef8e76b5ca5f1e5feea0f6ff388a3aedc200d58d564fcfcd561"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-152543.json",
+        "sha256": "7fd697e06cd59162dd8569dcee178da2ea699e30d646ccc235289205de22a7df"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-attribution-final.json",
+        "sha256": "735cbecafab25d0a3771fb80ce76e106b26b2c52e23a9ec73d644d95d466bc57"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-161243.json",
+        "sha256": "345381537a5f0884bf528d2b47299acdebe6b63b6812562fb59e0015f48c6a79"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-162405.json",
+        "sha256": "f2022aef834ffaf7c4ddb07838ab60980673aa42e99c2e49b394289ba5496320"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-165534.json",
+        "sha256": "c4600abade759b42fe83b1a0ea47ba708e9665c098cf6c166d3fcbf947343041"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-172433.json",
+        "sha256": "49378d5eae1f5e5de91e5e7c89dd2c389343c1070fcc4346a3f227d7b57945b8"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-175433.json",
+        "sha256": "9e1868d31dd60c7c82e99f48fa18276494261023cf4b0d65607bba1b510512f2"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-182505.json",
+        "sha256": "20016e323175a0abd75f7ab11adf2fcd6a71ee040b0d2b39e65619a2f20afde8"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-185407.json",
+        "sha256": "25759bd919b2f96cd5cfa0b4280318a7ce7cb7fbbf4796d381dd6b70c6a96875"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-192505.json",
+        "sha256": "f24f7cc97194c0a99920cc4ce90c5bf5534e9595f6a9fb6696155a178c0ac57d"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-195439.json",
+        "sha256": "6b8186ee8dd67407c6b2c21f9caf0e43d52a1e73aef95b973930230c1d316de9"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-202450.json",
+        "sha256": "fe5a777b2ac3eedd8c5a3c9f9e16412e901d854223755b394263bca7cb6c0096"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-205342.json",
+        "sha256": "b7e6c80d486cce911245871982c127b70eda546463292938be67bdbdcaa6544b"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-212340.json",
+        "sha256": "dd12452c9365c49455165f35f970ac10e831d8d2f756a1cfaa0ea2d8bde9990c"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-215416.json",
+        "sha256": "ed65ea243eae0a87260f82d98fc9979c38b167d95a651133c3c211f4c1d6994e"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-222343.json",
+        "sha256": "f91cb01106bb7b4545c50a39e92518b71fc2cfb81af49626d8b87edd4bcb8c7b"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-225516.json",
+        "sha256": "7aaa1ca6abd0a70f1b6a4008f024c207a2768e4bbc10fbcfabf75edd10c94b3f"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-232501.json",
+        "sha256": "fb69cb99362f86b0a1fff00d83a0641b35f2ee9f91a4f5701958d720c7d3eece"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-235446.json",
+        "sha256": "c09dda990659942df97ead1d521de386afc47901d30e4a389b2094251ecc4027"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-002539.json",
+        "sha256": "5eb87e5dd8cc5e1c63a3d949a83eb966b9e05625a461b2c06134cbcb6a4bdf6c"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-005408.json",
+        "sha256": "3f99da2d521a2f0cdf935da7f8171bba5ca8d46da24862776b861697ab161060"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-012439.json",
+        "sha256": "8d511ebb2f4d757bc36e07835ec007f47a75ece1cddb0ceb9136c5b101b410df"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-015440.json",
+        "sha256": "2222d349134792ba2bcf8103c5dc23a4fd3d2989d85b297d09d16eedcf86f21f"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-022540.json",
+        "sha256": "fe760326afed4acaa9356aee41b98c51d577d5c7b2e3c762802e189c3a42c3c0"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-025444.json",
+        "sha256": "9576ee3e6c838de4fe2aa3576b77d2ea50e0f674d4f8041a0cb288bd66267fca"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-032413.json",
+        "sha256": "fe7d6a65fb2a788993f0121f347b6a904d77b303559680c6254c6baef90d6441"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-035513.json",
+        "sha256": "a061cbada126794835249a6a9c0cf31b452593bb049a169c75314d0cfee10c68"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-042413.json",
+        "sha256": "e06b42bb3f1bc3832670018160df90e9950259080e2c2dfd59e411f3591369cf"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-045445.json",
+        "sha256": "6655095fe228b1becd217f6695df3234ac49f777cba6502fc470bf0a81c80a2a"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-052551.json",
+        "sha256": "35d493a7a19bbc8bffdd433dcc51fe8c59a4617aee972b6e558517bb46930f70"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-055348.json",
+        "sha256": "9082bf40cb59ea0bf0bfa6684c5654ae3752ea21086cac2f6a4da009704e91ef"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-062448.json",
+        "sha256": "5e754e54bc58d3d1c08d657fef228ddd43ed99c7678b046a35a4c986667810a8"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-065547.json",
+        "sha256": "79705e9fe7ae59435137178a40fa3b9d96aea706da1b6e05e43a105c00b0fc71"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-072519.json",
+        "sha256": "3c39f9d92a00887818dbb5c86878e3abbfd2410bf2873e5f7bb7173109274ec2"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-075348.json",
+        "sha256": "a08ba451b3d843238ec0ba1a177986b4c3f981b502f61e496b1d02084a6a0927"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-082349.json",
+        "sha256": "63838ae5ddfd5bb16d06718470857e3247c9dfdc65ac827376b6843c6b94279e"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-085519.json",
+        "sha256": "579cf94e4f0ed8f0263c1d3b75bb998ee1e3ef6459876603cd485da5ef808fd5"
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-092518.json",
+        "sha256": "4d74145634f634aca29d1ef74d826121aea38c748efd0985a11f8dee5ca9e457"
+      }
+    ],
+    "overlap_chain": [
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-075348.json",
+        "sha256": "a08ba451b3d843238ec0ba1a177986b4c3f981b502f61e496b1d02084a6a0927",
+        "matching_overlap_events": 3877,
+        "overlap_starts": "2026-09-17T04:23:01.763378+00:00",
+        "overlap_ends": "2026-09-17T23:24:47.646342+00:00",
+        "possibly_truncated": true
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-082349.json",
+        "sha256": "63838ae5ddfd5bb16d06718470857e3247c9dfdc65ac827376b6843c6b94279e",
+        "matching_overlap_events": 3922,
+        "overlap_starts": "2026-09-17T04:44:13.461968+00:00",
+        "overlap_ends": "2026-09-17T23:55:42.886740+00:00",
+        "possibly_truncated": true
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-085519.json",
+        "sha256": "579cf94e4f0ed8f0263c1d3b75bb998ee1e3ef6459876603cd485da5ef808fd5",
+        "matching_overlap_events": 3864,
+        "overlap_starts": "2026-09-17T05:30:08.211563+00:00",
+        "overlap_ends": "2026-09-18T00:23:06.475526+00:00",
+        "possibly_truncated": true
+      },
+      {
+        "snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260918-092518.json",
+        "sha256": "4d74145634f634aca29d1ef74d826121aea38c748efd0985a11f8dee5ca9e457",
+        "matching_overlap_events": 3893,
+        "overlap_starts": "2026-09-17T06:02:48.720927+00:00",
+        "overlap_ends": "2026-09-18T00:54:51.238498+00:00",
+        "possibly_truncated": true
+      }
+    ],
+    "unique_events_across_saved_snapshots": 4395,
+    "latest_tail_alone_is_complete": false,
+    "scope_note": "Known event labels for this gateway container only. Counts in each report are separately restricted to its DB cutoff. A truncated latest tail alone is not a full-window total."
+  },
+  "production_change": false,
+  "recovery": "Sampling resumed by the next complete 38-point sample at the gap endpoint without an agent intervention.",
+  "attribution": "Consecutive first and retry read timeouts; no contemporaneous USB or board trace. The physical component and existence of any lower-level platform fault are not isolated. No valid-frame ingestion defect reproduced.",
+  "deadline": "2026-09-18T11:53:04.080518+08:00"
+}

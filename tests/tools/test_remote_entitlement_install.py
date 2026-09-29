@@ -385,6 +385,8 @@ def _decoded_remote(arguments: list[str]) -> str:
 def _assert_key_only(arguments: list[str]) -> None:
     values = [arguments[index + 1] for index, value in enumerate(arguments[:-1]) if value == "-o"]
     assert values == SSH_OPTIONS
+    if "-EncodedCommand" in arguments:
+        assert arguments[arguments.index("-ExecutionPolicy") + 1] == "Bypass"
 
 
 def test_valid_install_uses_fixed_paths_key_only_transport_and_correlated_receipt(
@@ -1140,6 +1142,44 @@ def _function(source: str, name: str, next_name: str) -> str:
         + name
         + source.split("function " + name, 1)[1].split("function " + next_name, 1)[0]
     )
+
+
+@pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])
+def test_generated_grant_commands_parse(executable: str) -> None:
+    source = REMOTE.read_text(encoding="utf-8")
+    functions = _function(source, "ConvertTo-RemoteLiteral", "Invoke-RemoteVerifier")
+    harness = f"""
+$ErrorActionPreference='Stop'
+$script:RemoteVerifierPath='C:\\ProgramData\\Ruisheng\\bin\\target_entitlement_verifier.ps1'
+$script:RemoteIncomingRoot='C:\\ProgramData\\Ruisheng\\entitlements\\incoming'
+$SiteId='site-test'
+$OperationId='00000000-0000-4000-8000-000000000001'
+$Reason='approved entitlement'
+$script:GrantIdentity=@{{grant_sha256=('a'*64)}}
+$script:ReasonSha256=('b'*64)
+{functions}
+$results=foreach($action in @('Prepare','Install','Cleanup','Status')) {{
+  $command=New-RemoteVerifierCommand $action
+  $tokens=$null
+  $parseErrors=$null
+  [void][Management.Automation.Language.Parser]::ParseInput($command,[ref]$tokens,[ref]$parseErrors)
+  [ordered]@{{action=$action;errors=@($parseErrors|ForEach-Object {{$_.ErrorId}})}}
+}}
+ConvertTo-Json -InputObject @($results) -Depth 5 -Compress
+"""
+    completed = subprocess.run(
+        [_powershell(executable), "-NoProfile", "-NonInteractive", "-Command", harness],
+        capture_output=True,
+        check=False,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        env=_powershell_environment(),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    results = json.loads(completed.stdout)
+    assert len(results) == 4
+    assert all(not item["errors"] for item in results), results
 
 
 @pytest.mark.parametrize("executable", ["powershell.exe", "pwsh.exe"])

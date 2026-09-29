@@ -7,12 +7,49 @@ to SQL SELECT on devices + device_points. For testability, the pure
 
 from __future__ import annotations
 
+import logging
 from collections.abc import ValuesView
 from dataclasses import dataclass, field
 from typing import Any
 
 from ruisheng_gw.domain.device import Device
 from ruisheng_gw.domain.point import Point
+
+_MAX_SERIAL_DEVICES = 128
+_MAX_SLAVE_ADDRESS = 247
+logger = logging.getLogger(__name__)
+
+
+def _admit_device_rows(device_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate serial identity, then omit only the overflow devices on a full port."""
+    serial_addresses: dict[str, set[int]] = {}
+    serial_groups: dict[str, list[dict[str, Any]]] = {}
+    admitted: list[dict[str, Any]] = []
+    for row in device_rows:
+        if row.get("deleted_at") is not None:
+            continue
+        if row.get("transport_type") != "serial":
+            admitted.append(row)
+            continue
+        port = row.get("serial_port")
+        addr = int(row.get("modbus_addr", 1))
+        if not isinstance(port, str) or not port or not 1 <= addr <= _MAX_SLAVE_ADDRESS:
+            raise ValueError("invalid serial port or slave address")
+        addresses = serial_addresses.setdefault(port, set())
+        if addr in addresses:
+            raise ValueError(f"duplicate serial address on {port}")
+        addresses.add(addr)
+        serial_groups.setdefault(port, []).append(row)
+    for port, rows in serial_groups.items():
+        ordered = sorted(
+            rows, key=lambda item: (int(item.get("modbus_addr", 1)), str(item["dev_number"]))
+        )
+        if len(ordered) > _MAX_SERIAL_DEVICES:
+            omitted = [str(item["dev_number"]) for item in ordered[_MAX_SERIAL_DEVICES:]]
+            logger.error("serial capacity exceeded on %s; omitting %s", port, ",".join(omitted))
+            ordered = ordered[:_MAX_SERIAL_DEVICES]
+        admitted.extend(ordered)
+    return admitted
 
 
 @dataclass(frozen=True)
@@ -30,7 +67,7 @@ class AlarmSpec:
     alarm_type: str
     limit_value: float
     alarm_msg: str | None
-    waring_flag: bool
+    waring_flag: bool = field(compare=False)  # Runtime latch, not a configuration revision.
     relation_point_id: int | None
     relation_reg_bit: int | None
     relation_alarm_type: str | None
@@ -59,8 +96,12 @@ class RegistryEntry:
     dev_ip: str | None = None
     modbus_addr: int = 1  # ModBus slave address 1-247
     config_version: int = 0
+    read_profile: str = "point_groups"
     points: dict[int, PointEntry] = field(default_factory=dict)
     poll_cursor: int = 0
+    last_call: float = field(default=0.0, compare=False)
+    last_back: float = field(default=0.0, compare=False)
+    loss_count: int = field(default=0, compare=False)
 
 
 class Registry:
@@ -76,7 +117,9 @@ class Registry:
         alarm_rows: list[dict[str, Any]] | None = None,
     ) -> Registry:
         reg = cls()
-        for dr in device_rows:
+        for dr in _admit_device_rows(device_rows):
+            if not dr.get("is_enabled", True):
+                continue
             dev = Device(
                 dev_number=dr["dev_number"],
                 usr_group=dr["usr_group"],
@@ -91,6 +134,7 @@ class Registry:
                 dev_ip=dr.get("dev_ip"),
                 modbus_addr=dr.get("modbus_addr", 1),
                 config_version=int(dr.get("update_flag", 0)),
+                read_profile=dr.get("read_profile", "point_groups"),
             )
         for pr in point_rows:
             entry = reg._entries.get(pr["dev_number"])
@@ -152,17 +196,18 @@ class Registry:
         from sqlalchemy import text  # noqa: PLC0415 — lazy import avoids hard dep at module level
 
         async with engine.begin() as conn:
+            # Device, point and alarm rows must represent one committed configuration.
+            await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
             d_rows = (
                 (
                     await conn.execute(
                         text(
                             "SELECT dev_number, usr_group, update_interval_decisec, "
                             "       transport_type, serial_port, dev_ip, modbus_addr, "
-                            "       dev_ser_number, iccid, update_flag "
+                            "       dev_ser_number, iccid, update_flag, read_profile, is_enabled "
                             "FROM devices "
                             "WHERE usr_group IS NOT NULL "
-                            "  AND deleted_at IS NULL "
-                            "  AND is_enabled IS TRUE"
+                            "  AND deleted_at IS NULL"
                         )
                     )
                 )
@@ -207,6 +252,62 @@ class Registry:
 
     def get(self, dev_number: str) -> RegistryEntry | None:
         return self._entries.get(dev_number)
+
+    async def reload_serial_configuration(self, engine: Any) -> set[str]:
+        candidate = await self.load_from_db(engine)
+        return self.reconcile_serial(candidate)
+
+    def reconcile_serial(self, candidate: Registry) -> set[str]:
+        """Atomically apply serial membership/configuration; TCP only refreshes alarm rules.
+
+        TCP additions and serial-to-TCP transitions require a process restart. A TCP-to-serial
+        transition replaces its entry so the original TCP poller cannot keep transmitting.
+        """
+        updated: dict[str, RegistryEntry] = {}
+        changed: set[str] = set()
+        for dev_number, incoming in candidate._entries.items():
+            current = self._entries.get(dev_number)
+            if incoming.transport_type != "serial":
+                continue
+            if current is not None and incoming.config_version < current.config_version:
+                updated[dev_number] = current
+                continue
+            if current is not None and _configuration_key(current) == _configuration_key(incoming):
+                updated[dev_number] = current
+                continue
+            if current is not None and _endpoint_key(current) == _endpoint_key(incoming):
+                incoming.device = current.device
+            updated[dev_number] = incoming
+            changed.add(dev_number)
+        for dev_number, current in self._entries.items():
+            if dev_number in updated:
+                continue
+            if current.transport_type == "serial":
+                changed.add(dev_number)
+                continue
+            tcp_candidate = candidate.get(dev_number)
+            updated[dev_number] = current
+            if (
+                tcp_candidate is not None
+                and tcp_candidate.transport_type == "tcp"
+                and tcp_candidate.config_version > current.config_version
+            ):
+                current.points = {
+                    point_id: PointEntry(
+                        point=value.point,
+                        threshold=value.threshold,
+                        alarms=(
+                            tcp_candidate.points[point_id].alarms
+                            if point_id in tcp_candidate.points
+                            else ()
+                        ),
+                    )
+                    for point_id, value in current.points.items()
+                }
+                current.config_version = tcp_candidate.config_version
+                changed.add(dev_number)
+        self._entries = updated
+        return changed
 
     def replace_alarm_rules(
         self,
@@ -341,7 +442,7 @@ class Registry:
 
     def needs_config_reload(self, dev_number: str, version: int) -> bool:
         entry = self._entries.get(dev_number)
-        return entry is not None and version > entry.config_version
+        return entry is None or version > entry.config_version
 
     def entries(self) -> ValuesView[RegistryEntry]:
         return self._entries.values()
@@ -373,3 +474,25 @@ class Registry:
         if len(matches) != 1:
             return None
         return matches[0]
+
+
+def _endpoint_key(entry: RegistryEntry) -> tuple[object, ...]:
+    return (
+        entry.device.usr_group,
+        entry.device.dev_ser_number,
+        entry.device.iccid,
+        entry.transport_type,
+        entry.serial_port,
+        entry.dev_ip,
+        entry.modbus_addr,
+    )
+
+
+def _configuration_key(entry: RegistryEntry) -> tuple[object, ...]:
+    return (
+        *_endpoint_key(entry),
+        entry.config_version,
+        entry.update_interval_decisec,
+        entry.read_profile,
+        entry.points,
+    )

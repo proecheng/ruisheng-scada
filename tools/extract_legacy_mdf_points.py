@@ -111,7 +111,7 @@ EVIDENCE_SOURCE_FILES: dict[str, dict[str, Any]] = {
     },
     "current_point_api_contract": {
         "path": "ruisheng-api/src/ruisheng_api/api/schemas/points.py",
-        "sha256": "67D3359866E554192ECBCB8C4081C6035C9D904D2D0FEB449857273A9A6A8E0A",
+        "sha256": "047435BA2759AC76E475D80721D4E738CA7FDEE5DBA2280AB74F76171644666E",
         "evidence_ids": ["CURRENT_POINT_API_CONTRACT"],
         "locators": [
             {
@@ -124,7 +124,7 @@ EVIDENCE_SOURCE_FILES: dict[str, dict[str, Any]] = {
     },
     "current_point_api_routes": {
         "path": "ruisheng-api/src/ruisheng_api/api/points.py",
-        "sha256": "3C4B46C135164D07F2D98D0DA0F530876138D170D53131759F918AB707437347",
+        "sha256": "59493D8F3C4079758F00274C5F57F27CC3800498F9DEA3966B72D56DF9495357",
         "evidence_ids": ["CURRENT_POINT_API_MUTATION_PATHS"],
         "locators": [
             {"purpose": "point mutation fields", "line_start": 28, "line_end": 61},
@@ -137,7 +137,7 @@ EVIDENCE_SOURCE_FILES: dict[str, dict[str, Any]] = {
     },
     "current_device_api_routes": {
         "path": "ruisheng-api/src/ruisheng_api/api/devices.py",
-        "sha256": "26F8DBFD2FA6D639D7BB1A45A071C6ED9CAEACD5248F5184DD3D95E4E1909FDB",
+        "sha256": "45FF243E0CA0B81B153EE65858D3388C8BC9150E903E417C1605E2BE27C61F9E",
         "evidence_ids": ["CURRENT_DEVICE_API_MUTATION_PATHS"],
         "locators": [
             {"purpose": "device create path", "line_start": 64, "line_end": 88},
@@ -146,7 +146,7 @@ EVIDENCE_SOURCE_FILES: dict[str, dict[str, Any]] = {
     },
     "current_gateway_decode": {
         "path": "ruisheng-gw/src/ruisheng_gw/ingest.py",
-        "sha256": "CF9A7057D51AB654EFA86EA65AC5DC0DA3FA3B4113436EB8EB9D5AB34F98014B",
+        "sha256": "A8691DA2B65BEEF5474BD4FD867BB0EF212AA27FF8B7B1E20945F9514982ED83",
         "evidence_ids": ["CURRENT_GATEWAY_DECODE_SEMANTICS"],
         "locators": [
             {"purpose": "coil/register decode", "line_start": 220, "line_end": 280},
@@ -162,7 +162,7 @@ EVIDENCE_SOURCE_FILES: dict[str, dict[str, Any]] = {
     },
     "current_gateway_registry": {
         "path": "ruisheng-gw/src/ruisheng_gw/domain/registry.py",
-        "sha256": "96F6F78B10CD0C84F201D443D8D8FA4687809C5401E471C66C0242C8A19DF132",
+        "sha256": "380E0B449BB74399B9288F71438EFC5886913B31EADCF4ED2CA03ED81248477E",
         "evidence_ids": ["CURRENT_GATEWAY_REGISTRY_MAPPING"],
         "locators": [
             {"purpose": "device and point mapping", "line_start": 40, "line_end": 119},
@@ -171,7 +171,7 @@ EVIDENCE_SOURCE_FILES: dict[str, dict[str, Any]] = {
     },
     "current_gateway_poller": {
         "path": "ruisheng-gw/src/ruisheng_gw/scheduler/poller.py",
-        "sha256": "36C3E93EEBE0B24B45700FEEA6E7A3D97173B214E10E1E300B22C3C864A6DB9C",
+        "sha256": "8DC756B1D49906259A98435032816D3F560DF55B743860FD93B821D7A4C80D29",
         "evidence_ids": ["CURRENT_GATEWAY_POLL_ROUTING"],
         "locators": [
             {
@@ -183,17 +183,17 @@ EVIDENCE_SOURCE_FILES: dict[str, dict[str, Any]] = {
     },
     "current_gateway_runtime": {
         "path": "ruisheng-gw/src/ruisheng_gw/main.py",
-        "sha256": "0F24E94C5F9BE616EAE15B99FB1871CCDA18FF02935B564D5FA69B9655219EA8",
+        "sha256": "D55E2886C6841C16070D40ECB31897EE218EFE92F12E260D6C6909526960081A",
         "evidence_ids": ["CURRENT_GATEWAY_STARTUP_AND_RELOAD", "CURRENT_GATEWAY_SERIAL_SOURCE"],
         "locators": [
-            {"purpose": "registry startup load", "line_start": 115, "line_end": 124},
-            {"purpose": "alarm-only reload paths", "line_start": 159, "line_end": 202},
-            {"purpose": "serial buses from runtime config", "line_start": 356, "line_end": 379},
+            {"purpose": "registry startup load", "line_start": 136, "line_end": 145},
+            {"purpose": "alarm-only reload paths", "line_start": 180, "line_end": 223},
+            {"purpose": "serial buses from runtime config", "line_start": 377, "line_end": 400},
         ],
     },
     "current_gateway_serial_config": {
         "path": "ruisheng-gw/src/ruisheng_gw/config.py",
-        "sha256": "6D4B8107B05C536DBF604E0B803ADE04AF87B7020118BE6937318AEBD818847E",
+        "sha256": "A5335A65F4A2AB08A3A3CDA78E83E338C013613DB2FB2F31DD0330139A1267E2",
         "evidence_ids": ["CURRENT_GATEWAY_SERIAL_CONFIG"],
         "locators": [
             {"purpose": "GW_SERIAL_PORTS settings field", "line_start": 79, "line_end": 103},
@@ -1798,10 +1798,15 @@ def extract(source: Path, *, page_number: int = DEFAULT_PAGE_NUMBER) -> dict[str
             },
         ],
         "current_runtime_compatibility": {
-            "fc3_signed_16_decode": "unsupported_if_legacy_mapping_applies",
+            "fc3_signed_16_decode": "full_register_when_value_type_is_signed_byte",
             "fc1_point_number_r_bit_semantics": "unresolved_and_incompatible_with_current_api_contract",
-            "api_allowed_value_types": ["字", "双字", "bit"],
-            "gateway_decode_semantics": ["unsigned_16", "unsigned_32_high_word_first", "bit"],
+            "api_allowed_value_types": ["字", "双字", "有符号字节", "无符号字节", "bit"],
+            "gateway_decode_semantics": [
+                "unsigned_16",
+                "signed_16_when_value_type_is_signed_byte",
+                "unsigned_32_high_word_first",
+                "bit",
+            ],
             "scaling_formula": "display=(raw*point_ratio+point_offset)*user_ratio+user_point_offset",
             "hot_reload": "devices, points and serial bindings are startup-loaded; alarm rules alone reload",
             "safe_atomic_disabled_onboarding": "not_supported_by_current_rest_api",

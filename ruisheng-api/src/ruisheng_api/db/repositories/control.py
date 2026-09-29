@@ -97,7 +97,7 @@ async def cancel_action(session: AsyncSession, cmd_id: str, *, user_name: str | 
     sql = text("""
         UPDATE user_control_actions
         SET result = 'cancelled', completed_at = now()
-        WHERE cmd_id = :c AND result = 'pending'
+        WHERE cmd_id = :c AND result = 'pending' AND NOT (action ? 'dispatched_at')
           AND (CAST(:u AS text) IS NULL OR user_name = :u)
     """)
     res: CursorResult[tuple[()]] = await session.execute(  # type: ignore[assignment]

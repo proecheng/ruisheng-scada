@@ -17,6 +17,7 @@ class SerialPortConfig(BaseModel):
 
     port: str
     baud_rate: int = 9600
+    read_timeout_retries: int = Field(default=1, ge=0, le=1, strict=True)
 
 
 class Config(BaseSettings):

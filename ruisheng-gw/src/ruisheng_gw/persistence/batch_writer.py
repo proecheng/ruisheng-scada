@@ -96,15 +96,13 @@ class BatchWriter:
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
-            if stop_task in done:
-                # Shutdown: cancel pending operations and break
+            # A read may finish together with stop/timer; retain its dequeued row.
+            if not get_task.done():
                 await _cancel(get_task)
-                break
-
-            if get_task in done:
+            if not get_task.cancelled():
                 buffer.append(get_task.result())
-            else:
-                await _cancel(get_task)
+            if stop_task in done:
+                break
 
             # Flush if size threshold or timer fired
             timer_fired = timer_task in done

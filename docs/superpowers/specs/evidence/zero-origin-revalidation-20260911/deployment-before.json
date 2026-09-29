@@ -1,0 +1,75 @@
+{
+  "observed_at": "2026-09-11T14:23:58.5797962+08:00",
+  "passed": true,
+  "hostname": "WIN-OAUCM8UQUGH",
+  "operation_id": "4d786d05-fb02-4e68-927a-3eec4edaa823",
+  "candidate_id": "deploy-20260911.1",
+  "source_commit": "a78c522b6879e4ed54a7f369dfcdb0083001a071",
+  "logical_identity": "sha256:9a4a6b959b5ec97dcaa554355ec6a4200b60d85c2733e88b29921952b671ac40",
+  "alembic_head": "0013_serial_polling_profile",
+  "journal_status": "committed",
+  "maintenance_status": "committed",
+  "backup_verified": true,
+  "backup_hashes_valid": true,
+  "restore_container_stopped": true,
+  "original_role_login_restored": true,
+  "nonrelease_environment_unchanged": true,
+  "guard_hashes_valid": true,
+  "lock_files_absent": true,
+  "services": [
+    {
+      "name": "ruisheng-postgres",
+      "id": "00040ed31f7a3531c9ea88d07b4df202aab8235aad203a76f7c28dcb22eb65b8",
+      "image": "sha256:50a2abfa8bad354f4bc1567c6edf7426586fd99ee8cd8982bbaee157a460c6b1",
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "ruisheng-redis",
+      "id": "d7ab831009ed7152b614ddf77c06de890ee364794223a305f09caf69bff8667a",
+      "image": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "ruisheng-api",
+      "id": "36187ca86a446ca7e934b793a3a42d4a1bcb44b9a6c788227518efc90606d3f6",
+      "image": "sha256:af368f38be3ff0fe9ac477277352dfea69d85980ae18e487ea2d5078d9e21537",
+      "running": true,
+      "health": null
+    },
+    {
+      "name": "ruisheng-gw",
+      "id": "b574dd10341c066b7a3b20f3e7e8ac58b258854c5d558a40bcd2bb1f1185f4c5",
+      "image": "sha256:8d3eda8af8f7d884d96dd1a5062ba25ad60f31f85b064b3c91f7fd12cb860f41",
+      "running": true,
+      "health": null
+    },
+    {
+      "name": "ruisheng-web",
+      "id": "4db2bce8d709f20ac4a526ba2666c4ef434ac7d91bdc9cd3ba2f35f786ab3e55",
+      "image": "sha256:1d6dc9c870da392fc42b85ae78e9483092dde23d38b485aaf15dff88ebd6098b",
+      "running": true,
+      "health": null
+    }
+  ],
+  "api": {
+    "database": "ready",
+    "redis": "ready",
+    "service": "ready",
+    "status": "ready"
+  },
+  "gw": {
+    "batch": "ready",
+    "database": "ready",
+    "outbox": "ready",
+    "redis": "ready",
+    "service": "ready",
+    "status": "ready"
+  },
+  "web_http": 200,
+  "commit_audit_count": 1,
+  "counts": "0|0|0|0",
+  "changes": false,
+  "physical_acceptance": false
+}

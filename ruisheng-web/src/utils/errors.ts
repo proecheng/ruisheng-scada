@@ -22,5 +22,11 @@ const ERR_MAP: Record<number, FriendlyMessage> = {
 
 export function mapErrCode(code: number, rawMessage: string): FriendlyMessage {
   if (code === 0) return { headline: rawMessage }
+  if (code === -100 && rawMessage === 'serial_port and modbus_addr already in use') {
+    return { headline: '该串口的从站地址已被占用', hint: '停用设备仍占用地址' }
+  }
+  if (code === -100 && rawMessage === 'zero_origin_38 points require FC3 and register span within 0..37') {
+    return { headline: '点位不符合38寄存器读取方案', hint: '功能码须为03，完整寄存器范围须在0至37内' }
+  }
   return ERR_MAP[code] ?? { headline: rawMessage }
 }

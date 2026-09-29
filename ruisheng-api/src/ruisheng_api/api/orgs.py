@@ -31,6 +31,20 @@ def _must_not_exceed(me: CurrentUser, target_authority: str) -> None:
         raise BizError(ErrCode.FORBIDDEN, "cannot grant authority above your own")
 
 
+def _must_outrank(me: CurrentUser, target_authority: str) -> None:
+    if me.role == "Administrators":
+        return
+    if _ROLE_LEVEL.get(target_authority, 99) >= _ROLE_LEVEL.get(me.role, 0):
+        raise BizError(ErrCode.FORBIDDEN, "cannot modify a user at or above your role")
+
+
+def _must_not_grant_extra_control(me: CurrentUser, control_authority: object) -> None:
+    if me.role == "Administrators":
+        return
+    if type(control_authority) is not int or control_authority & ~me.control_authority:
+        raise BizError(ErrCode.FORBIDDEN, "cannot grant control authority you do not hold")
+
+
 async def _require_visible_user(session: AsyncSession, user_name: str) -> None:
     if await users_repo.load_by_user_name(session, user_name) is None:
         raise BizError(ErrCode.BAD_PARAM, "user not found")
@@ -108,6 +122,9 @@ async def update_user(
         u = await users_repo.load_by_user_name(session, user_name)
         if u is None:
             raise BizError(ErrCode.BAD_PARAM, "user not found")
+        _must_outrank(user, u.authority)
+        if "control_authority" in updates:
+            _must_not_grant_extra_control(user, updates["control_authority"])
         await users_repo.update_user(session, u, updates)
     return ok(data=UserOut.model_validate(u).model_dump())
 
@@ -126,6 +143,7 @@ async def delete_user(
         u = await users_repo.load_by_user_name(session, user_name)
         if u is None:
             raise BizError(ErrCode.BAD_PARAM, "user not found")
+        _must_outrank(user, u.authority)
         await users_repo.soft_delete_user(session, u)
     return ok(data={"deleted": user_name})
 
@@ -163,6 +181,7 @@ async def list_phones(
         check_role(user, allowed=("GroupCompany", "Administrators"))
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        await _require_visible_user(session, user_name)
         rows = await users_repo.list_phones(session, user_name)
     return ok(data={"items": [{"id": r.id, "phone_number": r.phone_number} for r in rows]})
 
@@ -192,6 +211,7 @@ async def delete_phone(
     check_role(user, allowed=("GroupCompany", "Administrators"))
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        await _require_visible_user(session, user_name)
         deleted = await users_repo.delete_phone(session, user_name=user_name, phone_id=phone_id)
         if not deleted:
             raise BizError(ErrCode.BAD_PARAM, "phone not found")
@@ -213,6 +233,7 @@ async def list_emails(
         check_role(user, allowed=("GroupCompany", "Administrators"))
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        await _require_visible_user(session, user_name)
         rows = await users_repo.list_emails(session, user_name)
     return ok(
         data={
@@ -253,6 +274,7 @@ async def delete_email(
     check_role(user, allowed=("GroupCompany", "Administrators"))
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
+        await _require_visible_user(session, user_name)
         deleted = await users_repo.delete_email(session, user_name=user_name, email_id=email_id)
         if not deleted:
             raise BizError(ErrCode.BAD_PARAM, "email not found")

@@ -1,0 +1,66 @@
+{
+  "at": "2026-09-17T01:44:55.8783646+08:00",
+  "candidate": "deploy-20260915.4",
+  "configuration_version": 23,
+  "sample_gap": {
+    "last_before_outage": "2026-09-16T17:38:29.763154+08:00",
+    "first_after_recovery": "2026-09-17T00:47:32.706134+08:00",
+    "seconds": 25742.94298
+  },
+  "gateway_start_failure_at": "2026-09-16T17:44:00.732911914+08:00",
+  "recovery_operation_id": "06c8610f-ce74-4d71-b1a8-7710a704c3e6",
+  "process_attribution": {
+    "confidence": "strong_timestamp_correlation_not_archived_command_line_proof",
+    "processes": [
+      {
+        "pid": 9692,
+        "created_utc": "2026-09-16T09:08:36.0566104Z",
+        "peak_event_commit_bytes": 30849560576,
+        "matching_invocation": "host-simple.remote.ps1"
+      },
+      {
+        "pid": 8224,
+        "created_utc": "2026-09-16T09:05:18.3050754Z",
+        "peak_event_commit_bytes": 17083555840,
+        "matching_invocation": "host-bounded.remote.ps1"
+      }
+    ],
+    "exact_faulty_expression": "unconfirmed; bounded local CRLF/CRCRLF Get-Content -Tail fixture did not reproduce",
+    "active_stale_processes_found": false
+  },
+  "post_recovery": {
+    "first_sample": "2026-09-16T16:47:32.706134+00:00",
+    "last_sample": "2026-09-16T17:44:42.338176+00:00",
+    "observed_seconds": 3429.632042,
+    "rounds": 628,
+    "complete_rounds": 628,
+    "nulls": 0,
+    "matched_timeouts": 55,
+    "estimated_missing": 55,
+    "max_interval_seconds": 15.056125
+  },
+  "safeguards": {
+    "worker_timeout_seconds": 120,
+    "worker_tree_commit_limit_mb": 512,
+    "max_retained_chars_per_stream": 2097152,
+    "ssh_timeout_seconds": 150,
+    "job_assignment_before_code": true,
+    "kill_on_supervisor_exit": true,
+    "tests_passed": 32,
+    "field_collector_verified": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260917-supervised-verification.json"
+  },
+  "limitations": [
+    "The original serial timeout problem persists after recovery.",
+    "The physical component responsible for UART errors is unconfirmed.",
+    "The outage contributes to service unavailability; it is not dropped from total availability figures.",
+    "Windows job containment does not cancel arbitrary work inside external Docker/WSL daemons; SQL retains its own 30s deadline."
+  ],
+  "evidence_sha256": {
+    "gw-exit-inspect.json": "12a082b0de3b3b468758603c7a7e141356ae3203e0182f60ef9bb24ce8cb52d4",
+    "recovery-preflight-20260917.json": "cfdb14117d97a874dc010cc43fae677fa22ad9e1d90e8fbdf8e94ea282d1b177",
+    "recovery-context-20260917.json": "f9a482995d4c9634b7989461c2fd2b694894e698cc5b26b69393556d302d03f7",
+    "process-attribution-20260917.json": "c48cefbb0a675001abc7498c8bed1998c21df3911c1ebe430496a534947e33e9",
+    "diagnostic-limits-tests.xml": "52452649c187d8d4d666824859f30471c14bcae93a94375cc002caf00b92807a",
+    "tail-reproduction-20260917.json": "df7cd492c124a4aa4ba4e0dc14902b8256f61e045e637246f0b3d7150ec83e97"
+  }
+}

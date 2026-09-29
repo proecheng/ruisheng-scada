@@ -126,56 +126,61 @@ async function toggleEnabled(d: Device): Promise<void> {
       @action="router.push('/devices/new')"
     />
 
-    <table v-else class="device-table">
-      <thead>
-        <tr>
-          <th>设备号</th>
-          <th>名称</th>
-          <th>启用</th>
-          <th>状态</th>
-          <th>通信</th>
-          <th>公司</th>
-          <th>部门</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="d in filtered" :key="d.dev_number" data-testid="device-row" @click="openDetail(d)">
-          <td><code data-testid="device-number">{{ d.dev_number }}</code></td>
-          <td>{{ d.dev_name }}</td>
-          <td>{{ d.is_enabled === false ? '停用' : '启用' }}</td>
-          <td>
-            <span class="pill" :data-state="d.state">{{
-              d.state === 'online' ? '在线' : d.state === 'offline' ? '离线' : '告警'
-            }}</span>
-          </td>
-          <td>{{ d.transport_type === 'serial' ? `串口 ${d.serial_port ?? '—'}` : `TCP ${d.dev_ip ?? '不限 IP'}` }}</td>
-          <td>{{ d.company ?? '—' }}</td>
-          <td>{{ d.department ?? '—' }}</td>
-          <td @click.stop>
-            <button
-              v-permission="['Administrators','GroupCompany','Company']"
-              @click="router.push(`/devices/${d.dev_number}/edit`)"
-            >
-              编辑
-            </button>
-            <button
-              v-permission="['Administrators','GroupCompany','Company']"
-              @click="toggleEnabled(d)"
-            >
-              {{ d.is_enabled === false ? '启用' : '停用' }}
-            </button>
-            <button
-              v-permission="['Administrators','GroupCompany','Company']"
-              class="danger"
-              @click="askDelete(d)"
-            >
-              删除
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else class="table-scroll" role="region" aria-label="设备列表" tabindex="0">
+      <table class="device-table">
+        <thead>
+          <tr>
+            <th>设备号</th>
+            <th>名称</th>
+            <th>启用</th>
+            <th>状态</th>
+            <th>通信</th>
+            <th>公司</th>
+            <th>部门</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="d in filtered" :key="d.dev_number" data-testid="device-row" @click="openDetail(d)">
+            <td><code data-testid="device-number">{{ d.dev_number }}</code></td>
+            <td>{{ d.dev_name }}</td>
+            <td>{{ d.is_enabled === false ? '停用' : '启用' }}</td>
+            <td>
+              <span class="pill" :data-state="d.state">{{
+                d.state === 'online' ? '在线' : d.state === 'offline' ? '离线' : '告警'
+              }}</span>
+            </td>
+            <td class="communication">
+              <span>{{ d.transport_type === 'serial' ? `串口 ${d.serial_port ?? '—'}` : `TCP ${d.dev_ip ?? '不限 IP'}` }}</span>
+              <small v-if="d.modbus_addr !== undefined">从站地址 {{ d.modbus_addr }}</small>
+            </td>
+            <td>{{ d.company ?? '—' }}</td>
+            <td>{{ d.department ?? '—' }}</td>
+            <td class="row-actions" @click.stop>
+              <button
+                v-permission="['Administrators','GroupCompany','Company']"
+                @click="router.push(`/devices/${d.dev_number}/edit`)"
+              >
+                编辑
+              </button>
+              <button
+                v-permission="['Administrators','GroupCompany','Company']"
+                @click="toggleEnabled(d)"
+              >
+                {{ d.is_enabled === false ? '启用' : '停用' }}
+              </button>
+              <button
+                v-permission="['Administrators','GroupCompany','Company']"
+                class="danger"
+                @click="askDelete(d)"
+              >
+                删除
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <ConfirmDialog
       v-model="showDeleteDialog"
@@ -190,11 +195,16 @@ async function toggleEnabled(d: Device): Promise<void> {
 <style scoped>
 .device-list { background: #fff; padding: 16px; border-radius: 6px; }
 .toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-.filters { display: flex; gap: 8px; flex-wrap: wrap; }
-.search, select { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.search, select { max-width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
 .add { background: var(--color-primary); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
-.device-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table-scroll { width: 100%; overflow-x: auto; }
+.device-table { width: 100%; min-width: 820px; border-collapse: collapse; font-size: 13px; }
 .device-table th, .device-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; }
+.communication span, .communication small { display: block; }
+.communication small { margin-top: 3px; color: var(--color-text-secondary); white-space: nowrap; }
+.row-actions { white-space: nowrap; }
+.row-actions button + button { margin-left: 6px; }
 .device-table tbody tr { cursor: pointer; }
 .device-table tbody tr:hover { background: #f7f7f7; }
 .pill { padding: 2px 8px; border-radius: 10px; font-size: 11px; }

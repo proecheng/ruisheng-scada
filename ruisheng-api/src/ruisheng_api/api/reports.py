@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
@@ -18,6 +19,13 @@ from ..services.reports.excel_export import export_daily_xlsx
 from .schemas.reports import DailyReportRequest
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def shanghai_day_bounds(day: date) -> tuple[datetime, datetime]:
+    """Return the half-open Beijing civil day for the selected calendar date."""
+    start = datetime.combine(day, time.min, tzinfo=SHANGHAI)
+    return start, start + timedelta(days=1)
 
 
 @router.post("/daily")
@@ -26,8 +34,7 @@ async def daily_report(
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> object:
-    start = datetime.combine(body.day, time.min, tzinfo=UTC)
-    end = start + timedelta(days=1)
+    start, end = shanghai_day_bounds(body.day)
     async with session.begin():
         await apply_tenant_context(session, usr_group=user.usr_group, role=user.role)
         rows_q = text("""

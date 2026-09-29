@@ -1,9 +1,9 @@
-"""Length-aware ModBus RTU-on-TCP framer.
+"""Length-aware ModBus RTU framer with optional legacy TCP heartbeat filtering.
 
 Strategy:
 1. Strip DTU heartbeat lines (\\r?\\n[!-~]{3,}\\r?\\n) BEFORE framing.
    Matches full printable-ASCII lines like \\r\\n###HEARTBEAT\\r\\n.
-   Does NOT match binary Modbus bytes (0x00–0x20 are outside [!-~]).
+   Disabled on serial: valid register payloads can contain the same byte pattern.
 2. Look at byte[1] (FC) in buffer to determine expected length:
    - FC 3 resp: [slave fc byte_count N data CRC_lo CRC_hi] = 3 + N + 2
    - FC 5/6 req/resp: 8 bytes total
@@ -56,21 +56,27 @@ _KNOWN_BASE_FCS: frozenset[int] = frozenset({0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
 
 
 class Framer:
-    def __init__(self, *, idle_ms: int = 300) -> None:
+    def __init__(self, *, idle_ms: int = 300, strip_dtu_heartbeats: bool = True) -> None:
         self._buf = bytearray()
         self._ready: deque[bytes] = deque()
         self._last_ingest_ms: int = 0
         self._idle_ms = idle_ms
+        self._strip_dtu_heartbeats = strip_dtu_heartbeats
         self.stats: dict[str, int] = {"resync": 0, "heartbeat_stripped": 0}
 
     def feed(self, data: bytes, *, now_ms: int = 0) -> None:
         """Feed raw bytes into the framer. Strips DTU heartbeat lines first."""
-        stripped, n = _DTU_HEARTBEAT_RE.subn(b"", data)
+        stripped, n = _DTU_HEARTBEAT_RE.subn(b"", data) if self._strip_dtu_heartbeats else (data, 0)
         if n > 0:
             self.stats["heartbeat_stripped"] += n
         self._buf.extend(stripped)
         self._last_ingest_ms = now_ms
         self._try_parse()
+
+    def clear(self) -> None:
+        """Discard partial and already decoded input at a serial transaction boundary."""
+        self._buf.clear()
+        self._ready.clear()
 
     def tick(self, now_ms: int) -> None:
         """Call periodically. Flushes buffer if idle_ms exceeded without a successful parse."""

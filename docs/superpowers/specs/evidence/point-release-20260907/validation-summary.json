@@ -1,0 +1,265 @@
+{
+    "validated_at":  "2026-09-07T11:47:20.0660698+08:00",
+    "passed":  57,
+    "failed":  0,
+    "checks":  [
+                   {
+                       "name":  "one actual deployed-code report, no interpreter patches",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "isolated retained database identity",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "Timescale history hypertable exists",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "36 exact physical realtime/history readbacks",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "36 distinct requested addresses 0..35",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "physical row/event counts",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "all 42 synthetic address/scaling tests",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "synthetic realtime carries latest history timestamp",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "all 46 candidate IDs accounted for once",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "all four ambiguous coil configurations rejected",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "all 42 unsupported legacy types rejected",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "wrong-function no database rows",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "bad-crc no database rows",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "shutdown-race",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "shutdown-drain",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "transaction-rollback",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "retained SQL totals independently rechecked",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "running tested source ruisheng_gw.ingest",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "running tested source ruisheng_gw.persistence.batch_writer",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "production containers unchanged during database experiment",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "protected hashes unchanged during database experiment",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "production users/devices/points/telemetry remain zero",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "production users/devices/points/telemetry remain zero",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "production users/devices/points/telemetry remain zero",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "production users/devices/points/telemetry remain zero",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "final image/running/start identity /ruisheng-postgres",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "final image/running/start identity /ruisheng-redis",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "final image/running/start identity /ruisheng-api",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "final image/running/start identity /ruisheng-gw",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "final image/running/start identity /ruisheng-web",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "live API/GW readiness and Web 200",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "no diagnostic containers or maintenance leases remain",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "committed active release/source/identity agree",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "schema head unchanged",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "only allowed release environment fields changed",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "release trust key unchanged",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "exact target/local evidence copy full-upgrade-1c95b8c8-8f92-4e8b-962f-207800c7e9c9.json",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "exact target/local evidence copy modbus-probe-extended-20260907.json",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "exact target/local evidence copy modbus-probe-release.json",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "exact target/local evidence copy point-release-20260907-physical.jsonl",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "exact target/local evidence copy modbus-runner-3dec620b-2b08-4b4f-bc0c-b2c14482e92e.jsonl",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "exact target/local evidence copy modbus-runner-ba1ac2a2-f5da-42b9-b25f-aa3dfe088229.jsonl",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "all six retained target audit/config/journal copies verified",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "backup hash matches committed receipt .env.prod.before",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "backup hash matches committed receipt ruisheng.dump",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "backup hash matches committed receipt roles.sql",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "predeployment protected state unchanged serial-hardware.json",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "predeployment protected state unchanged modbus-probe.json",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "predeployment protected state unchanged current.json",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "deployed signed artifact identity SHA256SUMS",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "deployed signed artifact identity SHA256SUMS.sig",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "deployed signed artifact identity probe_modbus_rtu.py",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "deployed signed artifact identity run_modbus_probe.ps1",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "physical run binds exact profile and deployed image",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "exact three approved read frames, zero retries/writes",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "physical audit completes with valid CRC responses",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "all physical database values bound to captured request/response pairs",
+                       "pass":  true
+                   }
+               ],
+    "exact_target_copies":  [
+                                {
+                                    "file":  "full-upgrade-1c95b8c8-8f92-4e8b-962f-207800c7e9c9.json",
+                                    "sha256":  "d768807d50a326afe714526d4c2593e8abbfd89abf1fd26a0b8dabdce3d8d2d9"
+                                },
+                                {
+                                    "file":  "modbus-probe-extended-20260907.json",
+                                    "sha256":  "d8621a0fcc2b3a0f0e7b6b16e4669f86fe22287f31ee645d9befa94b504f6cf8"
+                                },
+                                {
+                                    "file":  "modbus-probe-release.json",
+                                    "sha256":  "ed87ee4ce58883cadead1d47de7c3c0de30cbee0c0eb48835da4575f1e470c87"
+                                },
+                                {
+                                    "file":  "point-release-20260907-physical.jsonl",
+                                    "sha256":  "49c0c32eecc4d7088f966d1c42ae71efdc805560c880dc51e1c0cd9fd2906ace"
+                                },
+                                {
+                                    "file":  "modbus-runner-3dec620b-2b08-4b4f-bc0c-b2c14482e92e.jsonl",
+                                    "sha256":  "64bd4b38c6436b2ae64578ce2368eb2ae47a274bff400705d919a9a04e6cd491"
+                                },
+                                {
+                                    "file":  "modbus-runner-ba1ac2a2-f5da-42b9-b25f-aa3dfe088229.jsonl",
+                                    "sha256":  "4726e3f2374346644c5b2d73699f596bba78cbc96d1adf3159359fc79dd0d2cc"
+                                }
+                            ],
+    "production_acceptance_complete":  false,
+    "meaning_scaling_signedness_confirmed":  false,
+    "fc1_physical_tested":  false,
+    "continuous_production_polling_enabled":  false
+}

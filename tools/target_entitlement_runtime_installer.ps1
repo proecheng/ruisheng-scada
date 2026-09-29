@@ -393,21 +393,26 @@ function Get-AuthenticatedSums([string]$BundleRoot) {
     Fail "bootstrap_sums_file_set_invalid"
   }
 
+  $cmdPath = "C:\Windows\System32\cmd.exe"
+  Assert-SignedExecutable $cmdPath "cmd.exe" "Microsoft Corporation"
+  foreach ($path in @($SshKeygen, $AllowedSigners, $signaturePath, $sumsPath)) {
+    if ($path -cnotmatch '^[A-Za-z]:\\[A-Za-z0-9_.\\-]+$') {
+      Fail "bootstrap_signature_path_invalid"
+    }
+  }
+  # File stdin avoids the OpenSSH anonymous-pipe hang in a Windows SSH session.
   $start = New-Object Diagnostics.ProcessStartInfo
-  $start.FileName = $SshKeygen
-  $start.Arguments = "-Y verify -f `"$AllowedSigners`" -I ruisheng-release " +
-    "-n ruisheng-entitlement-runtime-v1 -s `"$signaturePath`""
+  $start.FileName = $cmdPath
+  $start.Arguments = "/d /q /v:off /c $SshKeygen -Y verify -f $AllowedSigners " +
+    "-I ruisheng-release -n ruisheng-entitlement-runtime-v1 -s $signaturePath < $sumsPath"
   $start.UseShellExecute = $false
   $start.CreateNoWindow = $true
-  $start.RedirectStandardInput = $true
   $start.RedirectStandardOutput = $true
   $start.RedirectStandardError = $true
   $process = New-Object Diagnostics.Process
   $process.StartInfo = $start
   try {
     if (-not $process.Start()) { Fail "bootstrap_signature_verifier_failed" }
-    $process.StandardInput.Write($sumsText)
-    $process.StandardInput.Close()
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit(30000)) {

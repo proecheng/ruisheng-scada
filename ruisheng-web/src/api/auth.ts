@@ -45,8 +45,8 @@ export async function refresh(refreshToken: string): Promise<Session> {
   return toSession(data.data as BackendSession | Session)
 }
 
-export async function logout(): Promise<void> {
-  await apiClient.post('/auth/logout', {})
+export async function logout(refreshToken?: string): Promise<void> {
+  await apiClient.post('/auth/logout', refreshToken ? { refresh_token: refreshToken } : {})
 }
 
 export async function smsSend(req: { phone: string; scene: string }): Promise<void> {

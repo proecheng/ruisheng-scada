@@ -1,0 +1,20 @@
+[
+  {
+    "location": "tools/remote_maintenance_prepare.ps1:242-249",
+    "trigger_condition": "Approved preparation encounters a valid shared audit root without its audit mutex.",
+    "guard_snippet": "Set-Acl -LiteralPath $mutexPath -AclObject (New-ProtectedMutexAcl -Sids $currentSid,'S-1-5-18','S-1-5-32-544')",
+    "potential_consequence": "Preparation reports success, but subsequent maintenance and upgrade reject the newly inherited mutex ACL."
+  },
+  {
+    "location": "tools/remote_maintenance.ps1:532-541",
+    "trigger_condition": "Audit log inherits both required ACEs but retains an untrusted file owner.",
+    "guard_snippet": "if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @(Get-RestrictedDirectorySids)) { throw 'restricted_acl_owner_invalid' }",
+    "potential_consequence": "The owner can change the DACL and rewrite audit records despite passing validation."
+  },
+  {
+    "location": "ruisheng-gw/src/ruisheng_gw/ingest.py:163-180",
+    "trigger_condition": "Serial configuration changes while apply_alarm_reading awaits its database connection.",
+    "guard_snippet": "await repository.apply_alarm_reading(..., expected_version=entry.config_version)  # Lock device; reject disabled/deleted/version drift within transaction.",
+    "potential_consequence": "An obsolete sample can trigger alarms after disablement or against replacement configuration."
+  }
+]

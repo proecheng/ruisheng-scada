@@ -1,0 +1,801 @@
+{
+  "run_id": "b81c5dd8-d64d-48e2-81c1-eef5ae8bf910",
+  "started_at": "2026-09-07T05:30:04.804+00:00",
+  "completed_at": "2026-09-07T05:30:08.830+00:00",
+  "audit_sha256": "27a72a6941b43392be9b778f28edb16dfc2cc0751d9b99703f566b48d924040e",
+  "completed_tx": 6,
+  "retries": 1,
+  "device_write_functions_sent": 0,
+  "frames": [
+    {
+      "step": 1,
+      "start": 0,
+      "count": 36,
+      "registers": [
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        990,
+        1000,
+        990,
+        38500,
+        38600,
+        38200,
+        40000,
+        45300,
+        44000,
+        5000,
+        123,
+        456,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        290
+      ],
+      "tx_hex": "01030000002445d1",
+      "rx_hex": "010348000300000000000000000000000000000000000000000000000000000000000003de03e803de966496c895389c40b0f4abe01388007b01c80000000000000000000000000000012210c3",
+      "rx_bytes": 77,
+      "tx_at": "2026-09-07T05:30:05.739+00:00",
+      "rx_at": "2026-09-07T05:30:05.990+00:00",
+      "latency_ms": 242.837
+    },
+    {
+      "step": 2,
+      "start": 0,
+      "count": 27,
+      "registers": [
+        3,
+        0,
+        39,
+        40,
+        35,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        990,
+        990,
+        990,
+        3300,
+        3200,
+        3300,
+        3300,
+        3700,
+        3300,
+        5000,
+        123
+      ],
+      "tx_hex": "01030000001b05c1",
+      "rx_hex": "010336000300000027002800230000000000000000000000000000000000000000000003de03de03de0ce40c800ce40ce40e740ce41388007b3df0",
+      "rx_bytes": 59,
+      "tx_at": "2026-09-07T05:30:06.489+00:00",
+      "rx_at": "2026-09-07T05:30:06.709+00:00",
+      "latency_ms": 211.289
+    },
+    {
+      "step": 3,
+      "start": 0,
+      "count": 36,
+      "registers": [
+        3,
+        0,
+        19,
+        20,
+        18,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        990,
+        990,
+        990,
+        2500,
+        2400,
+        2400,
+        5600,
+        6200,
+        5700,
+        5000,
+        123,
+        456,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        290
+      ],
+      "tx_hex": "01030000002445d1",
+      "rx_hex": "010348000300000013001400120000000000000000000000000000000000000000000003de03de03de09c40960096015e0183816441388007b01c8000000000000000000000000000001228240",
+      "rx_bytes": 77,
+      "tx_at": "2026-09-07T05:30:07.209+00:00",
+      "rx_at": "2026-09-07T05:30:07.429+00:00",
+      "latency_ms": 211.763
+    },
+    {
+      "step": 4,
+      "start": 0,
+      "count": 6,
+      "registers": [
+        3,
+        0,
+        30,
+        31,
+        27,
+        0
+      ],
+      "tx_hex": "010300000006c5c8",
+      "rx_hex": "01030c00030000001e001f001b000087f0",
+      "rx_bytes": 17,
+      "tx_at": "2026-09-07T05:30:07.929+00:00",
+      "rx_at": "2026-09-07T05:30:08.101+00:00",
+      "latency_ms": 164.649
+    },
+    {
+      "step": 5,
+      "start": 0,
+      "count": 36,
+      "registers": [
+        3,
+        0,
+        23,
+        24,
+        21,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        990,
+        990,
+        990,
+        4300,
+        4300,
+        4300,
+        4400,
+        4900,
+        4400,
+        5000,
+        123,
+        456,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        290
+      ],
+      "tx_hex": "01030000002445d1",
+      "rx_hex": "010348000300000017001800150000000000000000000000000000000000000000000003de03de03de10cc10cc10cc1130132411301388007b01c800000000000000000000000000000122b062",
+      "rx_bytes": 77,
+      "tx_at": "2026-09-07T05:30:08.601+00:00",
+      "rx_at": "2026-09-07T05:30:08.820+00:00",
+      "latency_ms": 211.223
+    }
+  ],
+  "groups": [
+    {
+      "rows": [
+        {
+          "response_position": 0,
+          "reference_before": 3,
+          "short_value": 3,
+          "reference_after": 3,
+          "status": "PREFIX_CONSISTENT_THIS_OBSERVATION"
+        },
+        {
+          "response_position": 1,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 2,
+          "reference_before": 0,
+          "short_value": 39,
+          "reference_after": 19,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 3,
+          "reference_before": 0,
+          "short_value": 40,
+          "reference_after": 20,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 4,
+          "reference_before": 0,
+          "short_value": 35,
+          "reference_after": 18,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 5,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 6,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 7,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 8,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 9,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 10,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 11,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 12,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 13,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 14,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 15,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 16,
+          "reference_before": 990,
+          "short_value": 990,
+          "reference_after": 990,
+          "status": "PREFIX_CONSISTENT_THIS_OBSERVATION"
+        },
+        {
+          "response_position": 17,
+          "reference_before": 1000,
+          "short_value": 990,
+          "reference_after": 990,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 18,
+          "reference_before": 990,
+          "short_value": 990,
+          "reference_after": 990,
+          "status": "PREFIX_CONSISTENT_THIS_OBSERVATION"
+        },
+        {
+          "response_position": 19,
+          "reference_before": 38500,
+          "short_value": 3300,
+          "reference_after": 2500,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 20,
+          "reference_before": 38600,
+          "short_value": 3200,
+          "reference_after": 2400,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 21,
+          "reference_before": 38200,
+          "short_value": 3300,
+          "reference_after": 2400,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 22,
+          "reference_before": 40000,
+          "short_value": 3300,
+          "reference_after": 5600,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 23,
+          "reference_before": 45300,
+          "short_value": 3700,
+          "reference_after": 6200,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 24,
+          "reference_before": 44000,
+          "short_value": 3300,
+          "reference_after": 5700,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 25,
+          "reference_before": 5000,
+          "short_value": 5000,
+          "reference_after": 5000,
+          "status": "PREFIX_CONSISTENT_THIS_OBSERVATION"
+        },
+        {
+          "response_position": 26,
+          "reference_before": 123,
+          "short_value": 123,
+          "reference_after": 123,
+          "status": "PREFIX_CONSISTENT_THIS_OBSERVATION"
+        }
+      ],
+      "counts": {
+        "PREFIX_CONSISTENT_THIS_OBSERVATION": 5,
+        "ZERO_UNINFORMATIVE": 12,
+        "DYNAMIC_REFERENCE": 10
+      },
+      "physical_identity_confirmed": false
+    },
+    {
+      "rows": [
+        {
+          "response_position": 0,
+          "reference_before": 3,
+          "short_value": 3,
+          "reference_after": 3,
+          "status": "PREFIX_CONSISTENT_THIS_OBSERVATION"
+        },
+        {
+          "response_position": 1,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        },
+        {
+          "response_position": 2,
+          "reference_before": 19,
+          "short_value": 30,
+          "reference_after": 23,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 3,
+          "reference_before": 20,
+          "short_value": 31,
+          "reference_after": 24,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 4,
+          "reference_before": 18,
+          "short_value": 27,
+          "reference_after": 21,
+          "status": "DYNAMIC_REFERENCE"
+        },
+        {
+          "response_position": 5,
+          "reference_before": 0,
+          "short_value": 0,
+          "reference_after": 0,
+          "status": "ZERO_UNINFORMATIVE"
+        }
+      ],
+      "counts": {
+        "PREFIX_CONSISTENT_THIS_OBSERVATION": 1,
+        "ZERO_UNINFORMATIVE": 2,
+        "DYNAMIC_REFERENCE": 3
+      },
+      "physical_identity_confirmed": false
+    }
+  ],
+  "full_block_repeatability": [
+    {
+      "response_position": 0,
+      "raw_values": [
+        3,
+        3,
+        3
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 1,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 2,
+      "raw_values": [
+        0,
+        19,
+        23
+      ],
+      "all_equal": false
+    },
+    {
+      "response_position": 3,
+      "raw_values": [
+        0,
+        20,
+        24
+      ],
+      "all_equal": false
+    },
+    {
+      "response_position": 4,
+      "raw_values": [
+        0,
+        18,
+        21
+      ],
+      "all_equal": false
+    },
+    {
+      "response_position": 5,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 6,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 7,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 8,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 9,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 10,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 11,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 12,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 13,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 14,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 15,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 16,
+      "raw_values": [
+        990,
+        990,
+        990
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 17,
+      "raw_values": [
+        1000,
+        990,
+        990
+      ],
+      "all_equal": false
+    },
+    {
+      "response_position": 18,
+      "raw_values": [
+        990,
+        990,
+        990
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 19,
+      "raw_values": [
+        38500,
+        2500,
+        4300
+      ],
+      "all_equal": false
+    },
+    {
+      "response_position": 20,
+      "raw_values": [
+        38600,
+        2400,
+        4300
+      ],
+      "all_equal": false
+    },
+    {
+      "response_position": 21,
+      "raw_values": [
+        38200,
+        2400,
+        4300
+      ],
+      "all_equal": false
+    },
+    {
+      "response_position": 22,
+      "raw_values": [
+        40000,
+        5600,
+        4400
+      ],
+      "all_equal": false
+    },
+    {
+      "response_position": 23,
+      "raw_values": [
+        45300,
+        6200,
+        4900
+      ],
+      "all_equal": false
+    },
+    {
+      "response_position": 24,
+      "raw_values": [
+        44000,
+        5700,
+        4400
+      ],
+      "all_equal": false
+    },
+    {
+      "response_position": 25,
+      "raw_values": [
+        5000,
+        5000,
+        5000
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 26,
+      "raw_values": [
+        123,
+        123,
+        123
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 27,
+      "raw_values": [
+        456,
+        456,
+        456
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 28,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 29,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 30,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 31,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 32,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 33,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 34,
+      "raw_values": [
+        0,
+        0,
+        0
+      ],
+      "all_equal": true
+    },
+    {
+      "response_position": 35,
+      "raw_values": [
+        290,
+        290,
+        290
+      ],
+      "all_equal": true
+    }
+  ],
+  "whole_block_frames_valid": true,
+  "physical_meanings_confirmed": false,
+  "formal_acceptance": "BLOCKED",
+  "nonzero_address_issue_closed": false,
+  "limitation": "Short observation only; bracket equality cannot exclude intermediate transients. No firmware, identity, engineering units or calibration proof."
+}

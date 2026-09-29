@@ -62,6 +62,45 @@ def test_list_users_requires_auth(monkeypatch):
     assert TestClient(app).get("/api/orgs/users").status_code == 401
 
 
+def _install_admin_target(app, monkeypatch):
+    _install(app, monkeypatch)
+    deleted = {"called": False}
+
+    async def fake_load(session, user_name):
+        return type("U", (), {"user_name": user_name, "authority": "Administrators"})()
+
+    async def fake_delete(session, user):
+        deleted["called"] = True
+
+    monkeypatch.setattr(users_repo, "load_by_user_name", fake_load)
+    monkeypatch.setattr(users_repo, "soft_delete_user", fake_delete)
+    return deleted
+
+
+def test_company_cannot_delete_administrator(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    deleted = _install_admin_target(app, monkeypatch)
+    response = TestClient(app).delete(
+        "/api/orgs/users/admin",
+        headers={"Authorization": f"Bearer {_tok(role='Company')}"},
+    )
+    assert response.status_code == 403
+    assert deleted["called"] is False
+
+
+def test_company_cannot_demote_administrator(monkeypatch):
+    _env(monkeypatch)
+    app = create_app()
+    _install_admin_target(app, monkeypatch)
+    response = TestClient(app).put(
+        "/api/orgs/users/admin",
+        headers={"Authorization": f"Bearer {_tok(role='Company')}"},
+        json={"authority": "User"},
+    )
+    assert response.status_code == 403
+
+
 def test_list_users_empty(monkeypatch):
     _env(monkeypatch)
     app = create_app()

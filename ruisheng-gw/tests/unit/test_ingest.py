@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
 from ruisheng_gw.domain.device import Device
 from ruisheng_gw.domain.point import Point
 from ruisheng_gw.domain.registry import (
@@ -43,6 +46,196 @@ class _AlarmRepository:
     async def apply_alarm_reading(self, **kwargs: object) -> bool:
         self.calls.append(kwargs)
         return True
+
+
+@pytest.mark.parametrize(
+    "invalid", ["missing", "old_entry", "wrong_port", "wrong_count", "wrong_fc"]
+)
+async def test_serial_ingestion_requires_current_transaction_snapshot(invalid):
+    registry = _registry()
+    entry = registry.get("D1")
+    entry.transport_type = "serial"
+    entry.serial_port = "COM3"
+    pending = PendingRead(
+        "D1", 3, 0, 1, tuple(entry.points.values()), registry_entry=entry, bus_id="COM3"
+    )
+    if invalid == "missing":
+        pending = None
+    elif invalid == "old_entry":
+        pending = replace(pending, registry_entry=replace(entry))
+    elif invalid == "wrong_port":
+        pending = replace(pending, bus_id="COM4")
+    elif invalid == "wrong_count":
+        pending = replace(pending, quantity=38)
+    elif invalid == "wrong_fc":
+        pending = replace(pending, fun_code=4)
+    batch, publisher = _Batch(), _Publisher()
+    ingestor = FrameIngestor(registry=registry, batch=batch, publisher=publisher)
+    await ingestor.process_frame_for_pending(
+        dev_number="D1",
+        frame=append_crc_to_frame(bytes.fromhex("0303020003")),
+        pending_read=pending,
+    )
+    assert batch.rows == []
+    assert publisher.realtime == []
+    assert entry.device.last_seen == 0
+
+
+async def test_serial_ingestion_accepts_current_sparse_fixed_profile_and_clears_relation_cache():
+    registry = _registry()
+    entry = registry.get("D1")
+    entry.transport_type = "serial"
+    entry.serial_port = "COM3"
+    entry.points[10] = replace(
+        entry.points[10], point=replace(entry.points[10].point, point_number=35)
+    )
+    pending = PendingRead("D1", 3, 0, 38, (entry.points[10],), registry_entry=entry, bus_id="COM3")
+    batch, publisher = _Batch(), _Publisher()
+    ingestor = FrameIngestor(registry=registry, batch=batch, publisher=publisher)
+    await ingestor.process_frame_for_pending(
+        dev_number="D1",
+        frame=append_crc_to_frame(bytes([3, 3, 76]) + b"\x00\x09" * 38),
+        pending_read=pending,
+    )
+    assert len(batch.rows) == 1
+    assert batch.rows[0].point_id == 10
+    assert batch.rows[0].org_value == 9
+    assert entry.device.last_seen > 0
+    ingestor.invalidate_devices({"D1"})
+    assert ingestor._current_values == {}
+
+
+@pytest.mark.parametrize("with_repository", [False, True])
+async def test_serial_removed_during_last_publication_cannot_emit_alarms(with_repository):
+    from unittest.mock import AsyncMock
+
+    registry = _registry()
+    entry = registry.get("D1")
+    entry.transport_type = "serial"
+    entry.serial_port = "COM3"
+    alarm = AlarmSpec(
+        id=1,
+        alarm_name="high",
+        alarm_type=">",
+        limit_value=20,
+        alarm_msg=None,
+        waring_flag=False,
+        relation_point_id=None,
+        relation_reg_bit=None,
+        relation_alarm_type=None,
+        relation_limit_value=None,
+        reg_bit=None,
+    )
+    entry.points[10] = replace(entry.points[10], alarms=(alarm,))
+    pending = PendingRead(
+        "D1", 3, 0, 1, tuple(entry.points.values()), registry_entry=entry, bus_id="COM3"
+    )
+    batch, publisher = _Batch(), _Publisher()
+    repository = _AlarmRepository() if with_repository else None
+
+    async def publish(event):
+        registry.reconcile_serial(Registry())
+
+    publisher.publish_realtime = AsyncMock(side_effect=publish)
+    ingestor = FrameIngestor(
+        registry=registry, batch=batch, publisher=publisher, alarm_repository=repository
+    )
+    await ingestor.process_frame_for_pending(
+        dev_number="D1",
+        frame=append_crc_to_frame(bytes.fromhex("030302001e")),
+        pending_read=pending,
+    )
+    assert len(batch.rows) == 1
+    assert publisher.alarms == []
+    if repository is not None:
+        assert repository.calls == []
+
+
+async def test_cancelled_publication_preserves_all_accepted_measurements():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    registry = _registry()
+    entry = registry.get("D1")
+    entry.transport_type = "serial"
+    entry.serial_port = "COM3"
+    entry.points[11] = replace(
+        entry.points[10], point=replace(entry.points[10].point, point_id=11, point_number=1)
+    )
+    pending = PendingRead(
+        "D1", 3, 0, 2, tuple(entry.points.values()), registry_entry=entry, bus_id="COM3"
+    )
+    batch, publisher = _Batch(), _Publisher()
+    publisher.publish_realtime = AsyncMock(side_effect=asyncio.CancelledError())
+    ingestor = FrameIngestor(registry=registry, batch=batch, publisher=publisher)
+    with pytest.raises(asyncio.CancelledError):
+        await ingestor.process_frame_for_pending(
+            dev_number="D1",
+            frame=append_crc_to_frame(bytes.fromhex("030304001e0020")),
+            pending_read=pending,
+        )
+    assert [row.point_id for row in batch.rows] == [10, 11]
+    assert [row.org_value for row in batch.rows] == [30, 32]
+
+
+@pytest.mark.parametrize("value_type", ["s16", "u16", "float32", "", "unknown"])
+async def test_unsupported_type_cannot_be_written_as_unsigned(value_type: str) -> None:
+    registry = _registry()
+    entry = registry.get("D1")
+    assert entry is not None
+    point = replace(entry.points[10].point, value_type=value_type)
+    entry.points[10] = PointEntry(point=point)
+    batch = _Batch()
+    publisher = _Publisher()
+    ingestor = FrameIngestor(registry=registry, batch=batch, publisher=publisher)
+    await ingestor.process_frame(
+        dev_number="D1", frame=append_crc_to_frame(bytes.fromhex("030302ffff"))
+    )
+    assert batch.rows == []
+    assert publisher.realtime == []
+    assert publisher.alarms == []
+
+
+@pytest.mark.parametrize("pending", [False, True])
+async def test_function_code_mismatch_cannot_write_another_point(pending: bool) -> None:
+    registry = _registry()
+    entry = registry.get("D1")
+    assert entry is not None
+    wrong_point = PointEntry(point=replace(entry.points[10].point, fun_code=4))
+    entry.points[10] = wrong_point
+    batch = _Batch()
+    publisher = _Publisher()
+    ingestor = FrameIngestor(registry=registry, batch=batch, publisher=publisher)
+    await ingestor.process_frame_for_pending(
+        dev_number="D1",
+        frame=append_crc_to_frame(bytes.fromhex("0303020003")),
+        pending_read=(PendingRead("D1", 3, 0, 1, (wrong_point,)) if pending else None),
+    )
+    assert batch.rows == []
+    assert publisher.realtime == []
+
+
+@pytest.mark.parametrize("function_code", [1, 2])
+@pytest.mark.parametrize("value_type,bit", [("s16", None), ("bit", 0), ("bit", 1)])
+async def test_coil_response_rejects_register_type_or_register_bit(
+    function_code: int, value_type: str, bit: int | None
+) -> None:
+    registry = _registry()
+    entry = registry.get("D1")
+    assert entry is not None
+    entry.points[10] = PointEntry(
+        point=replace(
+            entry.points[10].point, fun_code=function_code, value_type=value_type, r_bit=bit
+        )
+    )
+    batch = _Batch()
+    publisher = _Publisher()
+    ingestor = FrameIngestor(registry=registry, batch=batch, publisher=publisher)
+    await ingestor.process_frame(
+        dev_number="D1", frame=append_crc_to_frame(bytes([3, function_code, 1, 3]))
+    )
+    assert batch.rows == []
+    assert publisher.realtime == []
 
 
 def test_relation_value_expires_instead_of_using_stale_cache() -> None:
@@ -106,6 +299,56 @@ async def test_process_read_holding_response_submits_and_publishes() -> None:
     assert batch.rows[0].rt_value == 32.0
     assert publisher.realtime[0].point_id == 10
     assert publisher.alarms[0].level == 2
+
+
+@pytest.mark.parametrize(
+    ("value_type", "expected"),
+    [("有符号字节", -1.0), ("无符号字节", 65535.0)],
+)
+async def test_process_read_holding_response_decodes_full_word_signedness(
+    value_type: str, expected: float
+) -> None:
+    registry = _registry()
+    entry = registry.get("D1")
+    assert entry is not None
+    entry.points[10] = replace(
+        entry.points[10], point=replace(entry.points[10].point, value_type=value_type)
+    )
+    batch = _Batch()
+    ingestor = FrameIngestor(registry=registry, batch=batch, publisher=_Publisher())
+
+    await ingestor.process_frame(
+        dev_number="D1", frame=append_crc_to_frame(bytes.fromhex("030302ffff"))
+    )
+
+    assert batch.rows[0].org_value == expected
+
+
+@pytest.mark.parametrize(
+    ("value_type", "register", "expected"),
+    [
+        ("有符号字节", "8000", -32768.0),
+        ("无符号字节", "8000", 32768.0),
+        ("有符号字节", "7fff", 32767.0),
+    ],
+)
+async def test_process_read_holding_response_decodes_full_word_boundaries(
+    value_type: str, register: str, expected: float
+) -> None:
+    registry = _registry()
+    entry = registry.get("D1")
+    assert entry is not None
+    entry.points[10] = replace(
+        entry.points[10], point=replace(entry.points[10].point, value_type=value_type)
+    )
+    batch = _Batch()
+    ingestor = FrameIngestor(registry=registry, batch=batch, publisher=_Publisher())
+
+    await ingestor.process_frame(
+        dev_number="D1", frame=append_crc_to_frame(bytes.fromhex(f"030302{register}"))
+    )
+
+    assert batch.rows[0].org_value == expected
 
 
 async def test_process_frame_ignores_wrong_slave() -> None:

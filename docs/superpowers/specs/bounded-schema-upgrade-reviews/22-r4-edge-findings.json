@@ -1,0 +1,26 @@
+[
+  {
+    "location": "tools/remote_full_upgrade/target-updater.ps1:1928-1930",
+    "trigger_condition": "A scheduled PowerShell command launches Docker through an instance Process.Start() call.",
+    "guard_snippet": "if (-not $invocation.Static) { return $true } # Reject unresolved instance invocation targets.",
+    "potential_consequence": "Startup verification accepts an unguarded task that can restart applications during schema maintenance."
+  },
+  {
+    "location": "tools/remote_maintenance_prepare.ps1:44-47",
+    "trigger_condition": "The shared audit directory is absent when security preparation first runs.",
+    "guard_snippet": "if ($createdAuditRoot) { Set-NewSharedAuditRootAcl $Path }; Assert-SharedAuditRoot $Path",
+    "potential_consequence": "The newly created directory inherits permissions, so preparation immediately rejects its own output."
+  },
+  {
+    "location": "tools/remote_maintenance_prepare.ps1:59-66",
+    "trigger_condition": "The shared audit root is valid but its audit mutex file is absent.",
+    "guard_snippet": "if ($createdAuditMutex) { Set-RestrictedFileAcl $mutexPath }; Assert-SharedAuditFile $mutexPath",
+    "potential_consequence": "Preparation succeeds with inherited mutex permissions; subsequent maintenance and upgrade checks reject the mutex."
+  },
+  {
+    "location": "ruisheng-web/src/api/devices.ts:181-186",
+    "trigger_condition": "A device in an earlier page is deleted while a multi-page listing loads.",
+    "guard_snippet": "Fetch subsequent pages using an immutable device-id cursor and the initial snapshot boundary.",
+    "potential_consequence": "Offset pagination skips an existing device, returning an incomplete list as successfully loaded."
+  }
+]

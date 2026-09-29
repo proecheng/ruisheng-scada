@@ -1,0 +1,4488 @@
+{
+  "failure": null,
+  "physical_run_id": "5c62e3d0-509d-4e74-9a1d-b86edf340dc1",
+  "production_before": {
+    "hashes": [
+      {
+        "sha256": "63E1A087F7D032C9F0300A8BE016DDE6CA33F08432116DDB734966DD1667BA87",
+        "path": "C:\\Ruisheng\\candidates\\site-deploy-20260831.1\\.env.prod"
+      },
+      {
+        "sha256": "BECB9FDABF059399303899B35EA02270F9314CDB1B89D959C9D7561BCE2D9242",
+        "path": "C:\\Ruisheng\\candidates\\site-deploy-20260831.1\\.remote-maintenance-state\\active-release.json"
+      },
+      {
+        "sha256": "9C77F948C0EF39DA349B3B8F14C81E4DF056C00D58823743049AAA673EF712A5",
+        "path": "C:\\Ruisheng\\site\\serial-hardware.json"
+      },
+      {
+        "sha256": "3D6871155456477922F7F1CF28B142A7BF1604559B1B584832A6182E11BF081E",
+        "path": "C:\\Ruisheng\\site\\modbus-probe.json"
+      },
+      {
+        "sha256": "1E6B3212A31BED5D7DE0FAF2AC7D97ACCB8A42905572AF9FB170D2DBDDECA233",
+        "path": "C:\\ProgramData\\Ruisheng\\entitlements\\current.json"
+      }
+    ],
+    "observed_at": "2026-09-07T10:47:02.3492138+08:00",
+    "counts": {
+      "users": 0,
+      "devices": 0,
+      "device_points": 0,
+      "realtime": 0,
+      "history": 0
+    },
+    "containers": [
+      {
+        "id": "d7bb2d36dd52ee55d26304162559ecbd3e5474d2e5c95b6d8966aad153bc98b7",
+        "name": "/ruisheng-postgres",
+        "started": "2026-09-06T08:54:59.28995983Z",
+        "health": "healthy",
+        "restart_count": 0,
+        "image": "sha256:50a2abfa8bad354f4bc1567c6edf7426586fd99ee8cd8982bbaee157a460c6b1",
+        "state": "running"
+      },
+      {
+        "id": "36919ff2cf33876b7f50f842f02f8526fae432a0a77a5dcae48742411267a689",
+        "name": "/ruisheng-redis",
+        "started": "2026-09-06T08:54:59.292357654Z",
+        "health": "healthy",
+        "restart_count": 0,
+        "image": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+        "state": "running"
+      },
+      {
+        "id": "7b466d562b70b703c9f6dbcff1ebc8e27c85e892d759feadb13ad7d7dc96ad71",
+        "name": "/ruisheng-api",
+        "started": "2026-09-06T08:55:05.531845924Z",
+        "health": null,
+        "restart_count": 0,
+        "image": "sha256:8faaebca9410101de109234929b88a77d0db5a6043f2cd321387ba5842d8b759",
+        "state": "running"
+      },
+      {
+        "id": "9bfddb6083bd000c543f436cde5f97ad27ab7448b97fb11c1ea664a71d69b1ef",
+        "name": "/ruisheng-gw",
+        "started": "2026-09-06T08:55:05.567944283Z",
+        "health": null,
+        "restart_count": 0,
+        "image": "sha256:d846ae0f1243d2b16d0cbe7781a465ca3a7381aea4379ce4750c5564dcb6db95",
+        "state": "running"
+      },
+      {
+        "id": "223e833eea0d0f4d4ff547a71755d391f19c0a243d49fc34c8175d8a03a7caee",
+        "name": "/ruisheng-web",
+        "started": "2026-09-06T08:55:05.700926583Z",
+        "health": null,
+        "restart_count": 0,
+        "image": "sha256:2c3da35750cac33d18cba0b7944d2bf12e96c3d9831568e9e572710e3cc08e22",
+        "state": "running"
+      }
+    ]
+  },
+  "production_after": {
+    "hashes": [
+      {
+        "sha256": "63E1A087F7D032C9F0300A8BE016DDE6CA33F08432116DDB734966DD1667BA87",
+        "path": "C:\\Ruisheng\\candidates\\site-deploy-20260831.1\\.env.prod"
+      },
+      {
+        "sha256": "BECB9FDABF059399303899B35EA02270F9314CDB1B89D959C9D7561BCE2D9242",
+        "path": "C:\\Ruisheng\\candidates\\site-deploy-20260831.1\\.remote-maintenance-state\\active-release.json"
+      },
+      {
+        "sha256": "9C77F948C0EF39DA349B3B8F14C81E4DF056C00D58823743049AAA673EF712A5",
+        "path": "C:\\Ruisheng\\site\\serial-hardware.json"
+      },
+      {
+        "sha256": "3D6871155456477922F7F1CF28B142A7BF1604559B1B584832A6182E11BF081E",
+        "path": "C:\\Ruisheng\\site\\modbus-probe.json"
+      },
+      {
+        "sha256": "1E6B3212A31BED5D7DE0FAF2AC7D97ACCB8A42905572AF9FB170D2DBDDECA233",
+        "path": "C:\\ProgramData\\Ruisheng\\entitlements\\current.json"
+      }
+    ],
+    "observed_at": "2026-09-07T10:47:08.511241+08:00",
+    "counts": {
+      "users": 0,
+      "devices": 0,
+      "device_points": 0,
+      "realtime": 0,
+      "history": 0
+    },
+    "containers": [
+      {
+        "id": "d7bb2d36dd52ee55d26304162559ecbd3e5474d2e5c95b6d8966aad153bc98b7",
+        "name": "/ruisheng-postgres",
+        "started": "2026-09-06T08:54:59.28995983Z",
+        "health": "healthy",
+        "restart_count": 0,
+        "image": "sha256:50a2abfa8bad354f4bc1567c6edf7426586fd99ee8cd8982bbaee157a460c6b1",
+        "state": "running"
+      },
+      {
+        "id": "36919ff2cf33876b7f50f842f02f8526fae432a0a77a5dcae48742411267a689",
+        "name": "/ruisheng-redis",
+        "started": "2026-09-06T08:54:59.292357654Z",
+        "health": "healthy",
+        "restart_count": 0,
+        "image": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+        "state": "running"
+      },
+      {
+        "id": "7b466d562b70b703c9f6dbcff1ebc8e27c85e892d759feadb13ad7d7dc96ad71",
+        "name": "/ruisheng-api",
+        "started": "2026-09-06T08:55:05.531845924Z",
+        "health": null,
+        "restart_count": 0,
+        "image": "sha256:8faaebca9410101de109234929b88a77d0db5a6043f2cd321387ba5842d8b759",
+        "state": "running"
+      },
+      {
+        "id": "9bfddb6083bd000c543f436cde5f97ad27ab7448b97fb11c1ea664a71d69b1ef",
+        "name": "/ruisheng-gw",
+        "started": "2026-09-06T08:55:05.567944283Z",
+        "health": null,
+        "restart_count": 0,
+        "image": "sha256:d846ae0f1243d2b16d0cbe7781a465ca3a7381aea4379ce4750c5564dcb6db95",
+        "state": "running"
+      },
+      {
+        "id": "223e833eea0d0f4d4ff547a71755d391f19c0a243d49fc34c8175d8a03a7caee",
+        "name": "/ruisheng-web",
+        "started": "2026-09-06T08:55:05.700926583Z",
+        "health": null,
+        "restart_count": 0,
+        "image": "sha256:2c3da35750cac33d18cba0b7944d2bf12e96c3d9831568e9e572710e3cc08e22",
+        "state": "running"
+      }
+    ]
+  },
+  "reports": [
+    {
+      "mode": "deployed",
+      "database": "test_point_pipeline_20260907_b8a4d285",
+      "source_hashes": {
+        "ruisheng_gw.persistence.batch_writer": {
+          "deployed": "cc18e1899f29145ecc2b08109e08005fa1c83dd2e2da30cf851d6a0ba94019eb"
+        },
+        "ruisheng_gw.ingest": {
+          "deployed": "cf9a7057d51ab654efa86ea65ac5dc0da3fa3b4113436eb8eb9d5ab34f98014b"
+        }
+      },
+      "points": [
+        {
+          "id": "BCMM-000",
+          "fc": 3,
+          "address": 0,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1001,
+              100.10000000000001
+            ],
+            [
+              2001,
+              200.10000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 1,
+              "org_value": 2001.0,
+              "rt_value": 200.10000000000002,
+              "recorded_at": "2026-09-07 02:47:05.077487+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 1,
+              "org_value": 1001.0,
+              "rt_value": 100.10000000000001,
+              "recorded_at": "2026-09-07 02:47:05.075248+00:00"
+            },
+            {
+              "point_id": 1,
+              "org_value": 2001.0,
+              "rt_value": 200.10000000000002,
+              "recorded_at": "2026-09-07 02:47:05.077487+00:00"
+            }
+          ]
+        },
+        {
+          "id": "BCMM-001",
+          "fc": 3,
+          "address": 1,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1002,
+              100.2
+            ],
+            [
+              2002,
+              200.20000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 2,
+              "org_value": 2002.0,
+              "rt_value": 200.20000000000002,
+              "recorded_at": "2026-09-07 02:47:05.086694+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 2,
+              "org_value": 1002.0,
+              "rt_value": 100.2,
+              "recorded_at": "2026-09-07 02:47:05.084493+00:00"
+            },
+            {
+              "point_id": 2,
+              "org_value": 2002.0,
+              "rt_value": 200.20000000000002,
+              "recorded_at": "2026-09-07 02:47:05.086694+00:00"
+            }
+          ]
+        },
+        {
+          "id": "BCMM-002",
+          "fc": 3,
+          "address": 2,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1003,
+              100.30000000000001
+            ],
+            [
+              2003,
+              200.3
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 3,
+              "org_value": 2003.0,
+              "rt_value": 200.3,
+              "recorded_at": "2026-09-07 02:47:05.095509+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 3,
+              "org_value": 1003.0,
+              "rt_value": 100.30000000000001,
+              "recorded_at": "2026-09-07 02:47:05.093274+00:00"
+            },
+            {
+              "point_id": 3,
+              "org_value": 2003.0,
+              "rt_value": 200.3,
+              "recorded_at": "2026-09-07 02:47:05.095509+00:00"
+            }
+          ]
+        },
+        {
+          "id": "BCMM-003",
+          "fc": 3,
+          "address": 3,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1004,
+              100.4
+            ],
+            [
+              2004,
+              200.4
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 4,
+              "org_value": 2004.0,
+              "rt_value": 200.4,
+              "recorded_at": "2026-09-07 02:47:05.104260+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 4,
+              "org_value": 1004.0,
+              "rt_value": 100.4,
+              "recorded_at": "2026-09-07 02:47:05.102032+00:00"
+            },
+            {
+              "point_id": 4,
+              "org_value": 2004.0,
+              "rt_value": 200.4,
+              "recorded_at": "2026-09-07 02:47:05.104260+00:00"
+            }
+          ]
+        },
+        {
+          "id": "BCMM-004",
+          "fc": 3,
+          "address": 4,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1005,
+              100.5
+            ],
+            [
+              2005,
+              200.5
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 5,
+              "org_value": 2005.0,
+              "rt_value": 200.5,
+              "recorded_at": "2026-09-07 02:47:05.113014+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 5,
+              "org_value": 1005.0,
+              "rt_value": 100.5,
+              "recorded_at": "2026-09-07 02:47:05.110858+00:00"
+            },
+            {
+              "point_id": 5,
+              "org_value": 2005.0,
+              "rt_value": 200.5,
+              "recorded_at": "2026-09-07 02:47:05.113014+00:00"
+            }
+          ]
+        },
+        {
+          "id": "BCMM-005",
+          "fc": 3,
+          "address": 5,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1006,
+              100.60000000000001
+            ],
+            [
+              2006,
+              200.60000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 6,
+              "org_value": 2006.0,
+              "rt_value": 200.60000000000002,
+              "recorded_at": "2026-09-07 02:47:05.121807+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 6,
+              "org_value": 1006.0,
+              "rt_value": 100.60000000000001,
+              "recorded_at": "2026-09-07 02:47:05.119635+00:00"
+            },
+            {
+              "point_id": 6,
+              "org_value": 2006.0,
+              "rt_value": 200.60000000000002,
+              "recorded_at": "2026-09-07 02:47:05.121807+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-000",
+          "fc": 3,
+          "address": 0,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1007,
+              1007
+            ],
+            [
+              2007,
+              2007
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 7,
+              "org_value": 2007.0,
+              "rt_value": 2007.0,
+              "recorded_at": "2026-09-07 02:47:05.130161+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 7,
+              "org_value": 1007.0,
+              "rt_value": 1007.0,
+              "recorded_at": "2026-09-07 02:47:05.127992+00:00"
+            },
+            {
+              "point_id": 7,
+              "org_value": 2007.0,
+              "rt_value": 2007.0,
+              "recorded_at": "2026-09-07 02:47:05.130161+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-001",
+          "fc": 3,
+          "address": 1,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1008,
+              1008
+            ],
+            [
+              2008,
+              2008
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 8,
+              "org_value": 2008.0,
+              "rt_value": 2008.0,
+              "recorded_at": "2026-09-07 02:47:05.138631+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 8,
+              "org_value": 1008.0,
+              "rt_value": 1008.0,
+              "recorded_at": "2026-09-07 02:47:05.136447+00:00"
+            },
+            {
+              "point_id": 8,
+              "org_value": 2008.0,
+              "rt_value": 2008.0,
+              "recorded_at": "2026-09-07 02:47:05.138631+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-002",
+          "fc": 3,
+          "address": 2,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1009,
+              100.9
+            ],
+            [
+              2009,
+              200.9
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 9,
+              "org_value": 2009.0,
+              "rt_value": 200.9,
+              "recorded_at": "2026-09-07 02:47:05.146900+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 9,
+              "org_value": 1009.0,
+              "rt_value": 100.9,
+              "recorded_at": "2026-09-07 02:47:05.144691+00:00"
+            },
+            {
+              "point_id": 9,
+              "org_value": 2009.0,
+              "rt_value": 200.9,
+              "recorded_at": "2026-09-07 02:47:05.146900+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-003",
+          "fc": 3,
+          "address": 3,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1010,
+              101.0
+            ],
+            [
+              2010,
+              201.0
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 10,
+              "org_value": 2010.0,
+              "rt_value": 201.0,
+              "recorded_at": "2026-09-07 02:47:05.155411+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 10,
+              "org_value": 1010.0,
+              "rt_value": 101.0,
+              "recorded_at": "2026-09-07 02:47:05.153225+00:00"
+            },
+            {
+              "point_id": 10,
+              "org_value": 2010.0,
+              "rt_value": 201.0,
+              "recorded_at": "2026-09-07 02:47:05.155411+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-004",
+          "fc": 3,
+          "address": 4,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1011,
+              101.10000000000001
+            ],
+            [
+              2011,
+              201.10000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 11,
+              "org_value": 2011.0,
+              "rt_value": 201.10000000000002,
+              "recorded_at": "2026-09-07 02:47:05.163818+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 11,
+              "org_value": 1011.0,
+              "rt_value": 101.10000000000001,
+              "recorded_at": "2026-09-07 02:47:05.161667+00:00"
+            },
+            {
+              "point_id": 11,
+              "org_value": 2011.0,
+              "rt_value": 201.10000000000002,
+              "recorded_at": "2026-09-07 02:47:05.163818+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-005",
+          "fc": 3,
+          "address": 5,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1012,
+              10.120000000000001
+            ],
+            [
+              2012,
+              20.12
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 12,
+              "org_value": 2012.0,
+              "rt_value": 20.12,
+              "recorded_at": "2026-09-07 02:47:05.172304+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 12,
+              "org_value": 1012.0,
+              "rt_value": 10.120000000000001,
+              "recorded_at": "2026-09-07 02:47:05.170077+00:00"
+            },
+            {
+              "point_id": 12,
+              "org_value": 2012.0,
+              "rt_value": 20.12,
+              "recorded_at": "2026-09-07 02:47:05.172304+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-006",
+          "fc": 3,
+          "address": 6,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1013,
+              10.13
+            ],
+            [
+              2013,
+              20.13
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 13,
+              "org_value": 2013.0,
+              "rt_value": 20.13,
+              "recorded_at": "2026-09-07 02:47:05.180757+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 13,
+              "org_value": 1013.0,
+              "rt_value": 10.13,
+              "recorded_at": "2026-09-07 02:47:05.178598+00:00"
+            },
+            {
+              "point_id": 13,
+              "org_value": 2013.0,
+              "rt_value": 20.13,
+              "recorded_at": "2026-09-07 02:47:05.180757+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-007",
+          "fc": 3,
+          "address": 7,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1014,
+              10.14
+            ],
+            [
+              2014,
+              20.14
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 14,
+              "org_value": 2014.0,
+              "rt_value": 20.14,
+              "recorded_at": "2026-09-07 02:47:05.189109+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 14,
+              "org_value": 1014.0,
+              "rt_value": 10.14,
+              "recorded_at": "2026-09-07 02:47:05.186943+00:00"
+            },
+            {
+              "point_id": 14,
+              "org_value": 2014.0,
+              "rt_value": 20.14,
+              "recorded_at": "2026-09-07 02:47:05.189109+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-008",
+          "fc": 3,
+          "address": 8,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1015,
+              1.0150000000000001
+            ],
+            [
+              2015,
+              2.015
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 15,
+              "org_value": 2015.0,
+              "rt_value": 2.015,
+              "recorded_at": "2026-09-07 02:47:05.197512+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 15,
+              "org_value": 1015.0,
+              "rt_value": 1.0150000000000001,
+              "recorded_at": "2026-09-07 02:47:05.195354+00:00"
+            },
+            {
+              "point_id": 15,
+              "org_value": 2015.0,
+              "rt_value": 2.015,
+              "recorded_at": "2026-09-07 02:47:05.197512+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-009",
+          "fc": 3,
+          "address": 9,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1016,
+              1.016
+            ],
+            [
+              2016,
+              2.016
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 16,
+              "org_value": 2016.0,
+              "rt_value": 2.016,
+              "recorded_at": "2026-09-07 02:47:05.206036+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 16,
+              "org_value": 1016.0,
+              "rt_value": 1.016,
+              "recorded_at": "2026-09-07 02:47:05.203847+00:00"
+            },
+            {
+              "point_id": 16,
+              "org_value": 2016.0,
+              "rt_value": 2.016,
+              "recorded_at": "2026-09-07 02:47:05.206036+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-010",
+          "fc": 3,
+          "address": 10,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1017,
+              1.0170000000000001
+            ],
+            [
+              2017,
+              2.017
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 17,
+              "org_value": 2017.0,
+              "rt_value": 2.017,
+              "recorded_at": "2026-09-07 02:47:05.214482+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 17,
+              "org_value": 1017.0,
+              "rt_value": 1.0170000000000001,
+              "recorded_at": "2026-09-07 02:47:05.212286+00:00"
+            },
+            {
+              "point_id": 17,
+              "org_value": 2017.0,
+              "rt_value": 2.017,
+              "recorded_at": "2026-09-07 02:47:05.214482+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-011",
+          "fc": 3,
+          "address": 11,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1018,
+              1.018
+            ],
+            [
+              2018,
+              2.0180000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 18,
+              "org_value": 2018.0,
+              "rt_value": 2.0180000000000002,
+              "recorded_at": "2026-09-07 02:47:05.223035+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 18,
+              "org_value": 1018.0,
+              "rt_value": 1.018,
+              "recorded_at": "2026-09-07 02:47:05.220871+00:00"
+            },
+            {
+              "point_id": 18,
+              "org_value": 2018.0,
+              "rt_value": 2.0180000000000002,
+              "recorded_at": "2026-09-07 02:47:05.223035+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-012",
+          "fc": 3,
+          "address": 12,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1019,
+              1.0190000000000001
+            ],
+            [
+              2019,
+              2.019
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 19,
+              "org_value": 2019.0,
+              "rt_value": 2.019,
+              "recorded_at": "2026-09-07 02:47:05.231474+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 19,
+              "org_value": 1019.0,
+              "rt_value": 1.0190000000000001,
+              "recorded_at": "2026-09-07 02:47:05.229216+00:00"
+            },
+            {
+              "point_id": 19,
+              "org_value": 2019.0,
+              "rt_value": 2.019,
+              "recorded_at": "2026-09-07 02:47:05.231474+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-013",
+          "fc": 3,
+          "address": 13,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1020,
+              1.02
+            ],
+            [
+              2020,
+              2.02
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 20,
+              "org_value": 2020.0,
+              "rt_value": 2.02,
+              "recorded_at": "2026-09-07 02:47:05.239938+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 20,
+              "org_value": 1020.0,
+              "rt_value": 1.02,
+              "recorded_at": "2026-09-07 02:47:05.237769+00:00"
+            },
+            {
+              "point_id": 20,
+              "org_value": 2020.0,
+              "rt_value": 2.02,
+              "recorded_at": "2026-09-07 02:47:05.239938+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-014",
+          "fc": 3,
+          "address": 14,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1021,
+              1.0210000000000001
+            ],
+            [
+              2021,
+              2.021
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 21,
+              "org_value": 2021.0,
+              "rt_value": 2.021,
+              "recorded_at": "2026-09-07 02:47:05.248605+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 21,
+              "org_value": 1021.0,
+              "rt_value": 1.0210000000000001,
+              "recorded_at": "2026-09-07 02:47:05.246376+00:00"
+            },
+            {
+              "point_id": 21,
+              "org_value": 2021.0,
+              "rt_value": 2.021,
+              "recorded_at": "2026-09-07 02:47:05.248605+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-015",
+          "fc": 3,
+          "address": 15,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1022,
+              1.022
+            ],
+            [
+              2022,
+              2.0220000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 22,
+              "org_value": 2022.0,
+              "rt_value": 2.0220000000000002,
+              "recorded_at": "2026-09-07 02:47:05.256915+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 22,
+              "org_value": 1022.0,
+              "rt_value": 1.022,
+              "recorded_at": "2026-09-07 02:47:05.254774+00:00"
+            },
+            {
+              "point_id": 22,
+              "org_value": 2022.0,
+              "rt_value": 2.0220000000000002,
+              "recorded_at": "2026-09-07 02:47:05.256915+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-016",
+          "fc": 3,
+          "address": 16,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1023,
+              1.0230000000000001
+            ],
+            [
+              2023,
+              2.023
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 23,
+              "org_value": 2023.0,
+              "rt_value": 2.023,
+              "recorded_at": "2026-09-07 02:47:05.265297+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 23,
+              "org_value": 1023.0,
+              "rt_value": 1.0230000000000001,
+              "recorded_at": "2026-09-07 02:47:05.263130+00:00"
+            },
+            {
+              "point_id": 23,
+              "org_value": 2023.0,
+              "rt_value": 2.023,
+              "recorded_at": "2026-09-07 02:47:05.265297+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-017",
+          "fc": 3,
+          "address": 17,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1024,
+              10.24
+            ],
+            [
+              2024,
+              20.240000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 24,
+              "org_value": 2024.0,
+              "rt_value": 20.240000000000002,
+              "recorded_at": "2026-09-07 02:47:05.273613+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 24,
+              "org_value": 1024.0,
+              "rt_value": 10.24,
+              "recorded_at": "2026-09-07 02:47:05.271442+00:00"
+            },
+            {
+              "point_id": 24,
+              "org_value": 2024.0,
+              "rt_value": 20.240000000000002,
+              "recorded_at": "2026-09-07 02:47:05.273613+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-018",
+          "fc": 3,
+          "address": 18,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1025,
+              10.25
+            ],
+            [
+              2025,
+              20.25
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 25,
+              "org_value": 2025.0,
+              "rt_value": 20.25,
+              "recorded_at": "2026-09-07 02:47:05.282483+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 25,
+              "org_value": 1025.0,
+              "rt_value": 10.25,
+              "recorded_at": "2026-09-07 02:47:05.280250+00:00"
+            },
+            {
+              "point_id": 25,
+              "org_value": 2025.0,
+              "rt_value": 20.25,
+              "recorded_at": "2026-09-07 02:47:05.282483+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-019",
+          "fc": 3,
+          "address": 19,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1026,
+              10.26
+            ],
+            [
+              2026,
+              20.26
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 26,
+              "org_value": 2026.0,
+              "rt_value": 20.26,
+              "recorded_at": "2026-09-07 02:47:05.291998+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 26,
+              "org_value": 1026.0,
+              "rt_value": 10.26,
+              "recorded_at": "2026-09-07 02:47:05.289747+00:00"
+            },
+            {
+              "point_id": 26,
+              "org_value": 2026.0,
+              "rt_value": 20.26,
+              "recorded_at": "2026-09-07 02:47:05.291998+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-020",
+          "fc": 3,
+          "address": 20,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1027,
+              10.27
+            ],
+            [
+              2027,
+              20.27
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 27,
+              "org_value": 2027.0,
+              "rt_value": 20.27,
+              "recorded_at": "2026-09-07 02:47:05.308666+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 27,
+              "org_value": 1027.0,
+              "rt_value": 10.27,
+              "recorded_at": "2026-09-07 02:47:05.306407+00:00"
+            },
+            {
+              "point_id": 27,
+              "org_value": 2027.0,
+              "rt_value": 20.27,
+              "recorded_at": "2026-09-07 02:47:05.308666+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-021",
+          "fc": 3,
+          "address": 21,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1028,
+              10.28
+            ],
+            [
+              2028,
+              20.28
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 28,
+              "org_value": 2028.0,
+              "rt_value": 20.28,
+              "recorded_at": "2026-09-07 02:47:05.318114+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 28,
+              "org_value": 1028.0,
+              "rt_value": 10.28,
+              "recorded_at": "2026-09-07 02:47:05.315851+00:00"
+            },
+            {
+              "point_id": 28,
+              "org_value": 2028.0,
+              "rt_value": 20.28,
+              "recorded_at": "2026-09-07 02:47:05.318114+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-022",
+          "fc": 3,
+          "address": 22,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1029,
+              10.290000000000001
+            ],
+            [
+              2029,
+              20.29
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 29,
+              "org_value": 2029.0,
+              "rt_value": 20.29,
+              "recorded_at": "2026-09-07 02:47:05.328969+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 29,
+              "org_value": 1029.0,
+              "rt_value": 10.290000000000001,
+              "recorded_at": "2026-09-07 02:47:05.326809+00:00"
+            },
+            {
+              "point_id": 29,
+              "org_value": 2029.0,
+              "rt_value": 20.29,
+              "recorded_at": "2026-09-07 02:47:05.328969+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-023",
+          "fc": 3,
+          "address": 23,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1030,
+              10.3
+            ],
+            [
+              2030,
+              20.3
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 30,
+              "org_value": 2030.0,
+              "rt_value": 20.3,
+              "recorded_at": "2026-09-07 02:47:05.337465+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 30,
+              "org_value": 1030.0,
+              "rt_value": 10.3,
+              "recorded_at": "2026-09-07 02:47:05.335307+00:00"
+            },
+            {
+              "point_id": 30,
+              "org_value": 2030.0,
+              "rt_value": 20.3,
+              "recorded_at": "2026-09-07 02:47:05.337465+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-024",
+          "fc": 3,
+          "address": 24,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1031,
+              1031
+            ],
+            [
+              2031,
+              2031
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 31,
+              "org_value": 2031.0,
+              "rt_value": 2031.0,
+              "recorded_at": "2026-09-07 02:47:05.346978+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 31,
+              "org_value": 1031.0,
+              "rt_value": 1031.0,
+              "recorded_at": "2026-09-07 02:47:05.344782+00:00"
+            },
+            {
+              "point_id": 31,
+              "org_value": 2031.0,
+              "rt_value": 2031.0,
+              "recorded_at": "2026-09-07 02:47:05.346978+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-025",
+          "fc": 3,
+          "address": 25,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1032,
+              1032
+            ],
+            [
+              2032,
+              2032
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 32,
+              "org_value": 2032.0,
+              "rt_value": 2032.0,
+              "recorded_at": "2026-09-07 02:47:05.355786+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 32,
+              "org_value": 1032.0,
+              "rt_value": 1032.0,
+              "recorded_at": "2026-09-07 02:47:05.353599+00:00"
+            },
+            {
+              "point_id": 32,
+              "org_value": 2032.0,
+              "rt_value": 2032.0,
+              "recorded_at": "2026-09-07 02:47:05.355786+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-026",
+          "fc": 3,
+          "address": 26,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1033,
+              103.30000000000001
+            ],
+            [
+              2033,
+              203.3
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 33,
+              "org_value": 2033.0,
+              "rt_value": 203.3,
+              "recorded_at": "2026-09-07 02:47:05.364325+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 33,
+              "org_value": 1033.0,
+              "rt_value": 103.30000000000001,
+              "recorded_at": "2026-09-07 02:47:05.362139+00:00"
+            },
+            {
+              "point_id": 33,
+              "org_value": 2033.0,
+              "rt_value": 203.3,
+              "recorded_at": "2026-09-07 02:47:05.364325+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-027",
+          "fc": 3,
+          "address": 27,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1034,
+              103.4
+            ],
+            [
+              2034,
+              203.4
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 34,
+              "org_value": 2034.0,
+              "rt_value": 203.4,
+              "recorded_at": "2026-09-07 02:47:05.373179+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 34,
+              "org_value": 1034.0,
+              "rt_value": 103.4,
+              "recorded_at": "2026-09-07 02:47:05.370999+00:00"
+            },
+            {
+              "point_id": 34,
+              "org_value": 2034.0,
+              "rt_value": 203.4,
+              "recorded_at": "2026-09-07 02:47:05.373179+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-028",
+          "fc": 3,
+          "address": 28,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1035,
+              103.5
+            ],
+            [
+              2035,
+              203.5
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 35,
+              "org_value": 2035.0,
+              "rt_value": 203.5,
+              "recorded_at": "2026-09-07 02:47:05.381763+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 35,
+              "org_value": 1035.0,
+              "rt_value": 103.5,
+              "recorded_at": "2026-09-07 02:47:05.379569+00:00"
+            },
+            {
+              "point_id": 35,
+              "org_value": 2035.0,
+              "rt_value": 203.5,
+              "recorded_at": "2026-09-07 02:47:05.381763+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-029",
+          "fc": 3,
+          "address": 29,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1036,
+              103.60000000000001
+            ],
+            [
+              2036,
+              203.60000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 36,
+              "org_value": 2036.0,
+              "rt_value": 203.60000000000002,
+              "recorded_at": "2026-09-07 02:47:05.390401+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 36,
+              "org_value": 1036.0,
+              "rt_value": 103.60000000000001,
+              "recorded_at": "2026-09-07 02:47:05.388212+00:00"
+            },
+            {
+              "point_id": 36,
+              "org_value": 2036.0,
+              "rt_value": 203.60000000000002,
+              "recorded_at": "2026-09-07 02:47:05.390401+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-030",
+          "fc": 3,
+          "address": 30,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1037,
+              103.7
+            ],
+            [
+              2037,
+              203.70000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 37,
+              "org_value": 2037.0,
+              "rt_value": 203.70000000000002,
+              "recorded_at": "2026-09-07 02:47:05.398889+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 37,
+              "org_value": 1037.0,
+              "rt_value": 103.7,
+              "recorded_at": "2026-09-07 02:47:05.396676+00:00"
+            },
+            {
+              "point_id": 37,
+              "org_value": 2037.0,
+              "rt_value": 203.70000000000002,
+              "recorded_at": "2026-09-07 02:47:05.398889+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-031",
+          "fc": 3,
+          "address": 31,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1038,
+              103.80000000000001
+            ],
+            [
+              2038,
+              203.8
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 38,
+              "org_value": 2038.0,
+              "rt_value": 203.8,
+              "recorded_at": "2026-09-07 02:47:05.407420+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 38,
+              "org_value": 1038.0,
+              "rt_value": 103.80000000000001,
+              "recorded_at": "2026-09-07 02:47:05.405201+00:00"
+            },
+            {
+              "point_id": 38,
+              "org_value": 2038.0,
+              "rt_value": 203.8,
+              "recorded_at": "2026-09-07 02:47:05.407420+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-032",
+          "fc": 3,
+          "address": 32,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1039,
+              103.9
+            ],
+            [
+              2039,
+              203.9
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 39,
+              "org_value": 2039.0,
+              "rt_value": 203.9,
+              "recorded_at": "2026-09-07 02:47:05.415939+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 39,
+              "org_value": 1039.0,
+              "rt_value": 103.9,
+              "recorded_at": "2026-09-07 02:47:05.413754+00:00"
+            },
+            {
+              "point_id": 39,
+              "org_value": 2039.0,
+              "rt_value": 203.9,
+              "recorded_at": "2026-09-07 02:47:05.415939+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-033",
+          "fc": 3,
+          "address": 33,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1040,
+              104.0
+            ],
+            [
+              2040,
+              204.0
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 40,
+              "org_value": 2040.0,
+              "rt_value": 204.0,
+              "recorded_at": "2026-09-07 02:47:05.424442+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 40,
+              "org_value": 1040.0,
+              "rt_value": 104.0,
+              "recorded_at": "2026-09-07 02:47:05.422248+00:00"
+            },
+            {
+              "point_id": 40,
+              "org_value": 2040.0,
+              "rt_value": 204.0,
+              "recorded_at": "2026-09-07 02:47:05.424442+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-034",
+          "fc": 3,
+          "address": 34,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1041,
+              104.10000000000001
+            ],
+            [
+              2041,
+              204.10000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 41,
+              "org_value": 2041.0,
+              "rt_value": 204.10000000000002,
+              "recorded_at": "2026-09-07 02:47:05.432730+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 41,
+              "org_value": 1041.0,
+              "rt_value": 104.10000000000001,
+              "recorded_at": "2026-09-07 02:47:05.430471+00:00"
+            },
+            {
+              "point_id": 41,
+              "org_value": 2041.0,
+              "rt_value": 204.10000000000002,
+              "recorded_at": "2026-09-07 02:47:05.432730+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-035",
+          "fc": 3,
+          "address": 35,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1042,
+              1.042
+            ],
+            [
+              2042,
+              2.0420000000000003
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 42,
+              "org_value": 2042.0,
+              "rt_value": 2.0420000000000003,
+              "recorded_at": "2026-09-07 02:47:05.442206+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 42,
+              "org_value": 1042.0,
+              "rt_value": 1.042,
+              "recorded_at": "2026-09-07 02:47:05.440032+00:00"
+            },
+            {
+              "point_id": 42,
+              "org_value": 2042.0,
+              "rt_value": 2.0420000000000003,
+              "recorded_at": "2026-09-07 02:47:05.442206+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-036",
+          "fc": 1,
+          "address": 0,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "ambiguous-coil-config-rejection",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-037",
+          "fc": 1,
+          "address": 0,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "ambiguous-coil-config-rejection",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-038",
+          "fc": 1,
+          "address": 1,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "ambiguous-coil-config-rejection",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-039",
+          "fc": 1,
+          "address": 1,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "ambiguous-coil-config-rejection",
+          "rejection_pass": false
+        }
+      ],
+      "hypertable": true,
+      "physical_replay": [
+        {
+          "address": 0,
+          "raw": 3,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 1,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 2,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 3,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 4,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 5,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 27,
+          "raw": 3,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 28,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 29,
+          "raw": 11,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 30,
+          "raw": 11,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 31,
+          "raw": 10,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 32,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 33,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 34,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 35,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        }
+      ],
+      "physical_counts": {
+        "realtime": 15,
+        "history": 15,
+        "publisher_events": 15
+      },
+      "legacy_types": [
+        {
+          "id": "BCMM-000",
+          "rejection_pass": false
+        },
+        {
+          "id": "BCMM-001",
+          "rejection_pass": false
+        },
+        {
+          "id": "BCMM-002",
+          "rejection_pass": false
+        },
+        {
+          "id": "BCMM-003",
+          "rejection_pass": false
+        },
+        {
+          "id": "BCMM-004",
+          "rejection_pass": false
+        },
+        {
+          "id": "BCMM-005",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-000",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-001",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-002",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-003",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-004",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-005",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-006",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-007",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-008",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-009",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-010",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-011",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-012",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-013",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-014",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-015",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-016",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-017",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-018",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-019",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-020",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-021",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-022",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-023",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-024",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-025",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-026",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-027",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-028",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-029",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-030",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-031",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-032",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-033",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-034",
+          "rejection_pass": false
+        },
+        {
+          "id": "CBMM-035",
+          "rejection_pass": false
+        }
+      ],
+      "legacy_counts": {
+        "realtime": 42,
+        "history": 42
+      },
+      "wrong-function": {
+        "rejection_pass": false,
+        "realtime_count": 1,
+        "history_count": 1
+      },
+      "bad-crc": {
+        "rejection_pass": true,
+        "realtime_count": 0,
+        "history_count": 0
+      },
+      "shutdown-race": {
+        "realtime_count": 0,
+        "history_count": 0,
+        "pass": false
+      },
+      "shutdown-drain": {
+        "realtime_count": 46,
+        "history_count": 46,
+        "pass": true
+      },
+      "transaction-rollback": {
+        "pass": true
+      },
+      "database_counts": {
+        "realtime": 151,
+        "history": 197
+      },
+      "completed_at": "2026-09-07T10:47:05.513621+08:00"
+    },
+    {
+      "mode": "patched",
+      "database": "test_point_pipeline_20260907_b8a4d285",
+      "source_hashes": {
+        "ruisheng_gw.persistence.batch_writer": {
+          "deployed": "cc18e1899f29145ecc2b08109e08005fa1c83dd2e2da30cf851d6a0ba94019eb",
+          "tested": "381a9e0786ec18eb34447750ff7e94aff009dc49d9718cb345859edba0e59468"
+        },
+        "ruisheng_gw.ingest": {
+          "deployed": "cf9a7057d51ab654efa86ea65ac5dc0da3fa3b4113436eb8eb9d5ab34f98014b",
+          "tested": "23592de114389bf1586dee66ee735df9f4a6af9d48f38237141ab74721ae472f"
+        }
+      },
+      "points": [
+        {
+          "id": "BCMM-000",
+          "fc": 3,
+          "address": 0,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1001,
+              100.10000000000001
+            ],
+            [
+              2001,
+              200.10000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 1,
+              "org_value": 2001.0,
+              "rt_value": 200.10000000000002,
+              "recorded_at": "2026-09-07 02:47:07.595232+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 1,
+              "org_value": 1001.0,
+              "rt_value": 100.10000000000001,
+              "recorded_at": "2026-09-07 02:47:07.592974+00:00"
+            },
+            {
+              "point_id": 1,
+              "org_value": 2001.0,
+              "rt_value": 200.10000000000002,
+              "recorded_at": "2026-09-07 02:47:07.595232+00:00"
+            }
+          ]
+        },
+        {
+          "id": "BCMM-001",
+          "fc": 3,
+          "address": 1,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1002,
+              100.2
+            ],
+            [
+              2002,
+              200.20000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 2,
+              "org_value": 2002.0,
+              "rt_value": 200.20000000000002,
+              "recorded_at": "2026-09-07 02:47:07.605333+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 2,
+              "org_value": 1002.0,
+              "rt_value": 100.2,
+              "recorded_at": "2026-09-07 02:47:07.603067+00:00"
+            },
+            {
+              "point_id": 2,
+              "org_value": 2002.0,
+              "rt_value": 200.20000000000002,
+              "recorded_at": "2026-09-07 02:47:07.605333+00:00"
+            }
+          ]
+        },
+        {
+          "id": "BCMM-002",
+          "fc": 3,
+          "address": 2,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1003,
+              100.30000000000001
+            ],
+            [
+              2003,
+              200.3
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 3,
+              "org_value": 2003.0,
+              "rt_value": 200.3,
+              "recorded_at": "2026-09-07 02:47:07.625428+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 3,
+              "org_value": 1003.0,
+              "rt_value": 100.30000000000001,
+              "recorded_at": "2026-09-07 02:47:07.623198+00:00"
+            },
+            {
+              "point_id": 3,
+              "org_value": 2003.0,
+              "rt_value": 200.3,
+              "recorded_at": "2026-09-07 02:47:07.625428+00:00"
+            }
+          ]
+        },
+        {
+          "id": "BCMM-003",
+          "fc": 3,
+          "address": 3,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1004,
+              100.4
+            ],
+            [
+              2004,
+              200.4
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 4,
+              "org_value": 2004.0,
+              "rt_value": 200.4,
+              "recorded_at": "2026-09-07 02:47:07.635201+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 4,
+              "org_value": 1004.0,
+              "rt_value": 100.4,
+              "recorded_at": "2026-09-07 02:47:07.633014+00:00"
+            },
+            {
+              "point_id": 4,
+              "org_value": 2004.0,
+              "rt_value": 200.4,
+              "recorded_at": "2026-09-07 02:47:07.635201+00:00"
+            }
+          ]
+        },
+        {
+          "id": "BCMM-004",
+          "fc": 3,
+          "address": 4,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1005,
+              100.5
+            ],
+            [
+              2005,
+              200.5
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 5,
+              "org_value": 2005.0,
+              "rt_value": 200.5,
+              "recorded_at": "2026-09-07 02:47:07.644953+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 5,
+              "org_value": 1005.0,
+              "rt_value": 100.5,
+              "recorded_at": "2026-09-07 02:47:07.642790+00:00"
+            },
+            {
+              "point_id": 5,
+              "org_value": 2005.0,
+              "rt_value": 200.5,
+              "recorded_at": "2026-09-07 02:47:07.644953+00:00"
+            }
+          ]
+        },
+        {
+          "id": "BCMM-005",
+          "fc": 3,
+          "address": 5,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1006,
+              100.60000000000001
+            ],
+            [
+              2006,
+              200.60000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 6,
+              "org_value": 2006.0,
+              "rt_value": 200.60000000000002,
+              "recorded_at": "2026-09-07 02:47:07.654306+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 6,
+              "org_value": 1006.0,
+              "rt_value": 100.60000000000001,
+              "recorded_at": "2026-09-07 02:47:07.652084+00:00"
+            },
+            {
+              "point_id": 6,
+              "org_value": 2006.0,
+              "rt_value": 200.60000000000002,
+              "recorded_at": "2026-09-07 02:47:07.654306+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-000",
+          "fc": 3,
+          "address": 0,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1007,
+              1007
+            ],
+            [
+              2007,
+              2007
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 7,
+              "org_value": 2007.0,
+              "rt_value": 2007.0,
+              "recorded_at": "2026-09-07 02:47:07.663568+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 7,
+              "org_value": 1007.0,
+              "rt_value": 1007.0,
+              "recorded_at": "2026-09-07 02:47:07.661372+00:00"
+            },
+            {
+              "point_id": 7,
+              "org_value": 2007.0,
+              "rt_value": 2007.0,
+              "recorded_at": "2026-09-07 02:47:07.663568+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-001",
+          "fc": 3,
+          "address": 1,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1008,
+              1008
+            ],
+            [
+              2008,
+              2008
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 8,
+              "org_value": 2008.0,
+              "rt_value": 2008.0,
+              "recorded_at": "2026-09-07 02:47:07.672518+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 8,
+              "org_value": 1008.0,
+              "rt_value": 1008.0,
+              "recorded_at": "2026-09-07 02:47:07.670332+00:00"
+            },
+            {
+              "point_id": 8,
+              "org_value": 2008.0,
+              "rt_value": 2008.0,
+              "recorded_at": "2026-09-07 02:47:07.672518+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-002",
+          "fc": 3,
+          "address": 2,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1009,
+              100.9
+            ],
+            [
+              2009,
+              200.9
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 9,
+              "org_value": 2009.0,
+              "rt_value": 200.9,
+              "recorded_at": "2026-09-07 02:47:07.681638+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 9,
+              "org_value": 1009.0,
+              "rt_value": 100.9,
+              "recorded_at": "2026-09-07 02:47:07.679439+00:00"
+            },
+            {
+              "point_id": 9,
+              "org_value": 2009.0,
+              "rt_value": 200.9,
+              "recorded_at": "2026-09-07 02:47:07.681638+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-003",
+          "fc": 3,
+          "address": 3,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1010,
+              101.0
+            ],
+            [
+              2010,
+              201.0
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 10,
+              "org_value": 2010.0,
+              "rt_value": 201.0,
+              "recorded_at": "2026-09-07 02:47:07.690862+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 10,
+              "org_value": 1010.0,
+              "rt_value": 101.0,
+              "recorded_at": "2026-09-07 02:47:07.688674+00:00"
+            },
+            {
+              "point_id": 10,
+              "org_value": 2010.0,
+              "rt_value": 201.0,
+              "recorded_at": "2026-09-07 02:47:07.690862+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-004",
+          "fc": 3,
+          "address": 4,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1011,
+              101.10000000000001
+            ],
+            [
+              2011,
+              201.10000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 11,
+              "org_value": 2011.0,
+              "rt_value": 201.10000000000002,
+              "recorded_at": "2026-09-07 02:47:07.700380+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 11,
+              "org_value": 1011.0,
+              "rt_value": 101.10000000000001,
+              "recorded_at": "2026-09-07 02:47:07.698191+00:00"
+            },
+            {
+              "point_id": 11,
+              "org_value": 2011.0,
+              "rt_value": 201.10000000000002,
+              "recorded_at": "2026-09-07 02:47:07.700380+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-005",
+          "fc": 3,
+          "address": 5,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1012,
+              10.120000000000001
+            ],
+            [
+              2012,
+              20.12
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 12,
+              "org_value": 2012.0,
+              "rt_value": 20.12,
+              "recorded_at": "2026-09-07 02:47:07.708845+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 12,
+              "org_value": 1012.0,
+              "rt_value": 10.120000000000001,
+              "recorded_at": "2026-09-07 02:47:07.706719+00:00"
+            },
+            {
+              "point_id": 12,
+              "org_value": 2012.0,
+              "rt_value": 20.12,
+              "recorded_at": "2026-09-07 02:47:07.708845+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-006",
+          "fc": 3,
+          "address": 6,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1013,
+              10.13
+            ],
+            [
+              2013,
+              20.13
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 13,
+              "org_value": 2013.0,
+              "rt_value": 20.13,
+              "recorded_at": "2026-09-07 02:47:07.717704+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 13,
+              "org_value": 1013.0,
+              "rt_value": 10.13,
+              "recorded_at": "2026-09-07 02:47:07.715501+00:00"
+            },
+            {
+              "point_id": 13,
+              "org_value": 2013.0,
+              "rt_value": 20.13,
+              "recorded_at": "2026-09-07 02:47:07.717704+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-007",
+          "fc": 3,
+          "address": 7,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1014,
+              10.14
+            ],
+            [
+              2014,
+              20.14
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 14,
+              "org_value": 2014.0,
+              "rt_value": 20.14,
+              "recorded_at": "2026-09-07 02:47:07.726311+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 14,
+              "org_value": 1014.0,
+              "rt_value": 10.14,
+              "recorded_at": "2026-09-07 02:47:07.724037+00:00"
+            },
+            {
+              "point_id": 14,
+              "org_value": 2014.0,
+              "rt_value": 20.14,
+              "recorded_at": "2026-09-07 02:47:07.726311+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-008",
+          "fc": 3,
+          "address": 8,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1015,
+              1.0150000000000001
+            ],
+            [
+              2015,
+              2.015
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 15,
+              "org_value": 2015.0,
+              "rt_value": 2.015,
+              "recorded_at": "2026-09-07 02:47:07.735229+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 15,
+              "org_value": 1015.0,
+              "rt_value": 1.0150000000000001,
+              "recorded_at": "2026-09-07 02:47:07.733017+00:00"
+            },
+            {
+              "point_id": 15,
+              "org_value": 2015.0,
+              "rt_value": 2.015,
+              "recorded_at": "2026-09-07 02:47:07.735229+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-009",
+          "fc": 3,
+          "address": 9,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1016,
+              1.016
+            ],
+            [
+              2016,
+              2.016
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 16,
+              "org_value": 2016.0,
+              "rt_value": 2.016,
+              "recorded_at": "2026-09-07 02:47:07.744860+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 16,
+              "org_value": 1016.0,
+              "rt_value": 1.016,
+              "recorded_at": "2026-09-07 02:47:07.742701+00:00"
+            },
+            {
+              "point_id": 16,
+              "org_value": 2016.0,
+              "rt_value": 2.016,
+              "recorded_at": "2026-09-07 02:47:07.744860+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-010",
+          "fc": 3,
+          "address": 10,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1017,
+              1.0170000000000001
+            ],
+            [
+              2017,
+              2.017
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 17,
+              "org_value": 2017.0,
+              "rt_value": 2.017,
+              "recorded_at": "2026-09-07 02:47:07.753551+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 17,
+              "org_value": 1017.0,
+              "rt_value": 1.0170000000000001,
+              "recorded_at": "2026-09-07 02:47:07.751347+00:00"
+            },
+            {
+              "point_id": 17,
+              "org_value": 2017.0,
+              "rt_value": 2.017,
+              "recorded_at": "2026-09-07 02:47:07.753551+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-011",
+          "fc": 3,
+          "address": 11,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1018,
+              1.018
+            ],
+            [
+              2018,
+              2.0180000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 18,
+              "org_value": 2018.0,
+              "rt_value": 2.0180000000000002,
+              "recorded_at": "2026-09-07 02:47:07.762597+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 18,
+              "org_value": 1018.0,
+              "rt_value": 1.018,
+              "recorded_at": "2026-09-07 02:47:07.760386+00:00"
+            },
+            {
+              "point_id": 18,
+              "org_value": 2018.0,
+              "rt_value": 2.0180000000000002,
+              "recorded_at": "2026-09-07 02:47:07.762597+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-012",
+          "fc": 3,
+          "address": 12,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1019,
+              1.0190000000000001
+            ],
+            [
+              2019,
+              2.019
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 19,
+              "org_value": 2019.0,
+              "rt_value": 2.019,
+              "recorded_at": "2026-09-07 02:47:07.772236+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 19,
+              "org_value": 1019.0,
+              "rt_value": 1.0190000000000001,
+              "recorded_at": "2026-09-07 02:47:07.770019+00:00"
+            },
+            {
+              "point_id": 19,
+              "org_value": 2019.0,
+              "rt_value": 2.019,
+              "recorded_at": "2026-09-07 02:47:07.772236+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-013",
+          "fc": 3,
+          "address": 13,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1020,
+              1.02
+            ],
+            [
+              2020,
+              2.02
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 20,
+              "org_value": 2020.0,
+              "rt_value": 2.02,
+              "recorded_at": "2026-09-07 02:47:07.781646+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 20,
+              "org_value": 1020.0,
+              "rt_value": 1.02,
+              "recorded_at": "2026-09-07 02:47:07.779475+00:00"
+            },
+            {
+              "point_id": 20,
+              "org_value": 2020.0,
+              "rt_value": 2.02,
+              "recorded_at": "2026-09-07 02:47:07.781646+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-014",
+          "fc": 3,
+          "address": 14,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1021,
+              1.0210000000000001
+            ],
+            [
+              2021,
+              2.021
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 21,
+              "org_value": 2021.0,
+              "rt_value": 2.021,
+              "recorded_at": "2026-09-07 02:47:07.791958+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 21,
+              "org_value": 1021.0,
+              "rt_value": 1.0210000000000001,
+              "recorded_at": "2026-09-07 02:47:07.789772+00:00"
+            },
+            {
+              "point_id": 21,
+              "org_value": 2021.0,
+              "rt_value": 2.021,
+              "recorded_at": "2026-09-07 02:47:07.791958+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-015",
+          "fc": 3,
+          "address": 15,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1022,
+              1.022
+            ],
+            [
+              2022,
+              2.0220000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 22,
+              "org_value": 2022.0,
+              "rt_value": 2.0220000000000002,
+              "recorded_at": "2026-09-07 02:47:07.800692+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 22,
+              "org_value": 1022.0,
+              "rt_value": 1.022,
+              "recorded_at": "2026-09-07 02:47:07.798493+00:00"
+            },
+            {
+              "point_id": 22,
+              "org_value": 2022.0,
+              "rt_value": 2.0220000000000002,
+              "recorded_at": "2026-09-07 02:47:07.800692+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-016",
+          "fc": 3,
+          "address": 16,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1023,
+              1.0230000000000001
+            ],
+            [
+              2023,
+              2.023
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 23,
+              "org_value": 2023.0,
+              "rt_value": 2.023,
+              "recorded_at": "2026-09-07 02:47:07.809261+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 23,
+              "org_value": 1023.0,
+              "rt_value": 1.0230000000000001,
+              "recorded_at": "2026-09-07 02:47:07.807065+00:00"
+            },
+            {
+              "point_id": 23,
+              "org_value": 2023.0,
+              "rt_value": 2.023,
+              "recorded_at": "2026-09-07 02:47:07.809261+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-017",
+          "fc": 3,
+          "address": 17,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1024,
+              10.24
+            ],
+            [
+              2024,
+              20.240000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 24,
+              "org_value": 2024.0,
+              "rt_value": 20.240000000000002,
+              "recorded_at": "2026-09-07 02:47:07.817548+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 24,
+              "org_value": 1024.0,
+              "rt_value": 10.24,
+              "recorded_at": "2026-09-07 02:47:07.815376+00:00"
+            },
+            {
+              "point_id": 24,
+              "org_value": 2024.0,
+              "rt_value": 20.240000000000002,
+              "recorded_at": "2026-09-07 02:47:07.817548+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-018",
+          "fc": 3,
+          "address": 18,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1025,
+              10.25
+            ],
+            [
+              2025,
+              20.25
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 25,
+              "org_value": 2025.0,
+              "rt_value": 20.25,
+              "recorded_at": "2026-09-07 02:47:07.826415+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 25,
+              "org_value": 1025.0,
+              "rt_value": 10.25,
+              "recorded_at": "2026-09-07 02:47:07.824208+00:00"
+            },
+            {
+              "point_id": 25,
+              "org_value": 2025.0,
+              "rt_value": 20.25,
+              "recorded_at": "2026-09-07 02:47:07.826415+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-019",
+          "fc": 3,
+          "address": 19,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1026,
+              10.26
+            ],
+            [
+              2026,
+              20.26
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 26,
+              "org_value": 2026.0,
+              "rt_value": 20.26,
+              "recorded_at": "2026-09-07 02:47:07.836101+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 26,
+              "org_value": 1026.0,
+              "rt_value": 10.26,
+              "recorded_at": "2026-09-07 02:47:07.833916+00:00"
+            },
+            {
+              "point_id": 26,
+              "org_value": 2026.0,
+              "rt_value": 20.26,
+              "recorded_at": "2026-09-07 02:47:07.836101+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-020",
+          "fc": 3,
+          "address": 20,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1027,
+              10.27
+            ],
+            [
+              2027,
+              20.27
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 27,
+              "org_value": 2027.0,
+              "rt_value": 20.27,
+              "recorded_at": "2026-09-07 02:47:07.844830+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 27,
+              "org_value": 1027.0,
+              "rt_value": 10.27,
+              "recorded_at": "2026-09-07 02:47:07.842680+00:00"
+            },
+            {
+              "point_id": 27,
+              "org_value": 2027.0,
+              "rt_value": 20.27,
+              "recorded_at": "2026-09-07 02:47:07.844830+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-021",
+          "fc": 3,
+          "address": 21,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1028,
+              10.28
+            ],
+            [
+              2028,
+              20.28
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 28,
+              "org_value": 2028.0,
+              "rt_value": 20.28,
+              "recorded_at": "2026-09-07 02:47:07.853328+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 28,
+              "org_value": 1028.0,
+              "rt_value": 10.28,
+              "recorded_at": "2026-09-07 02:47:07.851148+00:00"
+            },
+            {
+              "point_id": 28,
+              "org_value": 2028.0,
+              "rt_value": 20.28,
+              "recorded_at": "2026-09-07 02:47:07.853328+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-022",
+          "fc": 3,
+          "address": 22,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1029,
+              10.290000000000001
+            ],
+            [
+              2029,
+              20.29
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 29,
+              "org_value": 2029.0,
+              "rt_value": 20.29,
+              "recorded_at": "2026-09-07 02:47:07.862991+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 29,
+              "org_value": 1029.0,
+              "rt_value": 10.290000000000001,
+              "recorded_at": "2026-09-07 02:47:07.860823+00:00"
+            },
+            {
+              "point_id": 29,
+              "org_value": 2029.0,
+              "rt_value": 20.29,
+              "recorded_at": "2026-09-07 02:47:07.862991+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-023",
+          "fc": 3,
+          "address": 23,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1030,
+              10.3
+            ],
+            [
+              2030,
+              20.3
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 30,
+              "org_value": 2030.0,
+              "rt_value": 20.3,
+              "recorded_at": "2026-09-07 02:47:07.873268+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 30,
+              "org_value": 1030.0,
+              "rt_value": 10.3,
+              "recorded_at": "2026-09-07 02:47:07.871125+00:00"
+            },
+            {
+              "point_id": 30,
+              "org_value": 2030.0,
+              "rt_value": 20.3,
+              "recorded_at": "2026-09-07 02:47:07.873268+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-024",
+          "fc": 3,
+          "address": 24,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1031,
+              1031
+            ],
+            [
+              2031,
+              2031
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 31,
+              "org_value": 2031.0,
+              "rt_value": 2031.0,
+              "recorded_at": "2026-09-07 02:47:07.883214+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 31,
+              "org_value": 1031.0,
+              "rt_value": 1031.0,
+              "recorded_at": "2026-09-07 02:47:07.880988+00:00"
+            },
+            {
+              "point_id": 31,
+              "org_value": 2031.0,
+              "rt_value": 2031.0,
+              "recorded_at": "2026-09-07 02:47:07.883214+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-025",
+          "fc": 3,
+          "address": 25,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1032,
+              1032
+            ],
+            [
+              2032,
+              2032
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 32,
+              "org_value": 2032.0,
+              "rt_value": 2032.0,
+              "recorded_at": "2026-09-07 02:47:07.893222+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 32,
+              "org_value": 1032.0,
+              "rt_value": 1032.0,
+              "recorded_at": "2026-09-07 02:47:07.891080+00:00"
+            },
+            {
+              "point_id": 32,
+              "org_value": 2032.0,
+              "rt_value": 2032.0,
+              "recorded_at": "2026-09-07 02:47:07.893222+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-026",
+          "fc": 3,
+          "address": 26,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1033,
+              103.30000000000001
+            ],
+            [
+              2033,
+              203.3
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 33,
+              "org_value": 2033.0,
+              "rt_value": 203.3,
+              "recorded_at": "2026-09-07 02:47:07.902181+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 33,
+              "org_value": 1033.0,
+              "rt_value": 103.30000000000001,
+              "recorded_at": "2026-09-07 02:47:07.899985+00:00"
+            },
+            {
+              "point_id": 33,
+              "org_value": 2033.0,
+              "rt_value": 203.3,
+              "recorded_at": "2026-09-07 02:47:07.902181+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-027",
+          "fc": 3,
+          "address": 27,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1034,
+              103.4
+            ],
+            [
+              2034,
+              203.4
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 34,
+              "org_value": 2034.0,
+              "rt_value": 203.4,
+              "recorded_at": "2026-09-07 02:47:07.910647+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 34,
+              "org_value": 1034.0,
+              "rt_value": 103.4,
+              "recorded_at": "2026-09-07 02:47:07.908468+00:00"
+            },
+            {
+              "point_id": 34,
+              "org_value": 2034.0,
+              "rt_value": 203.4,
+              "recorded_at": "2026-09-07 02:47:07.910647+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-028",
+          "fc": 3,
+          "address": 28,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1035,
+              103.5
+            ],
+            [
+              2035,
+              203.5
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 35,
+              "org_value": 2035.0,
+              "rt_value": 203.5,
+              "recorded_at": "2026-09-07 02:47:07.919424+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 35,
+              "org_value": 1035.0,
+              "rt_value": 103.5,
+              "recorded_at": "2026-09-07 02:47:07.917205+00:00"
+            },
+            {
+              "point_id": 35,
+              "org_value": 2035.0,
+              "rt_value": 203.5,
+              "recorded_at": "2026-09-07 02:47:07.919424+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-029",
+          "fc": 3,
+          "address": 29,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1036,
+              103.60000000000001
+            ],
+            [
+              2036,
+              203.60000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 36,
+              "org_value": 2036.0,
+              "rt_value": 203.60000000000002,
+              "recorded_at": "2026-09-07 02:47:07.929046+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 36,
+              "org_value": 1036.0,
+              "rt_value": 103.60000000000001,
+              "recorded_at": "2026-09-07 02:47:07.926899+00:00"
+            },
+            {
+              "point_id": 36,
+              "org_value": 2036.0,
+              "rt_value": 203.60000000000002,
+              "recorded_at": "2026-09-07 02:47:07.929046+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-030",
+          "fc": 3,
+          "address": 30,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1037,
+              103.7
+            ],
+            [
+              2037,
+              203.70000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 37,
+              "org_value": 2037.0,
+              "rt_value": 203.70000000000002,
+              "recorded_at": "2026-09-07 02:47:07.938911+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 37,
+              "org_value": 1037.0,
+              "rt_value": 103.7,
+              "recorded_at": "2026-09-07 02:47:07.936721+00:00"
+            },
+            {
+              "point_id": 37,
+              "org_value": 2037.0,
+              "rt_value": 203.70000000000002,
+              "recorded_at": "2026-09-07 02:47:07.938911+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-031",
+          "fc": 3,
+          "address": 31,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1038,
+              103.80000000000001
+            ],
+            [
+              2038,
+              203.8
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 38,
+              "org_value": 2038.0,
+              "rt_value": 203.8,
+              "recorded_at": "2026-09-07 02:47:07.947266+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 38,
+              "org_value": 1038.0,
+              "rt_value": 103.80000000000001,
+              "recorded_at": "2026-09-07 02:47:07.945035+00:00"
+            },
+            {
+              "point_id": 38,
+              "org_value": 2038.0,
+              "rt_value": 203.8,
+              "recorded_at": "2026-09-07 02:47:07.947266+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-032",
+          "fc": 3,
+          "address": 32,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1039,
+              103.9
+            ],
+            [
+              2039,
+              203.9
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 39,
+              "org_value": 2039.0,
+              "rt_value": 203.9,
+              "recorded_at": "2026-09-07 02:47:07.957408+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 39,
+              "org_value": 1039.0,
+              "rt_value": 103.9,
+              "recorded_at": "2026-09-07 02:47:07.955202+00:00"
+            },
+            {
+              "point_id": 39,
+              "org_value": 2039.0,
+              "rt_value": 203.9,
+              "recorded_at": "2026-09-07 02:47:07.957408+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-033",
+          "fc": 3,
+          "address": 33,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1040,
+              104.0
+            ],
+            [
+              2040,
+              204.0
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 40,
+              "org_value": 2040.0,
+              "rt_value": 204.0,
+              "recorded_at": "2026-09-07 02:47:07.966179+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 40,
+              "org_value": 1040.0,
+              "rt_value": 104.0,
+              "recorded_at": "2026-09-07 02:47:07.964005+00:00"
+            },
+            {
+              "point_id": 40,
+              "org_value": 2040.0,
+              "rt_value": 204.0,
+              "recorded_at": "2026-09-07 02:47:07.966179+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-034",
+          "fc": 3,
+          "address": 34,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1041,
+              104.10000000000001
+            ],
+            [
+              2041,
+              204.10000000000002
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 41,
+              "org_value": 2041.0,
+              "rt_value": 204.10000000000002,
+              "recorded_at": "2026-09-07 02:47:07.974669+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 41,
+              "org_value": 1041.0,
+              "rt_value": 104.10000000000001,
+              "recorded_at": "2026-09-07 02:47:07.972492+00:00"
+            },
+            {
+              "point_id": 41,
+              "org_value": 2041.0,
+              "rt_value": 204.10000000000002,
+              "recorded_at": "2026-09-07 02:47:07.974669+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-035",
+          "fc": 3,
+          "address": 35,
+          "realtime_count": 1,
+          "history_count": 2,
+          "publisher_events": 2,
+          "test_type": "synthetic-unsigned-with-candidate-scaling",
+          "realtime_pass": true,
+          "history_pass": true,
+          "expected": [
+            [
+              1042,
+              1.042
+            ],
+            [
+              2042,
+              2.0420000000000003
+            ]
+          ],
+          "realtime": [
+            {
+              "point_id": 42,
+              "org_value": 2042.0,
+              "rt_value": 2.0420000000000003,
+              "recorded_at": "2026-09-07 02:47:07.983271+00:00"
+            }
+          ],
+          "history": [
+            {
+              "point_id": 42,
+              "org_value": 1042.0,
+              "rt_value": 1.042,
+              "recorded_at": "2026-09-07 02:47:07.981086+00:00"
+            },
+            {
+              "point_id": 42,
+              "org_value": 2042.0,
+              "rt_value": 2.0420000000000003,
+              "recorded_at": "2026-09-07 02:47:07.983271+00:00"
+            }
+          ]
+        },
+        {
+          "id": "CBMM-036",
+          "fc": 1,
+          "address": 0,
+          "realtime_count": 0,
+          "history_count": 0,
+          "publisher_events": 0,
+          "test_type": "ambiguous-coil-config-rejection",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-037",
+          "fc": 1,
+          "address": 0,
+          "realtime_count": 0,
+          "history_count": 0,
+          "publisher_events": 0,
+          "test_type": "ambiguous-coil-config-rejection",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-038",
+          "fc": 1,
+          "address": 1,
+          "realtime_count": 0,
+          "history_count": 0,
+          "publisher_events": 0,
+          "test_type": "ambiguous-coil-config-rejection",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-039",
+          "fc": 1,
+          "address": 1,
+          "realtime_count": 0,
+          "history_count": 0,
+          "publisher_events": 0,
+          "test_type": "ambiguous-coil-config-rejection",
+          "rejection_pass": true
+        }
+      ],
+      "hypertable": true,
+      "physical_replay": [
+        {
+          "address": 0,
+          "raw": 3,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 1,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 2,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 3,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 4,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 5,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 27,
+          "raw": 3,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 28,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 29,
+          "raw": 11,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 30,
+          "raw": 11,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 31,
+          "raw": 10,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 32,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 33,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 34,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        },
+        {
+          "address": 35,
+          "raw": 0,
+          "realtime_pass": true,
+          "history_pass": true
+        }
+      ],
+      "physical_counts": {
+        "realtime": 15,
+        "history": 15,
+        "publisher_events": 15
+      },
+      "legacy_types": [
+        {
+          "id": "BCMM-000",
+          "rejection_pass": true
+        },
+        {
+          "id": "BCMM-001",
+          "rejection_pass": true
+        },
+        {
+          "id": "BCMM-002",
+          "rejection_pass": true
+        },
+        {
+          "id": "BCMM-003",
+          "rejection_pass": true
+        },
+        {
+          "id": "BCMM-004",
+          "rejection_pass": true
+        },
+        {
+          "id": "BCMM-005",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-000",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-001",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-002",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-003",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-004",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-005",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-006",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-007",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-008",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-009",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-010",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-011",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-012",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-013",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-014",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-015",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-016",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-017",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-018",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-019",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-020",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-021",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-022",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-023",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-024",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-025",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-026",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-027",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-028",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-029",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-030",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-031",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-032",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-033",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-034",
+          "rejection_pass": true
+        },
+        {
+          "id": "CBMM-035",
+          "rejection_pass": true
+        }
+      ],
+      "legacy_counts": {
+        "realtime": 0,
+        "history": 0
+      },
+      "wrong-function": {
+        "rejection_pass": true,
+        "realtime_count": 0,
+        "history_count": 0
+      },
+      "bad-crc": {
+        "rejection_pass": true,
+        "realtime_count": 0,
+        "history_count": 0
+      },
+      "shutdown-race": {
+        "realtime_count": 1,
+        "history_count": 1,
+        "pass": true
+      },
+      "shutdown-drain": {
+        "realtime_count": 46,
+        "history_count": 46,
+        "pass": true
+      },
+      "transaction-rollback": {
+        "pass": true
+      },
+      "database_counts": {
+        "realtime": 256,
+        "history": 344
+      },
+      "completed_at": "2026-09-07T10:47:08.036252+08:00"
+    }
+  ],
+  "database": "test_point_pipeline_20260907_b8a4d285",
+  "test_database_retained": true
+}

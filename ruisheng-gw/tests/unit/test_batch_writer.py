@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from ruisheng_gw.persistence.batch_writer import BatchRow, BatchWriter
 from ruisheng_gw.scheduler.clock import FakeClock
 
@@ -21,6 +22,42 @@ class FakeSink:
             raise RuntimeError("fake db down")
         self.written.append(list(rows))
         self.flush_event.set()
+
+
+@pytest.mark.parametrize("stop_before_read_finishes", [False, True])
+async def test_shutdown_preserves_inflight_queue_read(stop_before_read_finishes: bool) -> None:
+    sink = FakeSink()
+    writer = BatchWriter(sink=sink, clock=FakeClock())
+    entered = asyncio.Event()
+
+    class StopDuringReadQueue(asyncio.Queue):
+        async def get(self):
+            entered.set()
+            row = await super().get()
+            writer.stop()
+            if stop_before_read_finishes:
+                await asyncio.sleep(0)
+            return row
+
+    writer._queue = StopDuringReadQueue()  # noqa: SLF001
+    row = BatchRow(dev_number="D", point_id=1, rt_value=3.0, org_value=3.0, recorded_at=1.0)
+    task = asyncio.create_task(writer.run())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    writer.submit(row)
+    await asyncio.wait_for(task, timeout=1)
+
+    assert [item for batch in sink.written for item in batch] == [row]
+
+
+async def test_shutdown_drains_every_queued_point_once() -> None:
+    sink = FakeSink()
+    writer = BatchWriter(sink=sink, clock=FakeClock())
+    rows = [BatchRow("D", i, float(i), float(i), 1.0) for i in range(46)]
+    for row in rows:
+        writer.submit(row)
+    writer.stop()
+    await asyncio.wait_for(writer.run(), timeout=1)
+    assert [item for batch in sink.written for item in batch] == rows
 
 
 async def test_size_threshold_triggers_flush() -> None:

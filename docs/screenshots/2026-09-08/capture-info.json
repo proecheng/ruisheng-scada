@@ -1,0 +1,47 @@
+{
+  "capturedAt": "2026-09-08T08:47:08.457Z",
+  "source": "Current local Vue application with repository E2E API fixtures. No live backend or hardware data.",
+  "viewport": {
+    "width": 1600,
+    "height": 1000,
+    "deviceScaleFactor": 1.5
+  },
+  "captures": [
+    {
+      "file": "01-login.png",
+      "url": "http://127.0.0.1:5173/login",
+      "title": "Login"
+    },
+    {
+      "file": "02-dashboard.png",
+      "url": "http://127.0.0.1:5173/dashboard",
+      "title": "Dashboard"
+    },
+    {
+      "file": "03-device-list.png",
+      "url": "http://127.0.0.1:5173/devices",
+      "title": "Serial device list"
+    },
+    {
+      "file": "04-serial-config.png",
+      "url": "http://127.0.0.1:5173/devices/RS001/edit",
+      "title": "Serial device configuration"
+    },
+    {
+      "file": "05-realtime-data.png",
+      "url": "http://127.0.0.1:5173/devices/DEV001",
+      "title": "Realtime data view"
+    },
+    {
+      "file": "06-history-chart.png",
+      "url": "http://127.0.0.1:5173/devices/DEV001/history",
+      "title": "History chart and table"
+    },
+    {
+      "file": "07-alarms.png",
+      "url": "http://127.0.0.1:5173/alarms",
+      "title": "Alarm list"
+    }
+  ],
+  "pageErrors": []
+}

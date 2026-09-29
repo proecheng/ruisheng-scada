@@ -1,0 +1,94 @@
+{
+  "observed_at": "2026-09-11T14:31:53.7405239+08:00",
+  "candidate_id": "deploy-20260911.1",
+  "source_commit": "a78c522b6879e4ed54a7f369dfcdb0083001a071",
+  "exit_code": 0,
+  "output": "{\"config_sha256\":\"a6736686c594894326647f3fbb1ced3006783078d5d11c4482bee123f6f02ff7\",\"mode\":\"dry-run\",\"plan\":{\"adapter\":{\"device_path\":\"/dev/ruisheng-rs485\",\"product_id\":\"6001\",\"serial_number\":\"AI06JYFW\",\"vendor_id\":\"0403\"},\"approval\":{\"approved_at\":\"2026-09-07T13:10:33+08:00\",\"approved_by\":\"current-conversation-user\",\"scope_id\":\"b11-zero-origin-block-fc3-r0-35-v1\"},\"budget\":{\"max_requests\":10,\"max_response_bytes\":80,\"max_retries_per_request\":1,\"min_interval_ms\":500},\"frames\":[\"01030000002445d1\",\"01030000001b05c1\",\"01030000002445d1\",\"010300000006c5c8\",\"01030000002445d1\"],\"scope\":{\"function_code\":3,\"requests\":[{\"register_count\":36,\"requires_previous_valid\":false,\"start_address\":0},{\"register_count\":27,\"requires_previous_valid\":true,\"start_address\":0},{\"register_count\":36,\"requires_previous_valid\":true,\"start_address\":0},{\"register_count\":6,\"requires_previous_valid\":true,\"start_address\":0},{\"register_count\":36,\"requires_previous_valid\":true,\"start_address\":0}],\"unit_id\":1},\"serial\":{\"baud_rate\":9600,\"data_bits\":8,\"parity\":\"N\",\"stop_bits\":1,\"timeout_ms\":400}},\"script_sha256\":\"bd08b5c326859ccc0e9d455393d4e8a5055ea20e1bd6630df6a5739c34ac8b14\"}\n[modbus-runner] audit: C:\\Ruisheng\\audit\\modbus-runner-03a9356d-89d1-4970-855f-2bcc42070151.jsonl",
+  "runner_name": "modbus-runner-03a9356d-89d1-4970-855f-2bcc42070151.jsonl",
+  "plan": {
+    "config_sha256": "a6736686c594894326647f3fbb1ced3006783078d5d11c4482bee123f6f02ff7",
+    "mode": "dry-run",
+    "plan": {
+      "adapter": {
+        "device_path": "/dev/ruisheng-rs485",
+        "product_id": "6001",
+        "serial_number": "AI06JYFW",
+        "vendor_id": "0403"
+      },
+      "approval": {
+        "approved_at": "2026-09-07T13:10:33+08:00",
+        "approved_by": "current-conversation-user",
+        "scope_id": "b11-zero-origin-block-fc3-r0-35-v1"
+      },
+      "budget": {
+        "max_requests": 10,
+        "max_response_bytes": 80,
+        "max_retries_per_request": 1,
+        "min_interval_ms": 500
+      },
+      "frames": [
+        "01030000002445d1",
+        "01030000001b05c1",
+        "01030000002445d1",
+        "010300000006c5c8",
+        "01030000002445d1"
+      ],
+      "scope": {
+        "function_code": 3,
+        "requests": [
+          {
+            "register_count": 36,
+            "requires_previous_valid": false,
+            "start_address": 0
+          },
+          {
+            "register_count": 27,
+            "requires_previous_valid": true,
+            "start_address": 0
+          },
+          {
+            "register_count": 36,
+            "requires_previous_valid": true,
+            "start_address": 0
+          },
+          {
+            "register_count": 6,
+            "requires_previous_valid": true,
+            "start_address": 0
+          },
+          {
+            "register_count": 36,
+            "requires_previous_valid": true,
+            "start_address": 0
+          }
+        ],
+        "unit_id": 1
+      },
+      "serial": {
+        "baud_rate": 9600,
+        "data_bits": 8,
+        "parity": "N",
+        "stop_bits": 1,
+        "timeout_ms": 400
+      }
+    },
+    "script_sha256": "bd08b5c326859ccc0e9d455393d4e8a5055ea20e1bd6630df6a5739c34ac8b14"
+  },
+  "files": [
+    {
+      "name": "modbus-probe-release.json",
+      "path": "C:\\ProgramData\\Ruisheng\\receipts\\modbus-probe-release.json",
+      "sha256": "d9d493f2a0dd06587d91e4734da273ebda6737219a139a35cc2778108cdfd671"
+    },
+    {
+      "name": "modbus-probe-zero-origin-20260907.json",
+      "path": "C:\\Ruisheng\\site\\modbus-probe-zero-origin-20260907.json",
+      "sha256": "a6736686c594894326647f3fbb1ced3006783078d5d11c4482bee123f6f02ff7"
+    },
+    {
+      "name": "modbus-runner-03a9356d-89d1-4970-855f-2bcc42070151.jsonl",
+      "path": "C:\\Ruisheng\\audit\\modbus-runner-03a9356d-89d1-4970-855f-2bcc42070151.jsonl",
+      "sha256": "bc3c1aeb0554c81b9e32ddc210ec935b40e95a476b7b9b779acbdc26a43c6235"
+    }
+  ]
+}

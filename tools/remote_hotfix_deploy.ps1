@@ -53,12 +53,16 @@ function Invoke-NativeText {
   param(
     [Parameter(Mandatory)][string]$FilePath,
     [Parameter(Mandatory)][string[]]$ArgumentList,
-    [string]$WorkingDirectory = $RepositoryRoot
+    [string]$WorkingDirectory = $RepositoryRoot,
+    [AllowEmptyString()][string]$InputText
   )
 
   Push-Location $WorkingDirectory
   try {
-    $output = & $FilePath @ArgumentList 2>&1
+    if ($PSBoundParameters.ContainsKey("InputText")) {
+      $output = $InputText | & $FilePath @ArgumentList 2>&1
+    }
+    else { $output = & $FilePath @ArgumentList 2>&1 }
     $exitCode = $LASTEXITCODE
   }
   finally {
@@ -98,8 +102,10 @@ function ConvertTo-PowerShellLiteral {
 function Invoke-RemotePowerShell {
   param([Parameter(Mandatory)][string]$Script)
 
-  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
-  return Invoke-NativeText -FilePath "ssh.exe" -ArgumentList @(
+  $Script = "function Convert-CoordinationJson {`n${function:Convert-CoordinationJson}`n}`n" + $Script
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Script))
+  $transport = "& ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encoded'))))`r`n"
+  return Invoke-NativeText -FilePath "ssh.exe" -InputText $transport -ArgumentList @(
     "-T", "-F", "NUL",
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes",
@@ -107,8 +113,74 @@ function Invoke-RemotePowerShell {
     "-o", "ServerAliveInterval=15",
     "-o", "ServerAliveCountMax=3",
     $Target,
-    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", $encoded
+    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"
   )
+}
+
+function Convert-CoordinationJson {
+  param([Parameter(Mandatory, ValueFromPipeline)][string]$Json)
+  process {
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey("DateKind")) {
+      return $Json | ConvertFrom-Json -DateKind String
+    }
+    return $Json | ConvertFrom-Json
+  }
+}
+
+function Assert-NoFullUpgradeMaintenance {
+  param([Parameter(Mandatory)][string]$SiteRoot)
+  $stateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
+  $path = Join-Path $stateDirectory "full-upgrade-maintenance.json"
+  try { $marker = Get-Item -LiteralPath $path -Force -ErrorAction Stop }
+  catch [System.Management.Automation.ItemNotFoundException] { return }
+  $allowed = @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value, "S-1-5-18", "S-1-5-32-544")
+  foreach ($entry in @($SiteRoot, $stateDirectory, $path)) {
+    $item = Get-Item -LiteralPath $entry -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        ($entry -eq $path -and ($item.PSIsContainer -or $item.Length -gt 16KB))) {
+      throw "full_upgrade_maintenance_invalid"
+    }
+    $acl = Get-Acl -LiteralPath $entry
+    if (($item.PSIsContainer -and -not $acl.AreAccessRulesProtected) -or
+        $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $allowed) {
+      throw "full_upgrade_maintenance_acl_invalid"
+    }
+    foreach ($rule in @($acl.Access)) {
+      $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+      $write = [Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'
+      if ($rule.AccessControlType -eq "Allow" -and ($rule.FileSystemRights -band $write) -ne 0 -and
+          $sid -notin $allowed) { throw "full_upgrade_maintenance_acl_invalid" }
+    }
+  }
+  try {
+    $json = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey("DateKind")) {
+      $state = $json | ConvertFrom-Json -DateKind String
+    }
+    else { $state = $json | ConvertFrom-Json }
+  }
+  catch { throw "full_upgrade_maintenance_invalid" }
+  $keys = @("schema_version", "operation_id", "site_root", "status", "source_identity", "candidate_identity",
+    "source_head", "target_head", "journal_path", "updated_at")
+  if ($state -isnot [PSCustomObject] -or @($state.PSObject.Properties).Count -ne $keys.Count -or
+      ($state.schema_version -isnot [int] -and $state.schema_version -isnot [long]) -or
+      $state.schema_version -ne 1) { throw "full_upgrade_maintenance_invalid" }
+  foreach ($key in $keys) {
+    if (@($state.PSObject.Properties.Name) -cnotcontains $key -or
+        ($key -ne "schema_version" -and $state.$key -isnot [string])) { throw "full_upgrade_maintenance_invalid" }
+  }
+  if ($state.site_root -cne $SiteRoot -or
+      $state.operation_id -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+      $state.source_identity -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+      $state.candidate_identity -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+      $state.source_head -cne "0012_alarm_notification_runtime" -or
+      $state.target_head -cne "0013_serial_polling_profile" -or
+      $state.journal_path -cne (Join-Path $stateDirectory "full-upgrade-$($state.operation_id).json") -or
+      $state.status -cnotin @("active", "committed", "rolled_back")) { throw "full_upgrade_maintenance_invalid" }
+  [DateTimeOffset]$updatedAt = [DateTimeOffset]::MinValue
+  if (-not [DateTimeOffset]::TryParseExact($state.updated_at, "o", [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::None, [ref]$updatedAt)) { throw "full_upgrade_maintenance_invalid" }
+  if ($state.status -ceq "active") { throw "full_upgrade_maintenance_active" }
 }
 
 function Assert-RemoteMaintenanceLocksAvailable {
@@ -117,6 +189,7 @@ function Assert-RemoteMaintenanceLocksAvailable {
   $legacyLock = Join-Path $SiteRoot ".remote-hotfix.lock"
   $script = @"
 `$ErrorActionPreference = 'Stop'
+Assert-NoFullUpgradeMaintenance -SiteRoot $(ConvertTo-PowerShellLiteral $SiteRoot)
 `$stateDirectory = $(ConvertTo-PowerShellLiteral $stateDirectory)
 `$sharedLock = $(ConvertTo-PowerShellLiteral $sharedLock)
 `$legacyLock = $(ConvertTo-PowerShellLiteral $legacyLock)
@@ -145,6 +218,7 @@ if (Test-Path -LiteralPath `$legacyLock -PathType Leaf) {
 }
 'available'
 "@
+  $script = "function Assert-NoFullUpgradeMaintenance {`n${function:Assert-NoFullUpgradeMaintenance}`n}`n" + $script
   [void](Invoke-RemotePowerShell -Script $script)
 }
 
@@ -193,7 +267,7 @@ function Renew-Locks {
     $temporary = "$path.$PID.$([Guid]::NewGuid().ToString('N')).renew.tmp"
     $backup = "$path.$PID.$([Guid]::NewGuid().ToString('N')).renew.bak"
     try {
-      $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+      $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | Convert-CoordinationJson
       if (
         [int]$record.schema_version -ne 1 -or
         [string]$record.operation_id -ne $OperationId -or
@@ -218,7 +292,7 @@ function Renew-Locks {
 function Release-Locks {
   foreach ($path in @($Acquired)) {
     try {
-      $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+      $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | Convert-CoordinationJson
       if (
         [string]$record.operation_id -eq $OperationId -and
         [string]$record.action -eq $Action -and
@@ -234,7 +308,7 @@ function Release-Locks {
   [array]::Reverse($paths)
   foreach ($path in $paths) {
     try {
-      $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+      $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | Convert-CoordinationJson
       if (
         [string]$record.operation_id -eq $OperationId -and
         [string]$record.action -eq $Action -and
@@ -252,8 +326,10 @@ try {
   if (-not (Test-Path -LiteralPath $StateDirectory -PathType Container)) {
     throw "maintenance_security_preparation_required"
   }
+  Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot
   Acquire-Lock -Path $SharedLockPath -Name "shared-maintenance"
   Acquire-Lock -Path $LegacyLockPath -Name "legacy-hotfix"
+  Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot
   [ordered]@{ ok=$true; operation_id=$OperationId; action=$Action } | ConvertTo-Json -Compress
   [Console]::Out.Flush()
   $deadline = [DateTimeOffset]::UtcNow.AddHours(6)
@@ -270,6 +346,8 @@ finally { Release-Locks }
     "__OPERATION_ID__", (ConvertTo-PowerShellLiteral $HotfixOperationId)
   )
   $script = $script.Replace("__ACTION__", (ConvertTo-PowerShellLiteral "hotfix-$Service"))
+  $script = "function Convert-CoordinationJson {`n${function:Convert-CoordinationJson}`n}`n" + $script
+  $script = "function Assert-NoFullUpgradeMaintenance {`n${function:Assert-NoFullUpgradeMaintenance}`n}`n" + $script
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
   if ($encoded.Length -gt 24000) { throw "Hotfix reservation command is too large." }
   $startInfo = New-Object Diagnostics.ProcessStartInfo
@@ -336,7 +414,7 @@ $Paths = @(__LOCK_PATHS__)
 foreach ($path in $Paths) {
   try {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-    $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | Convert-CoordinationJson
     if ([string]$record.operation_id -eq $OperationId -and [string]$record.action -eq $Action) {
       Remove-Item -LiteralPath $path -Force
     }
@@ -345,7 +423,7 @@ foreach ($path in $Paths) {
 }
 foreach ($path in $Paths) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-  try { $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json }
+  try { $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | Convert-CoordinationJson }
   catch { continue }
   if ([string]$record.operation_id -eq $OperationId -and [string]$record.action -eq $Action) {
     throw "hotfix_lock_release_failed"
@@ -459,6 +537,105 @@ $composeArguments = @(
   "compose", "-f", $ComposeFile, "-f", $OverrideFile,
   "--env-file", $EnvFile, "config", "--format", "json"
 )
+# BEGIN site serial compose
+# Embedded in each remote script so historical signed candidates stay immutable.
+function Assert-SiteSerialPath {
+  param([Parameter(Mandatory)][string]$Path)
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'site_serial_path_linked'
+  }
+  $acl = Get-Acl -LiteralPath $Path
+  $trusted = @('S-1-5-18', 'S-1-5-32-544')
+  if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cnotin $trusted) {
+    throw 'site_serial_owner_invalid'
+  }
+  $write = [Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'
+  foreach ($rule in @($acl.Access)) {
+    if ($rule.AccessControlType -eq 'Allow' -and ($rule.FileSystemRights -band $write) -ne 0 -and
+        $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -cnotin $trusted) {
+      throw 'site_serial_writer_invalid'
+    }
+  }
+}
+
+function Assert-SiteSerialContent {
+  param([Parameter(Mandatory)][string]$Json)
+  # Requiring the canonical representation also rejects duplicate keys, hidden
+  # overrides, interpolation and fields that could broaden container privileges.
+  try {
+    $model = $Json | ConvertFrom-Json
+    $ports = @($model.services.gw.environment.GW_SERIAL_PORTS | ConvertFrom-Json)
+  }
+  catch { throw 'site_serial_json_invalid' }
+  if ($ports.Count -ne 1 -or $ports[0].port -isnot [string] -or
+      $ports[0].port -cnotmatch '^/dev/ruisheng-[A-Za-z0-9._-]{1,64}$' -or
+      ($ports[0].baud_rate -isnot [int] -and $ports[0].baud_rate -isnot [long]) -or
+      $ports[0].baud_rate -notin @(1200,2400,4800,9600,19200,38400,57600,115200)) {
+    throw 'site_serial_parameters_invalid'
+  }
+  $port = [string]$ports[0].port
+  $baud = [string]$ports[0].baud_rate
+  $expected = '{"services":{"gw":{"environment":{"GW_SERIAL_PORTS":"[{\"port\":\"' + $port +
+    '\",\"baud_rate\":' + $baud + '}]"},"devices":[{"source":"' + $port +
+    '","target":"' + $port + '","permissions":"rw"}]}}}'
+  if ($Json.Trim() -cne $expected) { throw 'site_serial_override_invalid' }
+}
+
+function Get-SiteSerialOverride {
+  $path = 'C:\Ruisheng\site\site-serial.override.json'
+  $exists = $true
+  try { $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop }
+  catch [System.Management.Automation.ItemNotFoundException] { $exists = $false }
+  if ($null -ne $script:SiteSerialSnapshot) {
+    if ($exists -ne $script:SiteSerialSnapshot.exists) { throw 'site_serial_configuration_changed' }
+    if (-not $exists) { return '' }
+    foreach ($part in @('C:\Ruisheng','C:\Ruisheng\site',$path)) { Assert-SiteSerialPath $part }
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $script:SiteSerialSnapshot.hash) {
+      throw 'site_serial_configuration_changed'
+    }
+    return $path
+  }
+  if (-not $exists) {
+    $script:SiteSerialSnapshot = @{ exists = $false }
+    return ''
+  }
+  if ($item.PSIsContainer -or $item.Length -gt 4096) { throw 'site_serial_file_invalid' }
+  foreach ($part in @('C:\Ruisheng','C:\Ruisheng\site',$path)) { Assert-SiteSerialPath $part }
+  $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    $json = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+    Assert-SiteSerialContent $json
+    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    # Retain the read handle until process exit. Compose must read exactly the
+    # validated file, including during recovery and asynchronous native calls.
+    $script:SiteSerialSnapshot = @{ exists = $true; hash = $hash; guard = $stream }
+  }
+  catch { $stream.Dispose(); throw }
+  return $path
+}
+
+function Add-SiteSerialComposeArguments {
+  param([Parameter(Mandatory)][string[]]$Arguments)
+  if ($Arguments[0] -cne 'compose') { return ,$Arguments }
+  $path = Get-SiteSerialOverride
+  if (-not $path) { return ,$Arguments }
+  $index = 1
+  while ($index -lt $Arguments.Count -and $Arguments[$index].StartsWith('-')) {
+    if ($Arguments[$index] -cin @('-f','--file','--env-file','--project-directory','-p','--project-name','--profile','--ansi','--progress','--parallel')) {
+      if ($index + 1 -ge $Arguments.Count) { throw 'site_serial_compose_arguments_invalid' }
+      if ($Arguments[$index] -cin @('-f','--file') -and $Arguments[$index+1] -ieq $path) {
+        throw 'site_serial_override_already_present'
+      }
+      $index += 2
+    }
+    else { throw 'site_serial_compose_option_unsupported' }
+  }
+  if ($index -ge $Arguments.Count) { throw 'site_serial_compose_command_missing' }
+  return ,(@($Arguments[0..($index-1)]) + @('-f',$path) + @($Arguments[$index..($Arguments.Count-1)]))
+}
+# END site serial compose
+$composeArguments = Add-SiteSerialComposeArguments -Arguments $composeArguments
 $rendered = & docker @composeArguments 2>&1
 if ($LASTEXITCODE -ne 0) { throw "Existing production Compose configuration does not render." }
 $model = (($rendered | ForEach-Object { "$_" }) -join [Environment]::NewLine) | ConvertFrom-Json
@@ -769,8 +946,107 @@ $composeBase = @(
   "compose", "-f", $ComposeFile, "-f", $OverrideFile, "--env-file", $EnvFile
 )
 
+# BEGIN site serial compose
+# Embedded in each remote script so historical signed candidates stay immutable.
+function Assert-SiteSerialPath {
+  param([Parameter(Mandatory)][string]$Path)
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'site_serial_path_linked'
+  }
+  $acl = Get-Acl -LiteralPath $Path
+  $trusted = @('S-1-5-18', 'S-1-5-32-544')
+  if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cnotin $trusted) {
+    throw 'site_serial_owner_invalid'
+  }
+  $write = [Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'
+  foreach ($rule in @($acl.Access)) {
+    if ($rule.AccessControlType -eq 'Allow' -and ($rule.FileSystemRights -band $write) -ne 0 -and
+        $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -cnotin $trusted) {
+      throw 'site_serial_writer_invalid'
+    }
+  }
+}
+
+function Assert-SiteSerialContent {
+  param([Parameter(Mandatory)][string]$Json)
+  # Requiring the canonical representation also rejects duplicate keys, hidden
+  # overrides, interpolation and fields that could broaden container privileges.
+  try {
+    $model = $Json | ConvertFrom-Json
+    $ports = @($model.services.gw.environment.GW_SERIAL_PORTS | ConvertFrom-Json)
+  }
+  catch { throw 'site_serial_json_invalid' }
+  if ($ports.Count -ne 1 -or $ports[0].port -isnot [string] -or
+      $ports[0].port -cnotmatch '^/dev/ruisheng-[A-Za-z0-9._-]{1,64}$' -or
+      ($ports[0].baud_rate -isnot [int] -and $ports[0].baud_rate -isnot [long]) -or
+      $ports[0].baud_rate -notin @(1200,2400,4800,9600,19200,38400,57600,115200)) {
+    throw 'site_serial_parameters_invalid'
+  }
+  $port = [string]$ports[0].port
+  $baud = [string]$ports[0].baud_rate
+  $expected = '{"services":{"gw":{"environment":{"GW_SERIAL_PORTS":"[{\"port\":\"' + $port +
+    '\",\"baud_rate\":' + $baud + '}]"},"devices":[{"source":"' + $port +
+    '","target":"' + $port + '","permissions":"rw"}]}}}'
+  if ($Json.Trim() -cne $expected) { throw 'site_serial_override_invalid' }
+}
+
+function Get-SiteSerialOverride {
+  $path = 'C:\Ruisheng\site\site-serial.override.json'
+  $exists = $true
+  try { $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop }
+  catch [System.Management.Automation.ItemNotFoundException] { $exists = $false }
+  if ($null -ne $script:SiteSerialSnapshot) {
+    if ($exists -ne $script:SiteSerialSnapshot.exists) { throw 'site_serial_configuration_changed' }
+    if (-not $exists) { return '' }
+    foreach ($part in @('C:\Ruisheng','C:\Ruisheng\site',$path)) { Assert-SiteSerialPath $part }
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $script:SiteSerialSnapshot.hash) {
+      throw 'site_serial_configuration_changed'
+    }
+    return $path
+  }
+  if (-not $exists) {
+    $script:SiteSerialSnapshot = @{ exists = $false }
+    return ''
+  }
+  if ($item.PSIsContainer -or $item.Length -gt 4096) { throw 'site_serial_file_invalid' }
+  foreach ($part in @('C:\Ruisheng','C:\Ruisheng\site',$path)) { Assert-SiteSerialPath $part }
+  $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    $json = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+    Assert-SiteSerialContent $json
+    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    # Retain the read handle until process exit. Compose must read exactly the
+    # validated file, including during recovery and asynchronous native calls.
+    $script:SiteSerialSnapshot = @{ exists = $true; hash = $hash; guard = $stream }
+  }
+  catch { $stream.Dispose(); throw }
+  return $path
+}
+
+function Add-SiteSerialComposeArguments {
+  param([Parameter(Mandatory)][string[]]$Arguments)
+  if ($Arguments[0] -cne 'compose') { return ,$Arguments }
+  $path = Get-SiteSerialOverride
+  if (-not $path) { return ,$Arguments }
+  $index = 1
+  while ($index -lt $Arguments.Count -and $Arguments[$index].StartsWith('-')) {
+    if ($Arguments[$index] -cin @('-f','--file','--env-file','--project-directory','-p','--project-name','--profile','--ansi','--progress','--parallel')) {
+      if ($index + 1 -ge $Arguments.Count) { throw 'site_serial_compose_arguments_invalid' }
+      if ($Arguments[$index] -cin @('-f','--file') -and $Arguments[$index+1] -ieq $path) {
+        throw 'site_serial_override_already_present'
+      }
+      $index += 2
+    }
+    else { throw 'site_serial_compose_option_unsupported' }
+  }
+  if ($index -ge $Arguments.Count) { throw 'site_serial_compose_command_missing' }
+  return ,(@($Arguments[0..($index-1)]) + @('-f',$path) + @($Arguments[$index..($Arguments.Count-1)]))
+}
+# END site serial compose
 function Invoke-Docker {
   param([Parameter(Mandatory)][string[]]$Arguments, [switch]$Capture)
+  if ($Arguments[0] -ceq 'compose') { $Arguments = Add-SiteSerialComposeArguments -Arguments $Arguments }
   $resolvedDocker = Get-Command docker.exe -ErrorAction SilentlyContinue
   if ($null -eq $resolvedDocker) { $resolvedDocker = Get-Command docker -ErrorAction Stop }
   $startInfo = New-Object Diagnostics.ProcessStartInfo
@@ -915,7 +1191,7 @@ function Read-ReservedLock {
     throw "The reserved $Name lock was lost before deployment."
   }
   try {
-    $record = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $record = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | Convert-CoordinationJson
     if (
       [int]$record.schema_version -ne 1 -or
       [string]$record.lock_name -ne $Name -or
@@ -971,7 +1247,7 @@ function Acquire-TransitionLock {
 
 function Assert-TransitionLocksOwned {
   foreach ($path in @($acquiredLocks)) {
-    $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | Convert-CoordinationJson
     if (
       [int]$record.schema_version -ne 1 -or
       [string]$record.operation_id -ne $hotfixOperationId -or
@@ -988,7 +1264,7 @@ function Assert-TransitionLocksOwned {
 
 function Renew-TransitionLocks {
   foreach ($path in @($acquiredLocks)) {
-    $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $record = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | Convert-CoordinationJson
     if (
       [int]$record.schema_version -ne 1 -or
       [string]$record.operation_id -ne $hotfixOperationId -or
@@ -1007,6 +1283,7 @@ function Renew-TransitionLocks {
 function Maintain-TransitionLocks {
   param([switch]$Force)
   try {
+    Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot
     $now = [DateTimeOffset]::UtcNow
     if (-not $Force -and $now -lt $nextLockCheckAt) { return }
     Assert-TransitionLocksOwned
@@ -1026,7 +1303,7 @@ function Release-TransitionLocks {
   [array]::Reverse($paths)
   foreach ($path in $paths) {
     try {
-      $record = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+      $record = Get-Content -LiteralPath $path -Raw | Convert-CoordinationJson
       if (
         [string]$record.operation_id -eq $hotfixOperationId -and
         [string]$record.action -eq "hotfix-$Service" -and
@@ -1044,6 +1321,7 @@ if (-not (Test-Path -LiteralPath $maintenanceStateDirectory -PathType Container)
   throw "Maintenance security preparation is required before hotfix deployment."
 }
 $sharedReservation = Read-ReservedLock -Path $sharedLockPath -Name "shared-maintenance"
+Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot
 $legacyReservation = Read-ReservedLock -Path $legacyLockPath -Name "legacy-hotfix"
 if (
   [int]$sharedReservation.pid -ne [int]$legacyReservation.pid -or
@@ -1209,6 +1487,7 @@ finally {
       [string]$replacement.Key, (ConvertTo-PowerShellLiteral ([string]$replacement.Value))
     )
   }
+  $remoteScript = "function Assert-NoFullUpgradeMaintenance {`n${function:Assert-NoFullUpgradeMaintenance}`n}`n" + $remoteScript
   return Invoke-RemotePowerShell -Script $remoteScript
 }
 

@@ -1,5 +1,5 @@
 export type WSMessage =
-  | { type: 'realtime'; dev_number: string; point_id: number; value: number; ts: string }
+  | { type: 'realtime'; dev_number: string; point_id: number; value: number | null; ts: string }
   | {
       type: 'alarm'
       event_id: number

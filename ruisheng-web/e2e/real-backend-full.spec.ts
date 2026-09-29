@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Response } from '@playwright/test'
+import { isExpectedHealthAclConsoleError } from './fixtures/healthAcl'
 
 const RUN_REAL = !!process.env.E2E_REAL_BACKEND
 const TEST_TIMEOUT_MS = Number(process.env.E2E_TEST_TIMEOUT_MS ?? 180_000)
@@ -34,7 +35,9 @@ test.describe('真实后端全功能巡检', () => {
 
 async function captureRuntimeErrors(page: Page, errors: string[]): Promise<void> {
   page.on('console', (msg) => {
-    if (msg.type() === 'error') errors.push(`console error: ${msg.text()}`)
+    if (msg.type() !== 'error') return
+    if (isExpectedHealthAclConsoleError(msg.text(), msg.location().url, page.url())) return
+    errors.push(`console error: ${msg.text()}`)
   })
   page.on('pageerror', (err) => errors.push(`page error: ${err.message}`))
   page.on('response', (response) => {

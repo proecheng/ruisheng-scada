@@ -1,0 +1,32 @@
+{
+  "database": "test_point_pipeline_20260907_b8a4d285",
+  "all_checks_pass": true,
+  "checks": {
+    "physical_rows_15": true,
+    "synthetic_rows_42": true,
+    "synthetic_last_timestamp": true,
+    "reject_legacy_s16_42": true,
+    "reject_ambiguous_fc1_4": true,
+    "reject_bad_crc": true,
+    "reject_wrong_function": true,
+    "shutdown_inflight_preserved": true,
+    "shutdown_all_46_preserved": true,
+    "transaction_rollback_atomic": true,
+    "timescale_hypertable": true,
+    "production_containers_unchanged": true,
+    "production_hashes_unchanged": true,
+    "production_counts_unchanged": true,
+    "baseline_bugs_reproduced": true
+  },
+  "source_hashes": {
+    "ruisheng_gw.persistence.batch_writer": {
+      "deployed": "cc18e1899f29145ecc2b08109e08005fa1c83dd2e2da30cf851d6a0ba94019eb",
+      "tested": "381a9e0786ec18eb34447750ff7e94aff009dc49d9718cb345859edba0e59468"
+    },
+    "ruisheng_gw.ingest": {
+      "deployed": "cf9a7057d51ab654efa86ea65ac5dc0da3fa3b4113436eb8eb9d5ab34f98014b",
+      "tested": "23592de114389bf1586dee66ee735df9f4a6af9d48f38237141ab74721ae472f"
+    }
+  },
+  "physical_run_id": "5c62e3d0-509d-4e74-9a1d-b86edf340dc1"
+}

@@ -1,4 +1,4 @@
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import { WSClient } from '@/ws/client'
 import type { WSMessage } from '@/ws/types'
 import { useWsStore } from '@/stores/ws'
@@ -6,6 +6,7 @@ import { useAlarmsStore } from '@/stores/alarms'
 import { useDevicesStore } from '@/stores/devices'
 import { useDiagStore } from '@/stores/diag'
 import { getAuthToken } from '@/api/client'
+import { useAuthStore } from '@/stores/auth'
 
 let singleton: WSClient | null = null
 let stateSyncTimer: ReturnType<typeof setInterval> | null = null
@@ -22,15 +23,23 @@ export function useWsConnection() {
   const alarms = useAlarmsStore()
   const devices = useDevicesStore()
   const diag = useDiagStore()
+  const auth = useAuthStore()
   let ownsConnection = false
+  let active = false
 
-  onMounted(() => {
-    if (singleton) return
+  const startConnection = () => {
+    if (singleton && !ownsConnection) return
+    stopStateSync()
+    singleton?.close()
+    singleton = null
+    ownsConnection = false
     const base = import.meta.env.VITE_WS_BASE ?? '/ws'
     const token = getAuthToken()
+    if (!token) { wsStore.setState('closed'); return }
     const url = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${base}${token ? `?token=${encodeURIComponent(token)}` : ''}`
     const client = new WSClient(url)
     client.on((m: WSMessage) => {
+      if (singleton !== client) return
       wsStore.pushMessage(m)
       diag.record({
         at: new Date().toISOString(),
@@ -63,9 +72,16 @@ export function useWsConnection() {
     ownsConnection = true
     stopStateSync()
     stateSyncTimer = setInterval(() => wsStore.setState(client.state), 500)
+  }
+
+  onMounted(() => {
+    active = true
+    startConnection()
   })
+  watch(() => auth.accessToken, () => { if (active) startConnection() })
 
   onUnmounted(() => {
+    active = false
     if (!ownsConnection) return
     stopStateSync()
     singleton?.close()
@@ -77,6 +93,7 @@ export function useWsConnection() {
   return {
     send: (msg: unknown) => singleton?.send(msg),
     close: () => {
+      active = false
       stopStateSync()
       singleton?.close()
       singleton = null

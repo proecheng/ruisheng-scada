@@ -41,8 +41,91 @@ function Get-RestrictedDirectorySids {
   ) | Select-Object -Unique
 }
 
+function Test-IsSharedAuditRoot {
+  param([Parameter(Mandatory)][string]$Path)
+  return [IO.Path]::GetFullPath($Path).TrimEnd('\').Equals(
+    'C:\Ruisheng\audit', [StringComparison]::OrdinalIgnoreCase
+  )
+}
+
+function Assert-SharedAuditRoot {
+  param([Parameter(Mandatory)][string]$Path)
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw "restricted_acl_required_admin_token"
+  }
+  if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "restricted_directory_missing" }
+  $item = Get-Item -LiteralPath $Path -Force
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "restricted_directory_reparse_point" }
+  $acl = Get-Acl -LiteralPath $Path
+  if (-not $acl.AreAccessRulesProtected) { throw "restricted_acl_inheritance_enabled" }
+  try { $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { throw "restricted_acl_owner_invalid" }
+  if ($owner -notin @('S-1-5-18','S-1-5-32-544')) { throw "restricted_acl_owner_invalid" }
+  $seen = @{'S-1-5-18'=$false;'S-1-5-32-544'=$false}
+  $rules = @($acl.Access)
+  if ($rules.Count -ne 2) { throw "restricted_acl_invalid" }
+  foreach ($rule in $rules) {
+    try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { throw "restricted_acl_identity_invalid" }
+    if (-not $seen.ContainsKey($sid) -or $seen[$sid] -or $rule.IsInherited -or
+        $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+        $rule.InheritanceFlags -ne ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit) -or
+        $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw "restricted_acl_invalid" }
+    $seen[$sid] = $true
+  }
+  if ($seen.Values -contains $false) { throw "restricted_acl_required_identity_missing" }
+}
+
+function Assert-SharedAuditFile {
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "restricted_file_missing" }
+  $item = Get-Item -LiteralPath $Path -Force
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "restricted_file_reparse_point" }
+  Assert-SharedAuditRoot -Path (Split-Path -Parent ([IO.Path]::GetFullPath($Path)))
+  $acl = Get-Acl -LiteralPath $Path
+  if ([IO.Path]::GetFileName($Path) -ceq '.remote-maintenance-audit.lock') {
+    $allowed = @{}
+    foreach ($sid in @(Get-RestrictedDirectorySids)) { $allowed[$sid] = $false }
+    if (-not $acl.AreAccessRulesProtected) { throw "restricted_acl_invalid" }
+    try { $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value }
+    catch { throw "restricted_acl_owner_invalid" }
+    if (-not $allowed.ContainsKey($owner)) { throw "restricted_acl_owner_invalid" }
+    $rules = @($acl.Access)
+    if ($rules.Count -ne $allowed.Count) { throw "restricted_acl_invalid" }
+    foreach ($rule in $rules) {
+      try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }
+      catch { throw "restricted_acl_invalid" }
+      if (-not $allowed.ContainsKey($sid) -or $allowed[$sid] -or $rule.IsInherited -or
+          $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+          $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+          $rule.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None -or
+          $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+        throw "restricted_acl_invalid"
+      }
+      $allowed[$sid] = $true
+    }
+    if ($allowed.Values -contains $false) { throw "restricted_acl_required_identity_missing" }
+    return
+  }
+  $seen = @{'S-1-5-18'=$false;'S-1-5-32-544'=$false}
+  $rules = @($acl.Access)
+  if ($rules.Count -ne 2) { throw "restricted_acl_invalid" }
+  foreach ($rule in $rules) {
+    try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { throw "restricted_acl_identity_invalid" }
+    if (-not $seen.ContainsKey($sid) -or $seen[$sid] -or -not $rule.IsInherited -or
+        $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+        $rule.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None -or
+        $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw "restricted_acl_invalid" }
+    $seen[$sid] = $true
+  }
+  if ($seen.Values -contains $false) { throw "restricted_acl_required_identity_missing" }
+}
+
 function Assert-RestrictedDirectory {
   param([Parameter(Mandatory)][string]$Path)
+  if (Test-IsSharedAuditRoot -Path $Path) { Assert-SharedAuditRoot -Path $Path; return }
   if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
     throw "restricted_directory_missing"
   }
@@ -77,6 +160,15 @@ function Assert-RestrictedDirectory {
 
 function Assert-RestrictedFile {
   param([Parameter(Mandatory)][string]$Path)
+  $fullPath = [IO.Path]::GetFullPath($Path)
+  $sharedFiles = @(
+    'C:\Ruisheng\audit\remote-maintenance.jsonl',
+    'C:\Ruisheng\audit\.remote-maintenance-audit.lock'
+  )
+  if ($sharedFiles -contains $fullPath) {
+    Assert-SharedAuditFile -Path $fullPath
+    return
+  }
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "restricted_file_missing" }
   $item = Get-Item -LiteralPath $Path -Force
   if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -297,6 +389,7 @@ $RequestedSiteRoot = __SITE_ROOT__
 $CandidateRoot = ""
 $SiteRoot = ""
 $CandidateSitesRoot = "C:\Ruisheng\candidates"
+$HotfixRoot = "C:\Ruisheng\hotfix"
 $LeaseSeconds = __LEASE_SECONDS__
 $DryRun = __DRY_RUN__
 $Approved = __APPROVED__
@@ -350,6 +443,28 @@ function Get-RestrictedDirectorySids {
 
 function Assert-RestrictedDirectory {
   param([Parameter(Mandatory)][string]$Path)
+  if ([IO.Path]::GetFullPath($Path).TrimEnd('\').Equals('C:\Ruisheng\audit', [StringComparison]::OrdinalIgnoreCase)) {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "restricted_acl_required_admin_token" }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "restricted_directory_missing" }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "restricted_directory_reparse_point" }
+    $acl = Get-Acl -LiteralPath $Path
+    if (-not $acl.AreAccessRulesProtected) { throw "restricted_acl_inheritance_enabled" }
+    try { $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { throw "restricted_acl_owner_invalid" }
+    if ($owner -notin @('S-1-5-18','S-1-5-32-544')) { throw "restricted_acl_owner_invalid" }
+    $seen = @{'S-1-5-18'=$false;'S-1-5-32-544'=$false}
+    $rules = @($acl.Access)
+    if ($rules.Count -ne 2) { throw "restricted_acl_invalid" }
+    foreach ($rule in $rules) {
+      try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { throw "restricted_acl_invalid" }
+      if (-not $seen.ContainsKey($sid) -or $seen[$sid] -or $rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or $rule.InheritanceFlags -ne ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit) -or $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw "restricted_acl_invalid" }
+      $seen[$sid] = $true
+    }
+    if ($seen.Values -contains $false) { throw "restricted_acl_required_identity_missing" }
+    return
+  }
   if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
     throw "restricted_directory_missing"
   }
@@ -383,6 +498,49 @@ function Assert-RestrictedDirectory {
 
 function Assert-RestrictedFile {
   param([Parameter(Mandatory)][string]$Path)
+  $fullPath = [IO.Path]::GetFullPath($Path)
+  $sharedFiles = @('C:\Ruisheng\audit\remote-maintenance.jsonl','C:\Ruisheng\audit\.remote-maintenance-audit.lock')
+  if ($sharedFiles -contains $fullPath) {
+    Assert-RestrictedDirectory -Path (Split-Path -Parent $fullPath)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { throw "restricted_file_missing" }
+    $item = Get-Item -LiteralPath $fullPath -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "restricted_file_reparse_point" }
+    $acl = Get-Acl -LiteralPath $fullPath
+    if ([IO.Path]::GetFileName($fullPath) -ceq '.remote-maintenance-audit.lock') {
+      $allowed = @{}
+      foreach ($sid in @(Get-RestrictedDirectorySids)) { $allowed[$sid] = $false }
+      if (-not $acl.AreAccessRulesProtected) { throw "restricted_acl_invalid" }
+      try { $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value }
+      catch { throw "restricted_acl_owner_invalid" }
+      if (-not $allowed.ContainsKey($owner)) { throw "restricted_acl_owner_invalid" }
+      $rules = @($acl.Access)
+      if ($rules.Count -ne $allowed.Count) { throw "restricted_acl_invalid" }
+      foreach ($rule in $rules) {
+        try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }
+        catch { throw "restricted_acl_invalid" }
+        if (-not $allowed.ContainsKey($sid) -or $allowed[$sid] -or $rule.IsInherited -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+            $rule.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None -or
+            $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+          throw "restricted_acl_invalid"
+        }
+        $allowed[$sid] = $true
+      }
+      if ($allowed.Values -contains $false) { throw "restricted_acl_required_identity_missing" }
+      return
+    }
+    $seen = @{'S-1-5-18'=$false;'S-1-5-32-544'=$false}
+    $rules = @($acl.Access)
+    if ($rules.Count -ne 2) { throw "restricted_acl_invalid" }
+    foreach ($rule in $rules) {
+      try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { throw "restricted_acl_invalid" }
+      if (-not $seen.ContainsKey($sid) -or $seen[$sid] -or -not $rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or $rule.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None -or $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw "restricted_acl_invalid" }
+      $seen[$sid] = $true
+    }
+    if ($seen.Values -contains $false) { throw "restricted_acl_required_identity_missing" }
+    return
+  }
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "restricted_file_missing" }
   $item = Get-Item -LiteralPath $Path -Force
   if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -514,11 +672,111 @@ function ConvertTo-NativeArgument {
   return $builder.ToString()
 }
 
+# BEGIN site serial compose
+# Embedded in each remote script so historical signed candidates stay immutable.
+function Assert-SiteSerialPath {
+  param([Parameter(Mandatory)][string]$Path)
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'site_serial_path_linked'
+  }
+  $acl = Get-Acl -LiteralPath $Path
+  $trusted = @('S-1-5-18', 'S-1-5-32-544')
+  if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cnotin $trusted) {
+    throw 'site_serial_owner_invalid'
+  }
+  $write = [Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'
+  foreach ($rule in @($acl.Access)) {
+    if ($rule.AccessControlType -eq 'Allow' -and ($rule.FileSystemRights -band $write) -ne 0 -and
+        $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -cnotin $trusted) {
+      throw 'site_serial_writer_invalid'
+    }
+  }
+}
+
+function Assert-SiteSerialContent {
+  param([Parameter(Mandatory)][string]$Json)
+  # Requiring the canonical representation also rejects duplicate keys, hidden
+  # overrides, interpolation and fields that could broaden container privileges.
+  try {
+    $model = $Json | ConvertFrom-Json
+    $ports = @($model.services.gw.environment.GW_SERIAL_PORTS | ConvertFrom-Json)
+  }
+  catch { throw 'site_serial_json_invalid' }
+  if ($ports.Count -ne 1 -or $ports[0].port -isnot [string] -or
+      $ports[0].port -cnotmatch '^/dev/ruisheng-[A-Za-z0-9._-]{1,64}$' -or
+      ($ports[0].baud_rate -isnot [int] -and $ports[0].baud_rate -isnot [long]) -or
+      $ports[0].baud_rate -notin @(1200,2400,4800,9600,19200,38400,57600,115200)) {
+    throw 'site_serial_parameters_invalid'
+  }
+  $port = [string]$ports[0].port
+  $baud = [string]$ports[0].baud_rate
+  $expected = '{"services":{"gw":{"environment":{"GW_SERIAL_PORTS":"[{\"port\":\"' + $port +
+    '\",\"baud_rate\":' + $baud + '}]"},"devices":[{"source":"' + $port +
+    '","target":"' + $port + '","permissions":"rw"}]}}}'
+  if ($Json.Trim() -cne $expected) { throw 'site_serial_override_invalid' }
+}
+
+function Get-SiteSerialOverride {
+  $path = 'C:\Ruisheng\site\site-serial.override.json'
+  $exists = $true
+  try { $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop }
+  catch [System.Management.Automation.ItemNotFoundException] { $exists = $false }
+  if ($null -ne $script:SiteSerialSnapshot) {
+    if ($exists -ne $script:SiteSerialSnapshot.exists) { throw 'site_serial_configuration_changed' }
+    if (-not $exists) { return '' }
+    foreach ($part in @('C:\Ruisheng','C:\Ruisheng\site',$path)) { Assert-SiteSerialPath $part }
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $script:SiteSerialSnapshot.hash) {
+      throw 'site_serial_configuration_changed'
+    }
+    return $path
+  }
+  if (-not $exists) {
+    $script:SiteSerialSnapshot = @{ exists = $false }
+    return ''
+  }
+  if ($item.PSIsContainer -or $item.Length -gt 4096) { throw 'site_serial_file_invalid' }
+  foreach ($part in @('C:\Ruisheng','C:\Ruisheng\site',$path)) { Assert-SiteSerialPath $part }
+  $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    $json = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+    Assert-SiteSerialContent $json
+    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    # Retain the read handle until process exit. Compose must read exactly the
+    # validated file, including during recovery and asynchronous native calls.
+    $script:SiteSerialSnapshot = @{ exists = $true; hash = $hash; guard = $stream }
+  }
+  catch { $stream.Dispose(); throw }
+  return $path
+}
+
+function Add-SiteSerialComposeArguments {
+  param([Parameter(Mandatory)][string[]]$Arguments)
+  if ($Arguments[0] -cne 'compose') { return ,$Arguments }
+  $path = Get-SiteSerialOverride
+  if (-not $path) { return ,$Arguments }
+  $index = 1
+  while ($index -lt $Arguments.Count -and $Arguments[$index].StartsWith('-')) {
+    if ($Arguments[$index] -cin @('-f','--file','--env-file','--project-directory','-p','--project-name','--profile','--ansi','--progress','--parallel')) {
+      if ($index + 1 -ge $Arguments.Count) { throw 'site_serial_compose_arguments_invalid' }
+      if ($Arguments[$index] -cin @('-f','--file') -and $Arguments[$index+1] -ieq $path) {
+        throw 'site_serial_override_already_present'
+      }
+      $index += 2
+    }
+    else { throw 'site_serial_compose_option_unsupported' }
+  }
+  if ($index -ge $Arguments.Count) { throw 'site_serial_compose_command_missing' }
+  return ,(@($Arguments[0..($index-1)]) + @('-f',$path) + @($Arguments[$index..($Arguments.Count-1)]))
+}
+# END site serial compose
 function Invoke-DockerText {
   param(
     [Parameter(Mandatory)][string[]]$Arguments,
     [ValidateRange(1, 900)][int]$TimeoutSeconds = 120
   )
+  if ($Arguments[0] -ceq 'compose') { $Arguments = Add-SiteSerialComposeArguments -Arguments $Arguments }
+  if ($Action -ne "Status" -and -not $DryRun) { Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot }
   if ($null -ne (Get-Command docker -CommandType Function -ErrorAction SilentlyContinue)) {
     $output = & docker @Arguments 2>&1
     $exitCode = $LASTEXITCODE
@@ -673,7 +931,7 @@ function Get-LockInfo {
     return [ordered]@{ present = $false; state = "absent" }
   }
   try {
-    $rawRecord = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    $rawRecord = Get-Content -LiteralPath $Path -Raw | Convert-CoordinationJson
     $record = ConvertTo-ValidatedLockRecord -Record $rawRecord -ExpectedName $Name
     $now = [DateTimeOffset]::UtcNow
     $acquired = [DateTimeOffset]::Parse([string]$record.acquired_at)
@@ -811,6 +1069,72 @@ function Assert-ComposePolicy {
       }
     }
   }
+}
+
+function Convert-CoordinationJson {
+  param([Parameter(Mandatory, ValueFromPipeline)][string]$Json)
+  process {
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey("DateKind")) {
+      return $Json | ConvertFrom-Json -DateKind String
+    }
+    return $Json | ConvertFrom-Json
+  }
+}
+
+function Assert-NoFullUpgradeMaintenance {
+  param([Parameter(Mandatory)][string]$SiteRoot)
+  $stateDirectory = Join-Path $SiteRoot ".remote-maintenance-state"
+  $path = Join-Path $stateDirectory "full-upgrade-maintenance.json"
+  try { $marker = Get-Item -LiteralPath $path -Force -ErrorAction Stop }
+  catch [System.Management.Automation.ItemNotFoundException] { return }
+  $allowed = @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value, "S-1-5-18", "S-1-5-32-544")
+  foreach ($entry in @($SiteRoot, $stateDirectory, $path)) {
+    $item = Get-Item -LiteralPath $entry -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        ($entry -eq $path -and ($item.PSIsContainer -or $item.Length -gt 16KB))) {
+      throw "full_upgrade_maintenance_invalid"
+    }
+    $acl = Get-Acl -LiteralPath $entry
+    if (($item.PSIsContainer -and -not $acl.AreAccessRulesProtected) -or
+        $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $allowed) {
+      throw "full_upgrade_maintenance_acl_invalid"
+    }
+    foreach ($rule in @($acl.Access)) {
+      $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+      $write = [Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'
+      if ($rule.AccessControlType -eq "Allow" -and ($rule.FileSystemRights -band $write) -ne 0 -and
+          $sid -notin $allowed) { throw "full_upgrade_maintenance_acl_invalid" }
+    }
+  }
+  try {
+    $json = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey("DateKind")) {
+      $state = $json | ConvertFrom-Json -DateKind String
+    }
+    else { $state = $json | ConvertFrom-Json }
+  }
+  catch { throw "full_upgrade_maintenance_invalid" }
+  $keys = @("schema_version", "operation_id", "site_root", "status", "source_identity", "candidate_identity",
+    "source_head", "target_head", "journal_path", "updated_at")
+  if ($state -isnot [PSCustomObject] -or @($state.PSObject.Properties).Count -ne $keys.Count -or
+      ($state.schema_version -isnot [int] -and $state.schema_version -isnot [long]) -or
+      $state.schema_version -ne 1) { throw "full_upgrade_maintenance_invalid" }
+  foreach ($key in $keys) {
+    if (@($state.PSObject.Properties.Name) -cnotcontains $key -or
+        ($key -ne "schema_version" -and $state.$key -isnot [string])) { throw "full_upgrade_maintenance_invalid" }
+  }
+  if ($state.site_root -cne $SiteRoot -or
+      $state.operation_id -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+      $state.source_identity -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+      $state.candidate_identity -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+      $state.source_head -cne "0012_alarm_notification_runtime" -or
+      $state.target_head -cne "0013_serial_polling_profile" -or
+      $state.journal_path -cne (Join-Path $stateDirectory "full-upgrade-$($state.operation_id).json") -or
+      $state.status -cnotin @("active", "committed", "rolled_back")) { throw "full_upgrade_maintenance_invalid" }
+  [DateTimeOffset]$updatedAt = [DateTimeOffset]::MinValue
+  if (-not [DateTimeOffset]::TryParseExact($state.updated_at, "o", [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::None, [ref]$updatedAt)) { throw "full_upgrade_maintenance_invalid" }
+  if ($state.status -ceq "active") { throw "full_upgrade_maintenance_active" }
 }
 
 function Test-ExactJsonObjectKeys {
@@ -998,15 +1322,83 @@ function Assert-ManifestImageIdentity {
   }
   if ($manifestImages.Count -ne $PersistentServices.Count) { throw "manifest_images_invalid" }
 
+  function Assert-HotfixArtifactPath {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { throw "hotfix_artifact_missing" }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "hotfix_artifact_linked" }
+    $allowed = @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,
+      "S-1-5-18", "S-1-5-32-544") | Select-Object -Unique
+    $acl = Get-Acl -LiteralPath $Path
+    try { $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value }
+    catch { throw "hotfix_artifact_acl_invalid" }
+    if ($owner -notin $allowed) { throw "hotfix_artifact_acl_invalid" }
+    foreach ($rule in @($acl.Access)) {
+      try { $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }
+      catch { throw "hotfix_artifact_acl_invalid" }
+      if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+          $sid -notin $allowed -or
+          ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+            [Security.AccessControl.FileSystemRights]::FullControl) {
+        throw "hotfix_artifact_acl_invalid"
+      }
+    }
+  }
+
+  function Resolve-HotfixManifestImage {
+    param([Parameter(Mandatory)][string]$Component, [Parameter(Mandatory)][string]$Reference)
+    if ($Component -notin @("api", "gw", "web") -or
+        $Reference -notmatch '^ruisheng-hotfix/(?<service>api|gw|web):(?<tag>[a-z0-9][a-z0-9-]{2,63})$' -or
+        [string]$Matches.service -cne $Component) { throw "compose_manifest_image_mismatch" }
+    $tag = [string]$Matches.tag
+    $directory = Join-Path (Join-Path $HotfixRoot $tag) $Component
+    $manifestPath = Join-Path $directory "ruisheng-$Component-hotfix-$tag.json"
+    foreach ($path in @($HotfixRoot, (Join-Path $HotfixRoot $tag), $directory)) {
+      Assert-HotfixArtifactPath -Path $path
+    }
+    Assert-HotfixArtifactPath -Path $manifestPath
+    try {
+      $hotfix = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch { throw "hotfix_manifest_invalid" }
+    $keys = @("schema_version", "service", "source_commit", "image_reference", "image_id",
+      "os", "architecture", "archive", "sha256", "generated_at")
+    $actualKeys = @($hotfix.PSObject.Properties.Name)
+    if ($hotfix -isnot [PSCustomObject] -or $actualKeys.Count -ne $keys.Count -or
+        @($keys | Where-Object { $_ -notin $actualKeys }).Count -ne 0 -or
+        ($hotfix.schema_version -isnot [int] -and $hotfix.schema_version -isnot [long]) -or
+        [int64]$hotfix.schema_version -ne 1 -or
+        [string]$hotfix.service -cne $Component -or
+        [string]$hotfix.source_commit -notmatch '^[0-9a-f]{40}$' -or
+        [string]$hotfix.image_reference -cne $Reference -or
+        [string]$hotfix.image_id -notmatch '^sha256:[0-9a-f]{64}$' -or
+        [string]$hotfix.os -cne "linux" -or [string]$hotfix.architecture -cne "amd64" -or
+        [string]$hotfix.archive -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' -or
+        [string]$hotfix.sha256 -notmatch '^[0-9a-f]{64}$') { throw "hotfix_manifest_invalid" }
+    [DateTimeOffset]$generatedAt = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParseExact(
+        [string]$hotfix.generated_at, "o", [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::None, [ref]$generatedAt)) { throw "hotfix_manifest_invalid" }
+    $archivePath = Join-Path $directory ([string]$hotfix.archive)
+    Assert-HotfixArtifactPath -Path $archivePath
+    $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($archiveHash -cne [string]$hotfix.sha256) { throw "hotfix_archive_identity_mismatch" }
+    return $hotfix
+  }
+
   foreach ($service in $PolicyServices) {
     $component = if ($service -eq "migrate") { "api" } else { $service }
     $manifestImage = $manifestImages[$component]
     $composeReference = [string]$Model.services.PSObject.Properties[$service].Value.image
-    if ($composeReference -ne [string]$manifestImage.candidate_reference) {
-      throw "compose_manifest_image_mismatch"
+    if ($composeReference -ceq [string]$manifestImage.candidate_reference) {
+      $expectedImageId = [string]$manifestImage.image_id
+    }
+    else {
+      $hotfix = Resolve-HotfixManifestImage -Component $component -Reference $composeReference
+      $expectedImageId = [string]$hotfix.image_id
     }
     $actualId = Invoke-DockerText -Arguments @("image", "inspect", "--format", "{{.Id}}", $composeReference)
-    if ($actualId -ne [string]$manifestImage.image_id) { throw "loaded_image_identity_mismatch" }
+    if ($actualId -cne $expectedImageId) { throw "loaded_image_identity_mismatch" }
   }
 }
 
@@ -1125,13 +1517,17 @@ function Acquire-LeasedLock {
       if ($null -ne $stream) { $stream.Dispose() }
       if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "lock_acquire_failed" }
       try {
-        $rawExisting = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+        $rawExisting = Get-Content -LiteralPath $Path -Raw | Convert-CoordinationJson
         $existing = ConvertTo-ValidatedLockRecord -Record $rawExisting -ExpectedName $Name
       }
       catch { throw "lock_conflict_unrecognized" }
       try { $expired = [DateTimeOffset]::Parse([string]$existing.expires_at) -lt [DateTimeOffset]::UtcNow }
       catch { throw "lock_conflict_unrecognized" }
-      if (-not $expired -or (Test-MatchingProcess -Record $existing)) { throw "lock_conflict_active" }
+      # Reclaim an orphaned lease immediately when its recorded owner process
+      # no longer exists; the old lease is safe to retain only while its owner
+      # is still running.
+      $ownerMatches = Test-MatchingProcess -Record $existing
+      if ($ownerMatches) { throw "lock_conflict_active" }
       $tombstone = "$Path.stale.$OperationId.$([Guid]::NewGuid().ToString('N'))"
       try { [IO.File]::Move($Path, $tombstone) }
       catch { throw "lock_conflict_race" }
@@ -1151,7 +1547,7 @@ function Acquire-LeasedLock {
 function Renew-Locks {
   foreach ($held in @($AcquiredLocks)) {
     try {
-      $rawRecord = Get-Content -LiteralPath $held.path -Raw | ConvertFrom-Json
+      $rawRecord = Get-Content -LiteralPath $held.path -Raw | Convert-CoordinationJson
       $record = ConvertTo-ValidatedLockRecord -Record $rawRecord -ExpectedName $held.name
     }
     catch { throw "lock_ownership_lost" }
@@ -1168,7 +1564,7 @@ function Release-Locks {
   [array]::Reverse($heldLocks)
   foreach ($held in $heldLocks) {
     try {
-      $rawRecord = Get-Content -LiteralPath $held.path -Raw | ConvertFrom-Json
+      $rawRecord = Get-Content -LiteralPath $held.path -Raw | Convert-CoordinationJson
       $record = ConvertTo-ValidatedLockRecord -Record $rawRecord -ExpectedName $held.name
       if ([string]$record.operation_id -eq $OperationId -and [string]$record.process_started_at -eq $ProcessStartedAt) {
         Remove-Item -LiteralPath $held.path -Force
@@ -1205,7 +1601,7 @@ function Read-TargetAuditSnapshot {
         throw "audit_record_limit_exceeded"
       }
       try {
-        $previous = $existingLine | ConvertFrom-Json
+        $previous = $existingLine | Convert-CoordinationJson
         if ([string]$previous.previous_hash -ne $previousHash) { throw "invalid" }
         $verifiedPayload = [ordered]@{}
         foreach ($property in $previous.PSObject.Properties) {
@@ -1368,7 +1764,7 @@ function Read-ExistingOperation {
   if (-not (Test-Path -LiteralPath $OperationPath -PathType Leaf)) { return $null }
   Assert-RestrictedFile -Path $OperationPath
   try {
-    $record = Get-Content -LiteralPath $OperationPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $record = Get-Content -LiteralPath $OperationPath -Raw -Encoding UTF8 | Convert-CoordinationJson
     if (
       [int]$record.schema_version -ne 1 -or
       [string]$record.operation_id -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$' -or
@@ -1432,6 +1828,7 @@ function Find-TerminalOperationAudit {
 
 function Resolve-InterruptedOperation {
   param([Parameter(Mandatory)]$Record)
+  Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot
   $script:auditId = [string]$Record.audit_id
   $terminal = Find-TerminalOperationAudit -Record $Record
   try { $liveServices = Get-HealthResult }
@@ -1624,6 +2021,7 @@ try {
   $LegacyLockPath = Join-Path $SiteRoot ".remote-hotfix.lock"
   $OperationPath = Join-Path $StateDirectory "$OperationId.json"
   $VerifiedInputDirectory = Join-Path $StateDirectory "$OperationId.inputs"
+  if ($Action -ne "Status") { Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot }
   $locks = [ordered]@{
     shared = Get-LockInfo -Path $SharedLockPath -Name "shared-maintenance"
     legacy = Get-LockInfo -Path $LegacyLockPath -Name "legacy-hotfix"
@@ -1732,6 +2130,7 @@ try {
     throw
   }
   $lockedActiveRelease = Resolve-ActiveRelease
+  Assert-NoFullUpgradeMaintenance -SiteRoot $SiteRoot
   Assert-ActiveReleaseUnchanged -Before $activeRelease -After $lockedActiveRelease
   $activeRelease = $lockedActiveRelease
   $auditReady = $true

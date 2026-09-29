@@ -7,7 +7,8 @@ export interface PointConfig {
   fun_code: 1 | 2 | 3 | 4
   dev_addr: number
   r_bit?: number | null
-  data_type: '字' | '双字' | 'bit'
+  data_type: '字' | '双字' | '有符号字节' | '无符号字节' | 'bit'
+  display_bits?: number | null
   raw_ratio: number
   raw_offset: number
   ratio: number
@@ -32,7 +33,8 @@ interface PointWire {
   fun_code: number
   dev_addr: number
   r_bit?: number | null
-  value_type: '字' | '双字' | 'bit'
+  value_type: '字' | '双字' | '有符号字节' | '无符号字节' | 'bit'
+  display_bits?: number | null
   point_unit?: string | null
   point_ratio: number
   point_offset: number
@@ -57,6 +59,7 @@ function toPoint(p: PointWire): PointConfig {
     dev_addr: p.dev_addr,
     r_bit: p.r_bit ?? null,
     data_type: p.value_type,
+    display_bits: p.display_bits ?? null,
     raw_ratio: p.point_ratio,
     raw_offset: p.point_offset,
     ratio: p.user_ratio ?? p.point_ratio,
@@ -77,6 +80,7 @@ function toCreatePayload(p: PointConfig) {
     dev_addr: p.dev_addr,
     r_bit: p.data_type === 'bit' && p.fun_code !== 1 && p.fun_code !== 2 ? p.r_bit : undefined,
     value_type: p.data_type,
+    display_bits: p.display_bits,
     point_unit: p.unit || undefined,
     point_ratio: p.raw_ratio,
     point_offset: p.raw_offset,
@@ -97,6 +101,7 @@ function toUpdatePayload(p: Partial<PointConfig>) {
     dev_addr: p.dev_addr,
     r_bit: p.data_type === 'bit' && p.fun_code !== 1 && p.fun_code !== 2 ? p.r_bit : null,
     value_type: p.data_type,
+    display_bits: p.display_bits,
     point_unit: p.unit,
     point_ratio: p.raw_ratio,
     point_offset: p.raw_offset,

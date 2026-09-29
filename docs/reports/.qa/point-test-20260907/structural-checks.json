@@ -1,0 +1,19 @@
+{
+  "output": "D:\\江苏润盛\\docs\\reports\\江苏润盛_点位表与远程测试报告_20260907.docx",
+  "candidate_rows": 46,
+  "unique_candidate_rows": 46,
+  "physical_requested_addresses": 36,
+  "tables": 6,
+  "sections": 3,
+  "table_geometry_issues": 0,
+  "preset": "compact_reference_guide",
+  "header": "memo_masthead",
+  "source_sha256": {
+    "README.md": "9a6e1769eaa591daf3cf6535d08b92fda929750721142146886cc5393418e149",
+    "POINT-TABLE.md": "c0ba163bf42a90e04fef45b7f9ce27dcfe2a3739c27af7ae3a7082d271de35ea",
+    "target-pipeline-results.json": "79c979bd6a543698dc1d09843fc82613f8c6a1bf62833daa169e6e7ba7ac6d06",
+    "target-final-state.json": "a7e273c4c37b2607fade528bce447892d8af48d2e47b541dee8b3cb211d14bec",
+    "validation-summary.json": "fd3b1ee7a91e09b41629b9f60d1fe78f144afc4242a9cfc4b761b781ae073712",
+    "candidate-summary.json": "e3bdda02b2bebb76a034d64015b316eb83259b1cf14de55eeb8ccc928cc9d796"
+  }
+}

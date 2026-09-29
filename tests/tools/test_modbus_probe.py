@@ -71,6 +71,485 @@ def _write_config(tmp_path: Path, value: dict[str, object] | None = None) -> Pat
     return path
 
 
+def _extended_config() -> dict[str, object]:
+    config = _config()
+    config["approval"]["scope_id"] = probe.EXTENDED_SCOPE_ID  # type: ignore[index]
+    config["budget"]["max_requests"] = 6  # type: ignore[index]
+    config["scope"]["requests"] = [  # type: ignore[index]
+        {"start_address": start, "register_count": count, "requires_previous_valid": previous}
+        for start, count, previous in probe.EXTENDED_REQUESTS
+    ]
+    return config
+
+
+def test_extended_scope_has_exact_read_only_frames(tmp_path: Path) -> None:
+    config = probe.load_config(_write_config(tmp_path, _extended_config()))
+    assert probe.normalized_plan(config)["frames"] == [
+        "010300000006c5c8",
+        "0103000600156404",
+        "0103001b0009f5cb",
+    ]
+    assert config.budget.max_requests == 6
+    with pytest.raises(probe.ProbeError, match="outside the approved scope"):
+        probe.request_frame(1, 3, config.requests[1])
+
+
+@pytest.mark.parametrize(
+    "change", ["old_approval", "unknown_scope", "budget", "range", "order", "dependency"]
+)
+def test_extended_profile_rejects_scope_mixing_before_io(tmp_path: Path, change: str) -> None:
+    config = _extended_config()
+    if change == "old_approval":
+        config["approval"]["scope_id"] = probe.APPROVED_SCOPE_ID  # type: ignore[index]
+    elif change == "unknown_scope":
+        config["approval"]["scope_id"] = "arbitrary-range"  # type: ignore[index]
+    elif change == "budget":
+        config["budget"]["max_requests"] = 7  # type: ignore[index]
+    elif change == "range":
+        config["scope"]["requests"][1]["register_count"] = 22  # type: ignore[index]
+    elif change == "order":
+        config["scope"]["requests"].reverse()  # type: ignore[index]
+    else:
+        config["scope"]["requests"][1]["requires_previous_valid"] = False  # type: ignore[index]
+    with pytest.raises(probe.ProbeError):
+        probe.load_config(_write_config(tmp_path, config))
+
+
+@pytest.mark.parametrize("middle_valid", [True, False])
+def test_extended_probe_preserves_order_and_stops_after_failed_range(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, middle_valid: bool
+) -> None:
+    config = probe.load_config(_write_config(tmp_path, _extended_config()))
+    responses = iter(
+        [_response([3] + [0] * 5)]
+        + ([_response(list(range(21))), _response([3] + [0] * 8)] if middle_valid else [b"", b""])
+    )
+    port = FakeSerial()
+    monkeypatch.setattr(probe, "verify_open_file_identity", lambda *_: {"st_rdev": "188"})
+    monkeypatch.setattr(probe, "_read_response", lambda *_, **__: next(responses))
+    monkeypatch.setattr(probe.time, "sleep", lambda _: None)
+    audit = probe.AuditLog(tmp_path / "audit.jsonl")
+    outcome = probe.execute_probe(config, audit, serial_factory=lambda _: port)
+    audit.close()
+    assert outcome.exit_code == (0 if middle_valid else 2)
+    assert len(port.writes) == 3
+    assert port.writes[1].hex() == "0103000600156404"
+    assert port.writes[2].hex() == ("0103001b0009f5cb" if middle_valid else "0103000600156404")
+
+
+@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
+def test_runner_extended_profile_audit_enforces_order(tmp_path: Path, shell: str) -> None:
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(f"{shell} unavailable")
+    script = (ROOT / "tools/run_modbus_probe.ps1").read_text(encoding="utf-8-sig")
+    functions = script.split("if ($SelfTest) {", 1)[0]
+    harness = (
+        functions
+        + r"""
+Set-ProbeScope $ExtendedScope
+$Events = @([pscustomobject]@{event='run_started'}, [pscustomobject]@{event='port_verified'})
+for ($i=0; $i -lt $ExpectedRequests.Count; $i++) {
+    $r = $ExpectedRequests[$i]
+    $Events += [pscustomobject]@{event='request_tx';request_index=$i;attempt=0;tx_number=($i+1);function_code=3;start_address=$r.address;register_count=$r.count;tx_hex=$r.frame}
+    $Events += [pscustomobject]@{event='response_rx';request_index=$i;attempt=0;tx_number=($i+1);latency_ms=1;rx_hex='00';classification='valid';crc_valid=$true;registers=@(0)*$r.count;conclusion='仅证明区间可读，型号/点名/倍率未决'}
+}
+$Events += [pscustomobject]@{event='completed';result='valid';completed_tx_count=3;attempted_write_bytes=24;tx_count_known=$true}
+Assert-ProbeAuditSequence $Events
+$terminal=[pscustomobject]@{exit_code=0;result='valid';completed_tx_count=3;attempted_write_bytes=24;tx_count_known=$true;audit_complete=$true}
+Assert-ProbeTerminalMatches $Events $terminal 0
+$Events[4].request_index = 2
+$rejected=$false
+try { Assert-ProbeAuditSequence $Events } catch {$rejected=$true}
+if (-not $rejected) { throw 'out-of-order audit accepted' }
+Set-ProbeScope 'b06-9600-8n1-unit1-fc3-r0-5-r27-35'
+if ($MaxRequests -ne 4 -or $ExpectedRequests.Count -ne 2) { throw 'legacy scope changed' }
+Write-Output 'PASS'
+"""
+    )
+    path = tmp_path / "runner-profile-test.ps1"
+    path.write_text(harness, encoding="utf-8-sig")
+    result = subprocess.run(
+        [executable, "-NoProfile", "-File", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "PASS"
+
+
+def _correlation_config() -> dict[str, object]:
+    config = _config()
+    config["approval"]["scope_id"] = probe.CORRELATION_SCOPE_ID  # type: ignore[index]
+    config["budget"]["max_requests"] = 12  # type: ignore[index]
+    config["scope"]["requests"] = [  # type: ignore[index]
+        {"start_address": start, "register_count": count, "requires_previous_valid": previous}
+        for start, count, previous in probe.CORRELATION_REQUESTS
+    ]
+    return config
+
+
+def test_correlation_profile_is_fixed_bounded_and_defaults_to_zero_io(tmp_path: Path) -> None:
+    path = _write_config(tmp_path, _correlation_config())
+    config = probe.load_config(path)
+    expected = [
+        "01030000001b05c1",
+        "0103000600156404",
+        "01030000001b05c1",
+        "01030012001265c2",
+        "0103001b0009f5cb",
+        "01030012001265c2",
+    ]
+    assert probe.normalized_plan(config)["frames"] == expected
+    assert config.budget.max_requests == 12
+    assert max(5 + 2 * request.register_count for request in config.requests) == 59
+    for request in config.requests:
+        assert (
+            0 <= request.start_address <= request.start_address + request.register_count - 1 <= 35
+        )
+    for scope in (probe.APPROVED_SCOPE_ID, probe.EXTENDED_SCOPE_ID):
+        with pytest.raises(probe.ProbeError, match="outside the approved scope"):
+            probe.request_frame(1, 3, config.requests[0], scope_id=scope)
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools/probe_modbus_rtu.py"), "--config", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    assert output["mode"] == "dry-run"
+    assert output["plan"]["frames"] == expected
+
+
+@pytest.mark.parametrize(
+    "change", ["old_scope", "budget", "range", "order", "dependency", "missing_return", "write"]
+)
+def test_correlation_profile_rejects_changed_plan(tmp_path: Path, change: str) -> None:
+    config = _correlation_config()
+    if change == "old_scope":
+        config["approval"]["scope_id"] = probe.EXTENDED_SCOPE_ID  # type: ignore[index]
+    elif change == "budget":
+        config["budget"]["max_requests"] = 13  # type: ignore[index]
+    elif change == "range":
+        config["scope"]["requests"][3]["register_count"] = 19  # type: ignore[index]
+    elif change == "order":
+        config["scope"]["requests"].reverse()  # type: ignore[index]
+    elif change == "dependency":
+        config["scope"]["requests"][2]["requires_previous_valid"] = False  # type: ignore[index]
+    elif change == "missing_return":
+        config["scope"]["requests"].pop()  # type: ignore[index]
+    else:
+        config["scope"]["function_code"] = 6  # type: ignore[index]
+    with pytest.raises(probe.ProbeError):
+        probe.load_config(_write_config(tmp_path, config))
+
+
+@pytest.mark.parametrize("failed_index", [None, 0, 1, 2, 3, 4, 5])
+def test_correlation_probe_orders_repeated_ranges_and_stops_on_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failed_index: int | None
+) -> None:
+    config = probe.load_config(_write_config(tmp_path, _correlation_config()))
+    count = 6 if failed_index is None else failed_index
+    responses = iter(
+        [_response(list(range(request.register_count))) for request in config.requests[:count]]
+        + ([] if failed_index is None else [b"", b""])
+    )
+    port = FakeSerial()
+    monkeypatch.setattr(probe, "verify_open_file_identity", lambda *_: {"st_rdev": "188"})
+    monkeypatch.setattr(probe, "_read_response", lambda *_, **__: next(responses))
+    monkeypatch.setattr(probe.time, "sleep", lambda _: None)
+    audit = probe.AuditLog(tmp_path / "audit.jsonl")
+    try:
+        outcome = probe.execute_probe(config, audit, serial_factory=lambda _: port)
+    finally:
+        audit.close()
+    expected_frames = probe.normalized_plan(config)["frames"]
+    expected = (
+        expected_frames
+        if failed_index is None
+        else (expected_frames[:failed_index] + [expected_frames[failed_index]] * 2)
+    )
+    assert [frame.hex() for frame in port.writes] == expected
+    assert outcome.exit_code == (0 if failed_index is None else 2)
+    assert outcome.completed_tx_count == len(expected)
+    assert all(frame[1] == 3 for frame in port.writes)
+
+
+@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
+def test_runner_correlation_profile_binds_repeated_ranges_and_budget(
+    tmp_path: Path, shell: str
+) -> None:
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(f"{shell} unavailable")
+    source = (ROOT / "tools/run_modbus_probe.ps1").read_text(encoding="utf-8-sig")
+    harness = (
+        source.split("if ($SelfTest) {", 1)[0]
+        + r"""
+Set-ProbeScope $CorrelationScope
+if ($MaxRequests -ne 12 -or $ExpectedRequests.Count -ne 6) { throw 'scope budget changed' }
+$frames = @('01030000001b05c1','0103000600156404','01030000001b05c1','01030012001265c2','0103001b0009f5cb','01030012001265c2')
+$Events = @([pscustomobject]@{event='run_started'}, [pscustomobject]@{event='port_verified'})
+for ($i=0; $i -lt $ExpectedRequests.Count; $i++) {
+    $r = $ExpectedRequests[$i]
+    if ($r.frame -cne $frames[$i]) { throw 'unexpected frame' }
+    $Events += [pscustomobject]@{event='request_tx';request_index=$i;attempt=0;tx_number=($i+1);function_code=3;start_address=$r.address;register_count=$r.count;tx_hex=$r.frame}
+    $Events += [pscustomobject]@{event='response_rx';request_index=$i;attempt=0;tx_number=($i+1);latency_ms=1;rx_hex='00';classification='valid';crc_valid=$true;registers=@(0)*$r.count;conclusion='仅证明区间可读，型号/点名/倍率未决'}
+}
+$Events += [pscustomobject]@{event='completed';result='valid';completed_tx_count=6;attempted_write_bytes=48;tx_count_known=$true}
+Assert-ProbeAuditSequence $Events
+$terminal=[pscustomobject]@{exit_code=0;result='valid';completed_tx_count=6;attempted_write_bytes=48;tx_count_known=$true;audit_complete=$true}
+Assert-ProbeTerminalMatches $Events $terminal 0
+$Events[6].request_index = 0
+$rejected=$false
+try { Assert-ProbeAuditSequence $Events } catch { $rejected=$true }
+if (-not $rejected) { throw 'repeated-frame replay accepted' }
+Set-ProbeScope $ExtendedScope
+if ($MaxRequests -ne 6 -or $ExpectedRequests.Count -ne 3) { throw 'extended scope changed' }
+Set-ProbeScope 'b06-9600-8n1-unit1-fc3-r0-5-r27-35'
+if ($MaxRequests -ne 4 -or $ExpectedRequests.Count -ne 2) { throw 'legacy scope changed' }
+Write-Output 'PASS'
+"""
+    )
+    path = tmp_path / "runner-correlation-test.ps1"
+    path.write_text(harness, encoding="utf-8-sig")
+    result = subprocess.run(
+        [executable, "-NoProfile", "-File", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "PASS"
+
+
+def _zero_origin_config() -> dict[str, object]:
+    config = _config()
+    config["approval"]["scope_id"] = probe.ZERO_ORIGIN_SCOPE_ID  # type: ignore[index]
+    config["budget"]["max_requests"] = 10  # type: ignore[index]
+    config["budget"]["max_response_bytes"] = 80  # type: ignore[index]
+    config["scope"]["requests"] = [  # type: ignore[index]
+        {"start_address": start, "register_count": count, "requires_previous_valid": previous}
+        for start, count, previous in probe.ZERO_ORIGIN_REQUESTS
+    ]
+    return config
+
+
+def test_zero_origin_profile_has_exact_frames_and_zero_io_default(tmp_path: Path) -> None:
+    path = _write_config(tmp_path, _zero_origin_config())
+    config = probe.load_config(path)
+    expected = [
+        "01030000002445d1",
+        "01030000001b05c1",
+        "01030000002445d1",
+        "010300000006c5c8",
+        "01030000002445d1",
+    ]
+    assert probe.normalized_plan(config)["frames"] == expected
+    assert config.budget.max_requests == 10
+    assert config.budget.max_response_bytes == 80
+    assert max(5 + 2 * request.register_count for request in config.requests) == 77
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools/probe_modbus_rtu.py"), "--config", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["mode"] == "dry-run"
+    assert json.loads(result.stdout)["plan"]["frames"] == expected
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["scope", "count", "start", "order", "dependency", "missing", "fc", "tx", "rx_low", "rx_high"],
+)
+def test_zero_origin_rejects_any_changed_scope(tmp_path: Path, change: str) -> None:
+    config = _zero_origin_config()
+    if change == "scope":
+        config["approval"]["scope_id"] = probe.CORRELATION_SCOPE_ID  # type: ignore[index]
+    elif change in {"count", "start", "dependency"}:
+        field, value = {
+            "count": ("register_count", 37),
+            "start": ("start_address", 1),
+            "dependency": ("requires_previous_valid", False),
+        }[change]
+        config["scope"]["requests"][2][field] = value  # type: ignore[index]
+    elif change == "order":
+        config["scope"]["requests"].reverse()  # type: ignore[index]
+    elif change == "missing":
+        config["scope"]["requests"].pop()  # type: ignore[index]
+    elif change == "fc":
+        config["scope"]["function_code"] = 6  # type: ignore[index]
+    else:
+        field, value = {
+            "tx": ("max_requests", 11),
+            "rx_low": ("max_response_bytes", 64),
+            "rx_high": ("max_response_bytes", 81),
+        }[change]
+        config["budget"][field] = value  # type: ignore[index]
+    with pytest.raises(probe.ProbeError):
+        probe.load_config(_write_config(tmp_path, config))
+
+
+@pytest.mark.parametrize("factory", [_config, _extended_config, _correlation_config])
+def test_old_profiles_cannot_use_zero_origin_receive_budget(tmp_path: Path, factory) -> None:
+    config = factory()
+    assert probe.load_config(_write_config(tmp_path, config)).budget.max_response_bytes == 64
+    config["budget"]["max_response_bytes"] = 80
+    with pytest.raises(probe.ProbeError, match="must remain 64"):
+        probe.load_config(_write_config(tmp_path, config))
+    with pytest.raises(probe.ProbeError, match="outside the approved scope"):
+        probe.request_frame(
+            1, 3, probe.Request(0, 36, False), scope_id=config["approval"]["scope_id"]
+        )
+
+
+@pytest.mark.parametrize("failed_index", [None, 0, 1, 2, 3, 4])
+def test_zero_origin_stops_at_each_failed_step(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failed_index: int | None
+) -> None:
+    config = probe.load_config(_write_config(tmp_path, _zero_origin_config()))
+    count = 5 if failed_index is None else failed_index
+    responses = iter(
+        [_response(list(range(request.register_count))) for request in config.requests[:count]]
+        + ([] if failed_index is None else [b"", b""])
+    )
+    limits = []
+
+    def read_response(*_, **kwargs):
+        limits.append(kwargs["max_bytes"])
+        return next(responses)
+
+    port = FakeSerial()
+    monkeypatch.setattr(probe, "verify_open_file_identity", lambda *_: {"st_rdev": "188"})
+    monkeypatch.setattr(probe, "_read_response", read_response)
+    monkeypatch.setattr(probe.time, "sleep", lambda _: None)
+    audit = probe.AuditLog(tmp_path / "audit.jsonl")
+    try:
+        outcome = probe.execute_probe(config, audit, serial_factory=lambda _: port)
+    finally:
+        audit.close()
+    frames = probe.normalized_plan(config)["frames"]
+    expected = frames if failed_index is None else frames[:count] + [frames[count]] * 2
+    assert [frame.hex() for frame in port.writes] == expected
+    assert outcome.exit_code == (0 if failed_index is None else 2)
+    assert outcome.completed_tx_count == len(expected)
+    assert outcome.attempted_write_bytes == 8 * len(expected)
+    assert limits == [80] * len(expected)
+
+
+@pytest.mark.parametrize("extra", [b"", b"\xff", b"\xff" * 10])
+def test_zero_origin_reads_77_bytes_but_never_exceeds_80(
+    monkeypatch: pytest.MonkeyPatch, extra: bytes
+) -> None:
+    values = [0, 32767, 32768, 65535] + list(range(32))
+    wire = _response(values) + extra
+
+    class ChunkedSerial(FakeSerial):
+        received = 0
+        in_waiting = 1000
+
+        def read(self, size: int = 1) -> bytes:
+            chunk = wire[self.received : self.received + min(size, 9)]
+            self.received += len(chunk)
+            return chunk
+
+    clock = iter(index / 1000 for index in range(10000))
+    monkeypatch.setattr(probe.time, "monotonic", lambda: next(clock))
+    port = ChunkedSerial()
+    raw = probe._read_response(port, timeout_ms=400, max_bytes=80)
+    assert raw == wire[:80]
+    assert port.received <= 80
+    result = probe.classify_response(raw, probe.Request(0, 36, False), 1, 3)
+    assert result["classification"] == ("noise" if extra else "valid")
+    if not extra:
+        assert result["registers"] == values
+
+
+@pytest.mark.parametrize("mutation", ["truncated", "byte_count", "crc", "unit", "function"])
+def test_zero_origin_invalid_full_frames_are_not_accepted(mutation: str) -> None:
+    raw = bytearray(_response(list(range(36))))
+    if mutation == "truncated":
+        raw = raw[:64]
+    elif mutation == "crc":
+        raw[-1] ^= 1
+    else:
+        offset, value = {"byte_count": (2, 70), "unit": (0, 2), "function": (1, 4)}[mutation]
+        raw[offset] = value
+        raw[-2:] = probe.compute_crc16(raw[:-2]).to_bytes(2, "little")
+    assert (
+        probe.classify_response(bytes(raw), probe.Request(0, 36, False), 1, 3)["classification"]
+        != "valid"
+    )
+
+
+@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
+def test_runner_zero_origin_enforces_frames_lengths_and_restores_legacy_budget(
+    tmp_path: Path, shell: str
+) -> None:
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(f"{shell} unavailable")
+    source = (ROOT / "tools/run_modbus_probe.ps1").read_text(encoding="utf-8-sig")
+    responses = [_response([0] * count).hex() for _, count, _ in probe.ZERO_ORIGIN_REQUESTS]
+    harness = (
+        source.split("if ($SelfTest) {", 1)[0]
+        + "\n$wire = '"
+        + json.dumps(responses)
+        + "' | ConvertFrom-Json\n"
+        + r"""
+Set-ProbeScope $ZeroOriginScope
+if ($MaxRequests -ne 10 -or $MaxResponseBytes -ne 80 -or $ExpectedRequests.Count -ne 5) { throw 'wrong budget' }
+$frames = @('01030000002445d1','01030000001b05c1','01030000002445d1','010300000006c5c8','01030000002445d1')
+$Events = @([pscustomobject]@{event='run_started'},[pscustomobject]@{event='port_verified'})
+for ($i=0; $i -lt $ExpectedRequests.Count; $i++) {
+    $r=$ExpectedRequests[$i]
+    if ($r.frame -cne $frames[$i] -or $r.address -ne 0) { throw 'wrong frame' }
+    $Events += [pscustomobject]@{event='request_tx';request_index=$i;attempt=0;tx_number=($i+1);function_code=3;start_address=0;register_count=$r.count;tx_hex=$r.frame}
+    $Events += [pscustomobject]@{event='response_rx';request_index=$i;attempt=0;tx_number=($i+1);latency_ms=1;rx_hex=$wire[$i];rx_bytes=(5+2*$r.count);classification='valid';crc_valid=$true;registers=@(0)*$r.count;conclusion='仅证明区间可读，型号/点名/倍率未决'}
+}
+$Events += [pscustomobject]@{event='completed';result='valid';completed_tx_count=5;attempted_write_bytes=40;tx_count_known=$true}
+Assert-ProbeAuditSequence $Events
+$terminal=[pscustomobject]@{exit_code=0;result='valid';completed_tx_count=5;attempted_write_bytes=40;tx_count_known=$true;audit_complete=$true}
+Assert-ProbeTerminalMatches $Events $terminal 0
+foreach ($bad in @('00',('ff'*81))) {
+    $Events[3].rx_hex=$bad
+    $rejected=$false
+    try { Assert-ProbeAuditSequence $Events } catch { $rejected=$true }
+    if (-not $rejected) { throw 'bad response length accepted' }
+}
+$Events[3].rx_hex=$wire[0]
+$Events[6].request_index=0
+$rejected=$false
+try { Assert-ProbeAuditSequence $Events } catch { $rejected=$true }
+if (-not $rejected) { throw 'replayed full block accepted' }
+foreach ($scope in @($CorrelationScope,$ExtendedScope,'b06-9600-8n1-unit1-fc3-r0-5-r27-35')) {
+    Set-ProbeScope $scope
+    if ($MaxResponseBytes -ne 64) { throw 'old receive budget increased' }
+}
+Write-Output 'PASS'
+"""
+    )
+    path = tmp_path / "runner-zero-origin-test.ps1"
+    path.write_text(harness, encoding="utf-8-sig")
+    result = subprocess.run(
+        [executable, "-NoProfile", "-File", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "PASS"
+
+
 def _response(registers: list[int], *, unit: int = 1, function_code: int = 3) -> bytes:
     data = b"".join(value.to_bytes(2, "big") for value in registers)
     body = bytes((unit, function_code, len(data))) + data

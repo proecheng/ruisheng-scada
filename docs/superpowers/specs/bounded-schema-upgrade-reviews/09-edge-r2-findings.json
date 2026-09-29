@@ -1,0 +1,38 @@
+[
+  {
+    "location": "tools/remote_full_upgrade/target-updater.ps1:1679-1682",
+    "trigger_condition": "计划任务使用 cmd /c \"echo ready && docker compose up -d\"",
+    "guard_snippet": "foreach ($command in Parse-CmdCommandChain $Arguments) { Assert-ProtectedStartupCommand $command }",
+    "potential_consequence": "仅检查首条命令，维护期间仍可自动启动生产容器"
+  },
+  {
+    "location": "tools/remote_maintenance_prepare.ps1:223-230",
+    "trigger_condition": "首次准备时共享审计目录不存在",
+    "guard_snippet": "if ($createdAuditRoot) { Initialize-SharedAuditRootAcl $Path }",
+    "potential_consequence": "新建目录继承ACL，随后的严格校验立即拒绝准备操作"
+  },
+  {
+    "location": "tools/remote_maintenance_prepare.ps1:242-247",
+    "trigger_condition": "共享审计目录有效，但审计mutex文件缺失",
+    "guard_snippet": "Set-ProtectedAuditMutexAcl $mutexPath",
+    "potential_consequence": "准备报告成功，但新mutex继承ACL导致升级入口拒绝运行"
+  },
+  {
+    "location": "ruisheng-api/src/ruisheng_api/api/devices.py:81-93",
+    "trigger_condition": "同一串口已有128个未删除设备，API继续新增或迁入设备",
+    "guard_snippet": "await reserve_serial_capacity_atomically(session, serial_port, limit=128)",
+    "potential_consequence": "网关启动失败，或全部配置刷新持续失败并保留已停用设备"
+  },
+  {
+    "location": "ruisheng-gw/src/ruisheng_gw/transport/serial_bus.py:101-106",
+    "trigger_condition": "串口暂时断开、读取异常或发送超时后恢复",
+    "guard_snippet": "await supervise_serial_bus(reopen=True, bounded_backoff=True)",
+    "potential_consequence": "总线任务永久退出，网关进程仍存活但该端口不再采集"
+  },
+  {
+    "location": "ruisheng-gw/src/ruisheng_gw/scheduler/serial_poller.py:160-161",
+    "trigger_condition": "固定静默等待结束前收到迟到字节或噪声",
+    "guard_snippet": "await wait_until_bus_silent(last_rx_at, quiet_time_sec)",
+    "potential_consequence": "下一次发送未等待最后接收后的静默窗口，可能碰撞或丢帧"
+  }
+]

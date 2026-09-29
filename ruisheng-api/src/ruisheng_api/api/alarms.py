@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import math
 from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from loguru import logger
 from ruisheng_shared.errors.codes import BizError, ErrCode
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config_changes import mark_config_changed as _mark_config_changed
+from ..core.config_changes import publish_config_changed as _publish_config_changed
 from ..core.rbac import CurrentUser, check_ca, check_role
 from ..core.response import ApiResponse, ok
 from ..core.tenant import apply_tenant_context
@@ -59,33 +59,6 @@ def _validate_alarm_rule(
         raise BizError(ErrCode.BAD_PARAM, "relation limit must be finite")
     if not _valid_lx_count(relation_alarm_type, relation_limit_value):
         raise BizError(ErrCode.BAD_PARAM, "relation LX limit must be a positive integer")
-
-
-async def _mark_config_changed(session: AsyncSession, dev_number: str) -> int:
-    return int(
-        (
-            await session.execute(
-                text(
-                    "UPDATE devices SET update_flag = update_flag + 1 "
-                    "WHERE dev_number = :dev RETURNING update_flag"
-                ),
-                {"dev": dev_number},
-            )
-        ).scalar_one()
-    )
-
-
-async def _publish_config_changed(r: Any, dev_number: str, version: int) -> None:
-    try:
-        await r.publish(
-            "channel:config:changed",
-            json.dumps(
-                {"dev_number": dev_number, "version": version},
-                separators=(",", ":"),
-            ),
-        )
-    except Exception:
-        logger.exception("config change broadcast failed dev_number={}", dev_number)
 
 
 @cfg_router.get("/{dev_number}/alarms/configs", response_model=ApiResponse)

@@ -389,7 +389,9 @@ function Invoke-Updater {
   param(
     [Parameter(Mandatory)][string]$UpdaterSource,
     [Parameter(Mandatory)][AllowEmptyString()][string]$RemoteCandidateRoot,
-    $Metadata = $null
+    $Metadata = $null,
+    [ValidateSet("Status", "Plan", "Initialize", "Apply", "Recover")]
+    [string]$RemoteAction = $Action
   )
   $expectedCandidateId = if ($null -eq $Metadata) { "" } else { [string]$Metadata.candidate_id }
   $expectedIdentity = if ($null -eq $Metadata) { "" } else { [string]$Metadata.logical_identity }
@@ -402,7 +404,7 @@ function Invoke-Updater {
 $UpdaterSource
 }
 `$parameters = @{
-  Action = $(ConvertTo-PowerShellUtf8Expression $Action)
+  Action = $(ConvertTo-PowerShellUtf8Expression $RemoteAction)
   CandidateRoot = $(ConvertTo-PowerShellUtf8Expression $RemoteCandidateRoot)
   SiteRoot = $(ConvertTo-PowerShellUtf8Expression $SiteRoot)
   OperationId = $(ConvertTo-PowerShellUtf8Expression $OperationId.ToLowerInvariant())
@@ -418,8 +420,8 @@ $UpdaterSource
 }
 & `$updater @parameters
 "@
-  $timeoutSeconds = if ($Action -in @("Apply", "Recover")) { 3600 } `
-    elseif ($Action -eq "Initialize") { 1800 } else { 120 }
+  $timeoutSeconds = if ($RemoteAction -in @("Apply", "Recover")) { 3600 } `
+    elseif ($RemoteAction -eq "Initialize") { 1800 } else { 120 }
   $text = Invoke-SshScript -Script $transport -TimeoutSeconds $timeoutSeconds
   if (-not $text) { throw "Remote upgrade returned no data." }
   try { $result = $text | ConvertFrom-Json }
@@ -431,7 +433,7 @@ $UpdaterSource
   if (-not (Test-ExactKeys -Value $result -Expected $resultKeys) -or
       [int]$result.schema_version -ne 1 -or $result.ok -isnot [bool] -or
       [string]$result.operation_id -cne $OperationId.ToLowerInvariant() -or
-      [string]$result.action -cne $Action -or
+      [string]$result.action -cne $RemoteAction -or
       [string]$result.status -notmatch '^(observed|planned|initialized|committed|rolled_back|recovery_failed|rejected|uncertain)$' -or
       [string]$result.error_code -notmatch '^$|^[a-z0-9_]+$') {
     throw "Remote upgrade returned invalid or non-allowlisted data."
@@ -698,6 +700,40 @@ $result = $null
 $transportError = ""
 try {
   if ($Action -eq "Apply") {
+    $skipUpload = $false
+    # Inspect journal state before creating an incoming directory.  A clean
+    # operation proceeds through a remote read-only Plan; terminal operations
+    # replay the existing updater without retransmitting their candidate.
+    $statusResult = Invoke-Updater -UpdaterSource $updaterSource -RemoteCandidateRoot "" `
+      -RemoteAction "Status"
+    if (-not [bool]$statusResult.ok) { throw "Remote upgrade status was rejected: $($statusResult.error_code)" }
+    $existingJournal = $statusResult.candidate
+    if ($null -ne $existingJournal) {
+      $terminalStatuses = @("committed", "rolled_back", "recovery_failed", "rejected")
+      if ([string]$existingJournal.status -notin $terminalStatuses) {
+        throw "upgrade_journal_requires_recovery"
+      }
+      $result = Invoke-Updater -UpdaterSource $updaterSource -RemoteCandidateRoot "" `
+        -Metadata $script:CandidateMetadata -RemoteAction "Apply"
+      $skipUpload = $true
+    }
+    if (-not $skipUpload) {
+      $planResult = Invoke-Updater -UpdaterSource $updaterSource -RemoteCandidateRoot "" `
+        -Metadata $script:CandidateMetadata -RemoteAction "Plan"
+      if (-not [bool]$planResult.ok -or [string]$planResult.status -cne "planned") {
+        throw "Remote upgrade plan was rejected: $($planResult.error_code)"
+      }
+      if (-not [bool]$planResult.candidate.resources.candidate_volume.sufficient -or
+          -not [bool]$planResult.candidate.resources.backup_volume.sufficient -or
+          -not [bool]$planResult.candidate.schema_compatible -or
+          -not [bool]$planResult.candidate.platform_compatible) {
+        throw "upgrade_plan_resources_or_identity_invalid"
+      }
+      if ([string]$planResult.candidate.schema_upgrade_kind -ceq "bounded_0012_0013" -and
+          (-not [bool]$planResult.candidate.resources.docker_memory.sufficient -or
+           -not [bool]$planResult.candidate.resources.docker_data_volume.sufficient)) {
+        throw "upgrade_plan_resources_or_identity_invalid"
+      }
     $incomingOperationRoot = "C:\Ruisheng\incoming\$($OperationId.ToLowerInvariant())"
     $remoteCandidateRoot = Join-Path $incomingOperationRoot $script:CandidateMetadata.candidate_id
     $prepare = @"
@@ -794,6 +830,7 @@ foreach (`$directory in @(`$candidatePath, (Join-Path `$candidatePath "images"))
     }
     $result = Invoke-Updater -UpdaterSource $updaterSource `
       -RemoteCandidateRoot $remoteCandidateRoot -Metadata $script:CandidateMetadata
+    }
   }
   else {
     $result = Invoke-Updater -UpdaterSource $updaterSource -RemoteCandidateRoot ""

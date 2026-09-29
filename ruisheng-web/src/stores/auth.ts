@@ -47,7 +47,7 @@ function isUserInfo(value: unknown): value is UserInfo {
   )
 }
 
-function decodeAccessClaims(token: string): Record<string, unknown> | null {
+export function decodeAccessClaims(token: string): Record<string, unknown> | null {
   try {
     const parts = token.split('.')
     if (parts.length !== 3) return null
@@ -90,9 +90,10 @@ export const useAuthStore = defineStore('auth', () => {
     refreshToken.value = s.refresh_token
     setAuthToken(s.access_token)
     try {
-      localStorage.setItem('access_token', s.access_token)
-      localStorage.setItem('refresh_token', s.refresh_token)
       localStorage.setItem('user', JSON.stringify(s.user))
+      localStorage.setItem('access_token', s.access_token)
+      // Other tabs observe this last write as the completed session update.
+      localStorage.setItem('refresh_token', s.refresh_token)
     } catch {}
   }
 
@@ -103,8 +104,8 @@ export const useAuthStore = defineStore('auth', () => {
     setAuthToken(null)
     try {
       localStorage.removeItem('access_token')
-      localStorage.removeItem('refresh_token')
       localStorage.removeItem('user')
+      localStorage.removeItem('refresh_token')
     } catch {}
   }
 

@@ -586,7 +586,7 @@ function ConvertTo-RemoteLiteral([string]$Value) {
 
 function New-RemoteVerifierCommand([string]$RemoteAction) {
   $parts = @(
-    "`$ErrorActionPreference='Stop'",
+    "`$ErrorActionPreference='Stop';",
     "& $(ConvertTo-RemoteLiteral $script:RemoteVerifierPath)",
     "-Action $(ConvertTo-RemoteLiteral $RemoteAction)",
     "-SiteId $(ConvertTo-RemoteLiteral $SiteId)"
@@ -609,7 +609,7 @@ function Invoke-RemoteVerifier([string]$RemoteAction) {
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
   $arguments = @("-T") + (Get-SshOptions) + @(
     $script:SshTarget, "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-    "-NoLogo", "-NoProfile", "-NonInteractive",
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
     "-OutputFormat", "Text", "-EncodedCommand", $encoded
   )
   Assert-FixedExecutable $script:SshPath "Microsoft"

@@ -60,8 +60,10 @@ function Initialize-ProtectedAuditPath {
             ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "audit_directory_is_linked"
         }
-        Set-Acl -LiteralPath $protectedDirectory `
-            -AclObject (New-ProtectedFileSystemSecurity $true)
+        if ($protectedDirectory -cne 'C:\Ruisheng') {
+            Set-Acl -LiteralPath $protectedDirectory `
+                -AclObject (New-ProtectedFileSystemSecurity $true)
+        }
     }
     foreach ($path in @($AuditPath, $StatePath)) {
         if (-not (Test-Path -LiteralPath $path)) {
@@ -90,6 +92,14 @@ function Write-AuditRecord(
         bus_id = $BusId
         device_path = $DevicePath
     }
+    if ($script:ConfigSchema -eq 2) {
+        $record.identity_policy = $script:IdentityPolicy
+        $record.instance_id = $script:InstanceId
+        if (-not [string]::IsNullOrWhiteSpace($script:ConfiguredInstanceId) -and
+            $script:ConfiguredInstanceId -cne $script:InstanceId) {
+            $record.rebound_from = $script:ConfiguredInstanceId
+        }
+    }
     $line = ($record | ConvertTo-Json -Depth 3 -Compress) + [Environment]::NewLine
     [IO.File]::AppendAllText($AuditPath, $line, [Text.UTF8Encoding]::new($false))
 }
@@ -100,7 +110,7 @@ function Write-StateRecord(
     [string]$DevicePath = ""
 ) {
     $record = [ordered]@{
-        schema_version = 1
+        schema_version = $script:ConfigSchema
         result = $Result
         timestamp = [DateTimeOffset]::Now.ToString("o")
         vendor_id = $script:VendorId
@@ -109,6 +119,12 @@ function Write-StateRecord(
         stable_path = $script:StableAlias
         device_path = $DevicePath
         bus_id = $BusId
+    }
+    if ($script:ConfigSchema -eq 2) {
+        $record.Remove('serial_number')
+        $record.instance_id = $script:InstanceId
+        $record.identity_policy = $script:IdentityPolicy
+        $record.configured_instance_id = $script:ConfiguredInstanceId
     }
     $temporary = Join-Path (Split-Path -Parent $StatePath) ([IO.Path]::GetRandomFileName())
     try {
@@ -146,7 +162,13 @@ function Invoke-NativeCommand(
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $start.RedirectStandardInput = $true
+    # .NET Framework initializes its stdin writer from Console.InputEncoding;
+    # a BOM-bearing console encoding can write a preamble before BaseStream.
+    $previousInputEncoding = [Console]::InputEncoding
+    [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+    try {
     $process = [Diagnostics.Process]::Start($start)
+    } finally { [Console]::InputEncoding = $previousInputEncoding }
     $outputTask = $process.StandardOutput.ReadToEndAsync()
     $errorTask = $process.StandardError.ReadToEndAsync()
     $inputStream = $process.StandardInput.BaseStream
@@ -178,17 +200,51 @@ function Invoke-Usbipd([string[]]$Arguments) {
 }
 
 function Get-TargetDevice {
+    if ([string]::IsNullOrWhiteSpace($script:ConfiguredInstanceId)) {
+        $script:ConfiguredInstanceId = $script:InstanceId
+    }
+    if ([string]::IsNullOrWhiteSpace($script:IdentityPolicy)) {
+        $script:IdentityPolicy = 'exact_instance'
+    }
     $state = (Invoke-Usbipd @("state")) | ConvertFrom-Json -ErrorAction Stop
     $prefix = [Regex]::Escape("USB\VID_$($script:VendorId)&PID_$($script:ProductId)")
     $serial = [Regex]::Escape($script:SerialNumber)
     $instancePattern = "^${prefix}(?:&MI_[0-9A-F]{2})?\\${serial}$"
-    $matches = @(
+    $identityPattern = "^${prefix}(?:&MI_[0-9A-F]{2})?\\[A-Za-z0-9&._-]{1,160}$"
+    $busPattern = '^[0-9]+-[0-9]+$'
+    $candidates = @(if ($script:ConfigSchema -eq 2) {
+        # Keep an approved instance even when its BusId is malformed. Filtering
+        # it out here reports device_not_present and hides invalid_bus_id.
+        $identified = @($state.Devices | Where-Object {
+            [string]$_.InstanceId -match $identityPattern
+        })
+        $matching = @($identified | Where-Object { [string]$_.BusId -match $busPattern })
+        $approved = @($identified | Where-Object { [string]$_.InstanceId -ieq $script:ConfiguredInstanceId })
+        if ($approved.Count -gt 1) { throw "device_identity_ambiguous" }
+        if ($approved.Count -eq 1) {
+            # Prefer the approved instance when it is present. This allows a
+            # second, same-model adapter to remain connected without sending
+            # traffic to it accidentally.
+            $approved
+        } elseif ($script:IdentityPolicy -ceq 'single_present_device' -and $matching.Count -eq 1) {
+            # CH340 has no stable serial. When the approved instance has
+            # disappeared, rebind only if exactly one approved VID/PID device
+            # is currently present. The selected InstanceId is persisted in
+            # state/audit as evidence of the rebind.
+            $script:InstanceId = ([string]$matching[0].InstanceId).ToUpperInvariant()
+            $matching
+        } elseif ($script:IdentityPolicy -ceq 'exact_instance') {
+            @()
+        } else {
+            $matching
+        }
+    } else {
         $state.Devices | Where-Object { [string]$_.InstanceId -match $instancePattern }
-    )
-    if ($matches.Count -eq 0) { throw "device_not_present" }
-    if ($matches.Count -ne 1) { throw "device_identity_ambiguous" }
-    Assert-Pattern "bus_id" ([string]$matches[0].BusId) '^[0-9]+-[0-9]+$'
-    return $matches[0]
+    })
+    if ($candidates.Count -eq 0) { throw "device_not_present" }
+    if ($candidates.Count -ne 1) { throw "device_identity_ambiguous" }
+    Assert-Pattern "bus_id" ([string]$candidates[0].BusId) '^[0-9]+-[0-9]+$'
+    return $candidates[0]
 }
 
 function Invoke-WslScript([string]$Script, [string[]]$Arguments, [int]$TimeoutSeconds = 30) {
@@ -233,9 +289,42 @@ vendor=$(printf '%s' "$1" | tr 'A-F' 'a-f')
 product=$(printf '%s' "$2" | tr 'A-F' 'a-f')
 serial=$(printf '%s' "$3" | tr 'A-Z' 'a-z')
 alias_path=$4
+physical_busid=$5
+identity_mode=${6:-usb_serial}
+
+# A stale VHCI slot can retain the same USB serial and ttyUSB0 indefinitely.
+# Bind sysfs identity to the currently attached usbipd bus/device identifier.
+bus_number=${physical_busid%-*}
+device_number=${physical_busid#*-}
+remote_devid=$(printf '%08x' "$((bus_number * 65536 + device_number))")
+usb_path=""
+attach_attempt=0
+# usbipd can return while the slot is still 005 (enumerating). Keep the
+# same identity guard and wait briefly for that exact slot to become active.
+while [ "$attach_attempt" -lt 10 ]; do
+    matched_slots=0
+    usb_path=""
+    for status_file in /sys/devices/platform/vhci_hcd.*/status; do
+        [ -f "$status_file" ] || continue
+        while read -r hub port status speed devid sockfd local_busid; do
+            [ "$devid" = "$remote_devid" ] && [ "$status" = "006" ] || continue
+            matched_slots=$((matched_slots + 1))
+            usb_path=$(readlink -f "/sys/bus/usb/devices/$local_busid")
+        done < "$status_file"
+    done
+    [ "$matched_slots" -le 1 ] || exit 43
+    [ "$matched_slots" -eq 1 ] && [ -n "$usb_path" ] && break
+    attach_attempt=$((attach_attempt + 1))
+    sleep 1
+done
+[ "$matched_slots" -eq 1 ] && [ -n "$usb_path" ] || exit 43
 
 modprobe usbserial
-modprobe ftdi_sio
+case "$vendor:$product:$identity_mode" in
+    0403:6001:usb_serial) modprobe ftdi_sio ;;
+    1a86:7523:windows_instance) modprobe ch341 ;;
+    *) exit 44 ;;
+esac
 
 attempt=0
 while [ "$attempt" -lt 30 ]; do
@@ -243,12 +332,17 @@ while [ "$attempt" -lt 30 ]; do
     for tty_path in /sys/class/tty/ttyUSB* /sys/class/tty/ttyACM*; do
         [ -e "$tty_path" ] || continue
         current=$(readlink -f "$tty_path/device")
+        case "$current" in "$usb_path"/*) ;; *) continue ;; esac
         while [ -n "$current" ] && [ "$current" != "/" ]; do
-            if [ -f "$current/idVendor" ] && [ -f "$current/idProduct" ] && [ -f "$current/serial" ]; then
+            if [ -f "$current/idVendor" ] && [ -f "$current/idProduct" ]; then
                 current_vendor=$(tr 'A-F' 'a-f' < "$current/idVendor")
                 current_product=$(tr 'A-F' 'a-f' < "$current/idProduct")
-                current_serial=$(tr 'A-Z' 'a-z' < "$current/serial")
-                if [ "$current_vendor" = "$vendor" ] && [ "$current_product" = "$product" ] && [ "$current_serial" = "$serial" ]; then
+                current_serial=""
+                if [ -f "$current/serial" ]; then current_serial=$(tr 'A-Z' 'a-z' < "$current/serial"); fi
+                # Serial-less CH340 is pinned in Windows to the approved exact
+                # InstanceId and here to its single current VHCI path, not any tty.
+                if [ "$current" = "$usb_path" ] && [ "$current_vendor" = "$vendor" ] && [ "$current_product" = "$product" ] &&
+                    { [ "$identity_mode" = windows_instance ] || [ "$current_serial" = "$serial" ]; }; then
                     device_node="/dev/$(basename "$tty_path")"
                     break 2
                 fi
@@ -269,7 +363,7 @@ ln -s "$device_node" "$alias_path"
 printf '%s\n' "$device_node"
 '@
     $result = Invoke-WslScript $linuxScript @(
-        $script:VendorId, $script:ProductId, $script:SerialNumber, $script:StableAlias
+        $script:VendorId, $script:ProductId, $script:SerialNumber, $script:StableAlias, $busId, $script:IdentityMode
     ) 45
     if ($result.ExitCode -ne 0) { throw "wsl_device_node_unavailable" }
     $node = [string](($result.Output -split "`r?`n") | Where-Object { $_ } | Select-Object -Last 1)
@@ -284,25 +378,43 @@ $ConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
 $config = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json -ErrorAction Stop
 if ($config.schema_version -is [bool] -or
     -not ($config.schema_version -is [int] -or $config.schema_version -is [long]) -or
-    [int64]$config.schema_version -ne 1) {
+    [int64]$config.schema_version -notin @(1,2)) {
     throw "unsupported_config_schema"
 }
 
 $script:VendorId = ([string]$config.adapter.vendor_id).ToUpperInvariant()
 $script:ProductId = ([string]$config.adapter.product_id).ToUpperInvariant()
 $script:SerialNumber = [string]$config.adapter.serial_number
+$script:ConfigSchema = [int]$config.schema_version
+$script:InstanceId = [string]$config.adapter.instance_id
+$script:ConfiguredInstanceId = $script:InstanceId
+$script:IdentityPolicy = 'exact_instance'
+$script:IdentityMode = 'usb_serial'
 $script:StableAlias = [string]$config.adapter.stable_path
 $script:WslDistribution = [string]$config.adapter.wsl_distribution
 $retrySeconds = [int]$config.adapter.retry_seconds
 
 Assert-Pattern "vendor_id" $script:VendorId '^[0-9A-F]{4}$'
 Assert-Pattern "product_id" $script:ProductId '^[0-9A-F]{4}$'
-if (($script:VendorId, $script:ProductId) -join ":" -ne "0403:6001") {
-    throw "unsupported_usb_adapter"
-}
-Assert-Pattern "serial_number" $script:SerialNumber '^[A-Za-z0-9._-]{1,64}$'
-if ($script:SerialNumber -match '(?i)unresolved|change[_-]?me|pending|tbd') {
-    throw "invalid_serial_number"
+if ($script:ConfigSchema -eq 2) {
+    if (($script:VendorId, $script:ProductId) -join ':' -cne '1A86:7523') { throw 'unsupported_usb_adapter' }
+    Assert-Pattern 'instance_id' $script:InstanceId '^USB\\VID_1A86&PID_7523\\[A-Za-z0-9&._-]{1,160}$'
+    if ($script:InstanceId -match '(?i)unresolved|change[_-]?me|pending|tbd' -or
+        $config.adapter.PSObject.Properties.Name -contains 'serial_number') { throw 'invalid_instance_id' }
+    $script:InstanceId = $script:InstanceId.ToUpperInvariant()
+    if ($config.adapter.PSObject.Properties.Name -contains 'identity_policy') {
+        $script:IdentityPolicy = [string]$config.adapter.identity_policy
+    }
+    if ($script:IdentityPolicy -notin @('exact_instance', 'single_present_device')) {
+        throw 'invalid_identity_policy'
+    }
+    $script:SerialNumber = '-'
+    $script:IdentityMode = 'windows_instance'
+} else {
+    if (($script:VendorId, $script:ProductId) -join ':' -cne '0403:6001') { throw 'unsupported_usb_adapter' }
+    Assert-Pattern 'serial_number' $script:SerialNumber '^[A-Za-z0-9._-]{1,64}$'
+    if ($script:SerialNumber -match '(?i)unresolved|change[_-]?me|pending|tbd' -or
+        $config.adapter.PSObject.Properties.Name -contains 'instance_id') { throw 'invalid_serial_number' }
 }
 Assert-Pattern "stable_path" $script:StableAlias '^/dev/ruisheng-[A-Za-z0-9._-]+$'
 if ($script:WslDistribution -cne "docker-desktop") { throw "invalid_wsl_distribution" }

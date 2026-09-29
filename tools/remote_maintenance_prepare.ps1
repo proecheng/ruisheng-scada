@@ -41,6 +41,30 @@ function Set-RestrictedDirectory {
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
   }
 
+  if ([IO.Path]::GetFullPath($Path).TrimEnd('\').Equals('C:\Ruisheng\audit', [StringComparison]::OrdinalIgnoreCase) -and
+      (Test-Path -LiteralPath $Path -PathType Container)) {
+    $auditAcl = Get-Acl -LiteralPath $Path
+    if (-not $auditAcl.AreAccessRulesProtected) { throw "restricted_acl_inheritance_enabled" }
+    try { $auditOwner = $auditAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { throw "restricted_acl_owner_invalid" }
+    if ($auditOwner -notin @('S-1-5-18','S-1-5-32-544')) { throw "restricted_acl_owner_invalid" }
+    $auditSids = @{'S-1-5-18'=$false;'S-1-5-32-544'=$false}
+    $auditRules = @($auditAcl.Access)
+    if ($auditRules.Count -ne 2) { throw "restricted_acl_invalid" }
+    foreach ($auditRule in $auditRules) {
+      try { $auditSid = $auditRule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { throw "restricted_acl_invalid" }
+      if (-not $auditSids.ContainsKey($auditSid) -or $auditSids[$auditSid] -or $auditRule.IsInherited -or $auditRule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $auditRule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or $auditRule.InheritanceFlags -ne ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit) -or $auditRule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw "restricted_acl_invalid" }
+      $auditSids[$auditSid] = $true
+    }
+    if ($auditSids.Values -contains $false) { throw "restricted_acl_required_identity_missing" }
+    if ($CreateAuditMutex) {
+      $mutexPath = Join-Path $Path ".remote-maintenance-audit.lock"
+      if (-not (Test-Path -LiteralPath $mutexPath -PathType Leaf)) {
+        $stream = [IO.File]::Open($mutexPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $stream.Dispose()
+      }
+    }
+    return
+  }
   $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
   $sidValues = @($currentSid.Value, "S-1-5-18", "S-1-5-32-544") | Select-Object -Unique
   $directoryAcl = New-Object Security.AccessControl.DirectorySecurity
@@ -198,6 +222,31 @@ function Set-RestrictedDirectory {
   }
   else {
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
+  }
+
+  if ([IO.Path]::GetFullPath($Path).TrimEnd('\').Equals('C:\Ruisheng\audit', [StringComparison]::OrdinalIgnoreCase) -and
+      (Test-Path -LiteralPath $Path -PathType Container)) {
+    $auditAcl = Get-Acl -LiteralPath $Path
+    if (-not $auditAcl.AreAccessRulesProtected) { throw "restricted_acl_inheritance_enabled" }
+    try { $auditOwner = $auditAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { throw "restricted_acl_owner_invalid" }
+    if ($auditOwner -notin @('S-1-5-18','S-1-5-32-544')) { throw "restricted_acl_owner_invalid" }
+    $auditSids = @{'S-1-5-18'=$false;'S-1-5-32-544'=$false}
+    $auditRules = @($auditAcl.Access)
+    if ($auditRules.Count -ne 2) { throw "restricted_acl_invalid" }
+    foreach ($auditRule in $auditRules) {
+      try { $auditSid = $auditRule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { throw "restricted_acl_invalid" }
+      if (-not $auditSids.ContainsKey($auditSid) -or $auditSids[$auditSid] -or $auditRule.IsInherited -or $auditRule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $auditRule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or $auditRule.InheritanceFlags -ne ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit) -or $auditRule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) { throw "restricted_acl_invalid" }
+      $auditSids[$auditSid] = $true
+    }
+    if ($auditSids.Values -contains $false) { throw "restricted_acl_required_identity_missing" }
+    if ($CreateAuditMutex) {
+      $mutexPath = Join-Path $Path ".remote-maintenance-audit.lock"
+      if (-not (Test-Path -LiteralPath $mutexPath -PathType Leaf)) {
+        $stream = [IO.File]::Open($mutexPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $stream.Dispose()
+      }
+    }
+    return
   }
 
   $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -389,7 +438,8 @@ catch {
   throw
 }
 try {
-  Set-RestrictedDirectory -Path $AuditDirectory -CreateAuditMutex
+  # The device-owned audit root is validated in place; no recursive ACL rewrite.
+  Set-RestrictedDirectory -Path $AuditDirectory -CreateAuditMutex -NoRecursion
 }
 finally { Release-PreparationLocks }
 [ordered]@{

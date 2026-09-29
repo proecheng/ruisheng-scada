@@ -26,9 +26,16 @@ def pick_sample_interval(duration_sec: int) -> int:
 async def load_realtime(session: AsyncSession, dev_number: str) -> list[dict[str, object]]:
     stmt = text("""
         SELECT r.dev_number, r.point_id, r.org_value, r.rt_value, r.recorded_at,
-               p.point_name, p.user_point_name, p.point_unit
+               p.point_name, p.user_point_name, p.point_unit, display.display_bits
         FROM point_data_realtime r
         LEFT JOIN device_points p ON p.id = r.point_id
+        LEFT JOIN LATERAL (
+            SELECT base_msg_value::int AS display_bits FROM device_static_data
+            WHERE dev_number = r.dev_number
+              AND base_msg_name = 'point_display_bits:' || r.point_id::text
+              AND base_msg_value ~ '^(1[0-6]|[1-9])$'
+            ORDER BY id DESC LIMIT 1
+        ) display ON true
         WHERE r.dev_number = :d
         ORDER BY r.point_id
     """)
@@ -67,13 +74,13 @@ async def load_history(
             WHERE dev_number = :d
               {point_filter}
               AND recorded_at >= :f AND recorded_at < :t
-            ORDER BY recorded_at ASC
+            ORDER BY recorded_at ASC, point_id ASC
             OFFSET :o LIMIT :l
         """)
     else:
         sql = text(f"""
             WITH bucketed AS (
-                SELECT dev_number, point_id, org_value, rt_value,
+                SELECT dev_number, point_id, org_value, rt_value, recorded_at AS sample_at,
                        time_bucket(make_interval(secs => :s), recorded_at) AS bucket_at
                 FROM point_data_history
                 WHERE dev_number = :d
@@ -81,8 +88,16 @@ async def load_history(
                   AND recorded_at >= :f AND recorded_at < :t
             )
             SELECT dev_number, point_id,
-                   avg(org_value) AS org_value,
-                   avg(rt_value)  AS rt_value,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM device_static_data
+                       WHERE dev_number = :d AND base_msg_name = 'point_display_bits:' || bucketed.point_id::text
+                         AND base_msg_value ~ '^(1[0-6]|[1-9])$'
+                   ) THEN last(org_value, sample_at) ELSE avg(org_value) END AS org_value,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM device_static_data
+                       WHERE dev_number = :d AND base_msg_name = 'point_display_bits:' || bucketed.point_id::text
+                         AND base_msg_value ~ '^(1[0-6]|[1-9])$'
+                   ) THEN last(rt_value, sample_at) ELSE avg(rt_value) END AS rt_value,
                    bucket_at AS recorded_at
             FROM bucketed
             GROUP BY dev_number, point_id, bucket_at

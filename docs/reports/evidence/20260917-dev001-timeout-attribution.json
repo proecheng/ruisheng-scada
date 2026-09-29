@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-09-17T16:01:28.4593819+08:00",
+  "active": {
+    "schema_version": 1,
+    "candidate_id": "deploy-20260917.1",
+    "logical_identity": "sha256:64e66c758a137891b30fc894ea5ad880d47136ae810f74b22026edbf7466cc6d",
+    "source_commit": "3a3ad8dcd2333f72d9d15eab3c305d3350371b6a",
+    "candidate_root": "C:\\Ruisheng\\candidates\\deploy-20260917.1",
+    "site_root": "C:\\Ruisheng\\candidates\\site-deploy-20260831.1",
+    "committed_at": "2026-09-17T03:53:04.0805185+00:00",
+    "operation_id": "ca28148c-5c97-496a-b102-5ef361ad602d"
+  },
+  "captures": [
+    {
+      "source": "tmp-test-logs\\field-acceptance-20260916\\investigation\\attribution-capture-2.json",
+      "sha256": "5c81e87327a11aa663fb11ae24dd248bec3682726b6f708ed0dd5ac9d8a30f87",
+      "start": "2026-09-17T07:46:43+00:00",
+      "end": "2026-09-17T07:48:13+00:00",
+      "duration_seconds": 90.04,
+      "clock_offset_change_ns": -5757482,
+      "requests": 20,
+      "outcomes": {
+        "valid_frame": 18,
+        "uart_line_error_without_valid_frame": 1,
+        "invalid_or_partial_response": 1
+      },
+      "request_bytes_all_expected": true,
+      "tx_completions_all_success": true,
+      "payload_truncated": false,
+      "usb_transfer_errors": 0,
+      "replay_accepted_frames": 18,
+      "orphan_packets": 0,
+      "cleanup_markers": [
+        "DEBUGFS_UNMOUNTED",
+        "CAPTURE_DIRECTORY_REMOVED",
+        "USBMON_UNLOAD_DEFERRED"
+      ],
+      "capture_exit": 0,
+      "capture_stderr": "Terminated\n"
+    },
+    {
+      "source": "tmp-test-logs\\field-acceptance-20260916\\investigation\\attribution-capture-3.json",
+      "sha256": "a09ab8a987e30527581cdb6da6b58021dd1160754bddace62cfd6d537da6ade5",
+      "start": "2026-09-17T07:49:15+00:00",
+      "end": "2026-09-17T07:50:45+00:00",
+      "duration_seconds": 90.03,
+      "clock_offset_change_ns": -5919427,
+      "requests": 18,
+      "outcomes": {
+        "valid_frame": 18
+      },
+      "request_bytes_all_expected": true,
+      "tx_completions_all_success": true,
+      "payload_truncated": false,
+      "usb_transfer_errors": 0,
+      "replay_accepted_frames": 18,
+      "orphan_packets": 0,
+      "cleanup_markers": [
+        "DEBUGFS_UNMOUNTED",
+        "CAPTURE_DIRECTORY_REMOVED",
+        "USBMON_UNLOAD_DEFERRED"
+      ],
+      "capture_exit": 0,
+      "capture_stderr": "Terminated\n"
+    },
+    {
+      "source": "tmp-test-logs\\field-acceptance-20260916\\investigation\\attribution-capture-4.json",
+      "sha256": "7fd346f6754fe4d5037383d9e4114a8b74de3e2550833a04d51cacfd139de648",
+      "start": "2026-09-17T07:52:32+00:00",
+      "end": "2026-09-17T07:54:02+00:00",
+      "duration_seconds": 90.02,
+      "clock_offset_change_ns": -6840757,
+      "requests": 19,
+      "outcomes": {
+        "valid_frame": 18,
+        "no_response_bytes": 1
+      },
+      "request_bytes_all_expected": true,
+      "tx_completions_all_success": true,
+      "payload_truncated": false,
+      "usb_transfer_errors": 0,
+      "replay_accepted_frames": 18,
+      "orphan_packets": 0,
+      "cleanup_markers": [
+        "DEBUGFS_UNMOUNTED",
+        "CAPTURE_DIRECTORY_REMOVED",
+        "USBMON_UNLOAD_DEFERRED"
+      ],
+      "capture_exit": 0,
+      "capture_stderr": "Terminated\n"
+    },
+    {
+      "source": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\attribution-capture-5.json",
+      "sha256": "9ace43c080f177815e36f5b760bd9cd824c67a17d362031ea5c9fddee70dd566",
+      "start": "2026-09-17T07:55:32+00:00",
+      "end": "2026-09-17T07:57:02+00:00",
+      "duration_seconds": 90.03,
+      "clock_offset_change_ns": -7788462,
+      "requests": 18,
+      "outcomes": {
+        "valid_frame": 18
+      },
+      "request_bytes_all_expected": true,
+      "tx_completions_all_success": true,
+      "payload_truncated": false,
+      "usb_transfer_errors": 0,
+      "replay_accepted_frames": 18,
+      "orphan_packets": 0,
+      "cleanup_markers": [
+        "DEBUGFS_UNMOUNTED",
+        "CAPTURE_DIRECTORY_REMOVED",
+        "USBMON_UNLOAD_DEFERRED"
+      ],
+      "capture_exit": 0,
+      "capture_stderr": "Terminated\n"
+    },
+    {
+      "source": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\attribution-capture-6.json",
+      "sha256": "3bec9b3c21ff973aa21732e58e8152ae19aec15845fd41105b7aa0c43077e95d",
+      "start": "2026-09-17T07:57:17+00:00",
+      "end": "2026-09-17T07:58:47+00:00",
+      "duration_seconds": 90.03,
+      "clock_offset_change_ns": -5466501,
+      "requests": 18,
+      "outcomes": {
+        "valid_frame": 18
+      },
+      "request_bytes_all_expected": true,
+      "tx_completions_all_success": true,
+      "payload_truncated": false,
+      "usb_transfer_errors": 0,
+      "replay_accepted_frames": 18,
+      "orphan_packets": 0,
+      "cleanup_markers": [
+        "DEBUGFS_UNMOUNTED",
+        "CAPTURE_DIRECTORY_REMOVED",
+        "USBMON_UNLOAD_DEFERRED"
+      ],
+      "capture_exit": 0,
+      "capture_stderr": "Terminated\n"
+    },
+    {
+      "source": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\investigation\\attribution-capture-7.json",
+      "sha256": "73be7defc74dcd377e8e7739c79efb1fb8bd414c092bf45c25b7699ebdc442b6",
+      "start": "2026-09-17T07:59:01+00:00",
+      "end": "2026-09-17T08:00:31+00:00",
+      "duration_seconds": 90.03,
+      "clock_offset_change_ns": -7431124,
+      "requests": 18,
+      "outcomes": {
+        "valid_frame": 18
+      },
+      "request_bytes_all_expected": true,
+      "tx_completions_all_success": true,
+      "payload_truncated": false,
+      "usb_transfer_errors": 0,
+      "replay_accepted_frames": 18,
+      "orphan_packets": 0,
+      "cleanup_markers": [
+        "DEBUGFS_UNMOUNTED",
+        "CAPTURE_DIRECTORY_REMOVED",
+        "USBMON_UNLOAD_DEFERRED"
+      ],
+      "capture_exit": 0,
+      "capture_stderr": "Terminated\n"
+    }
+  ],
+  "request_attempts": 111,
+  "outcomes": {
+    "valid_frame": 108,
+    "uart_line_error_without_valid_frame": 1,
+    "invalid_or_partial_response": 1,
+    "no_response_bytes": 1
+  },
+  "valid_frames": 108,
+  "matched_complete_database_rounds": 108,
+  "matched_timeout_events": 3,
+  "valid_response_completion_ms": [
+    105.141,
+    408.715
+  ],
+  "max_abs_database_usb_time_difference_ms": 4.869,
+  "recovered_retries": 3,
+  "exhausted_retries": 0,
+  "uart_error_attempts": 1,
+  "temporary_capture_resources_removed": true,
+  "runtime_source_matches_reviewed_code": true,
+  "runtime_health": [
+    {
+      "output": [
+        "{\"batch\":\"ready\",\"database\":\"ready\",\"outbox\":\"ready\",\"redis\":\"ready\",\"service\":\"ready\",\"status\":\"ready\"}"
+      ],
+      "name": "ruisheng-gw",
+      "exit": 0
+    },
+    {
+      "output": [
+        "{\"database\":\"ready\",\"redis\":\"ready\",\"service\":\"ready\",\"status\":\"ready\"}"
+      ],
+      "name": "ruisheng-api",
+      "exit": 0
+    },
+    {
+      "output": [],
+      "name": "ruisheng-web",
+      "exit": 0
+    }
+  ],
+  "software_regression_tests": 49,
+  "source_sha256": {
+    "attribution-crosscheck.json": "f6e7cf734388ac3211977ccda12ee66e7c5741dd1f1b127e47787caf5be5a7df",
+    "attribution-software-regression.xml": "2ec6aced43451760d8e2fcc36f00b1c256e6c8105e7404cf550d0dced6142891",
+    "analyze-attribution.py": "2e204e14a3cedf48dc2313b30d98cb95cf24fef0efc787d9ce98b6efd2f09f2f",
+    "correlate-attribution.py": "0fe6dd22e5bb34d72b48efcf2697968808863f620adc7f1adeaa3402d743a052",
+    "attribution-final-health.json": "ff2166f81b0d5f1682aa36a8335fceb9e562133b9db026f3c66f5a70dbc32df3",
+    "attribution-passive-usb-90s-v2.remote.ps1": "58b5405c0c6e1c25563cf46f9cf449dfb39c170b43265a2dadf96d92ec779c26",
+    "20260917-attribution-final.json": "735cbecafab25d0a3771fb80ce76e106b26b2c52e23a9ec73d644d95d466bc57"
+  },
+  "limitations": [
+    "USB transfer completion proves delivery to the adapter, not electrical reception by the MCU.",
+    "UART error/partial or missing payload precedes application parsing but does not uniquely distinguish MCU firmware, wiring, converter or lower driver/USBIP faults.",
+    "Only these bounded capture windows have per-attempt attribution; do not extrapolate to every 24h event."
+  ],
+  "findings": [
+    "Captured failures precede application framing; all 108 valid replies reached 38-point database samples.",
+    "No new reproduced acquisition application defect; prioritize board firmware and RS485 link boundary checks.",
+    "No exhausted retry captured; cannot assign a physical root cause to every earlier missing round."
+  ],
+  "production_code_changed": false,
+  "user_requested_priority": "Attribute software vs device/link; fix evidenced platform defects, otherwise provide actionable firmware/hardware guidance."
+}

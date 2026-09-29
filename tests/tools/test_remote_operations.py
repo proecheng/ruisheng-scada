@@ -654,6 +654,50 @@ def test_remote_debug_state_guards_pid_reuse_and_supports_all_actions() -> None:
     assert "docker exec ruisheng-gw python" in script
 
 
+def test_remote_debug_verifier_uses_process_only_execution_policy() -> None:
+    script = _read(DEBUG_SCRIPT)
+    start = script.split("function Start-Tunnel", 1)[1].split("function Stop-Tunnel", 1)[0]
+    health = script.split("function Test-RemoteHealth", 1)[1].split("switch ($Action)", 1)[0]
+    assert '"-ExecutionPolicy", "Bypass"' in start
+    assert "-ExecutionPolicy Bypass -EncodedCommand $encoded" in health
+    assert "Set-ExecutionPolicy" not in script
+    assert "-Action Authorize -SiteId $site -Feature remote-support" in script
+
+
+@pytest.mark.parametrize(
+    ("remaining", "expected"),
+    [(365 * 24 * 60 * 60 * 1000, 5000), (5000, 5000), (12.5, 13), (0.1, 1)],
+)
+def test_remote_debug_guard_wait_handles_annual_and_expiring_grants(
+    remaining: float,
+    expected: int,
+) -> None:
+    guard = (
+        _read(DEBUG_SCRIPT)
+        .split("function Get-RemoteSupportGuard", 1)[1]
+        .split("function Test-TcpPort", 1)[0]
+    )
+    match = re.search(r"Start-Sleep -Milliseconds (.+)", guard)
+    assert match is not None
+    completed = subprocess.run(
+        [
+            _powershell(),
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"$ErrorActionPreference='Stop';$remaining=[double]{remaining};"
+            f"Write-Output {match.group(1)}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env=_powershell_env(),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert int(completed.stdout.strip()) == expected
+
+
 @pytest.mark.parametrize(
     ("status", "body", "expected_exit"),
     (
@@ -901,7 +945,9 @@ def test_maintenance_lock_is_leased_pid_safe_and_reclaimed_fail_closed() -> None
     assert "process_started_at = $ProcessStartedAt" in script
     assert "Get-Process -Id ([int]$Record.pid)" in script
     assert "process.StartTime.ToUniversalTime()" in script
-    assert "-not $expired -or (Test-MatchingProcess -Record $existing)" in script
+    # A structured lease whose recorded owner process no longer exists is an
+    # orphan and may be reclaimed immediately, even before its nominal expiry.
+    assert "Test-MatchingProcess -Record $existing" in script
     assert 'throw "lock_conflict_unrecognized"' in script
     assert "stale_lock_reclaimed" in script
     assert script.index("Acquire-LeasedLock -Path $SharedLockPath") < script.index(
@@ -951,10 +997,13 @@ def test_hotfix_deployment_handoff_survives_reservation_exit(tmp_path: Path) -> 
     )[0]
     template = reservation.split("$template = @'", 1)[1].split("\n'@", 1)[0]
     release_function = template.split("function Release-Locks {", 1)[1].split("\n\ntry {", 1)[0]
+    coordination = hotfix.split("\nfunction Convert-CoordinationJson {", 1)[1].split("\n}\n", 1)[0]
     shared = tmp_path / "shared.lock"
     legacy = tmp_path / "legacy.lock"
     invocation = f"""
 $ErrorActionPreference = 'Stop'
+function Convert-CoordinationJson {{{coordination}
+}}
 $OperationId = '00000000-0000-4000-8000-000000000071'
 $Action = 'hotfix-gw'
 $ProcessStartedAt = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
@@ -1136,6 +1185,83 @@ def test_maintenance_status_and_dry_run_make_no_target_writes(tmp_path: Path) ->
         if path.is_file()
     ) == ["active-release.json"]
     assert not layout["audit"].exists()
+
+
+@pytest.mark.parametrize("shell_name", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("action", ["Status", "StartApp", "RestartApp", "StopApp"])
+def test_maintenance_persistent_state_blocks_mutations_but_allows_status(
+    tmp_path: Path, monkeypatch, shell_name: str, action: str
+) -> None:
+    shell = shutil.which(shell_name)
+    if not shell:
+        pytest.skip(f"{shell_name} unavailable")
+    layout = _remote_layout(tmp_path)
+    monkeypatch.setattr(sys.modules[__name__], "_powershell", lambda: shell)
+    state = layout["site"] / ".remote-maintenance-state"
+    operation = "00000000-0000-4000-8000-000000000099"
+    marker = {
+        "schema_version": 1,
+        "operation_id": operation,
+        "site_root": str(layout["site"]),
+        "status": "active",
+        "source_identity": "sha256:" + "a" * 64,
+        "candidate_identity": "sha256:" + "b" * 64,
+        "source_head": "0012_alarm_notification_runtime",
+        "target_head": "0013_serial_polling_profile",
+        "journal_path": str(state / f"full-upgrade-{operation}.json"),
+        "updated_at": "2000-01-01T00:00:00.0000000+00:00",
+    }
+    (state / "full-upgrade-maintenance.json").write_text(json.dumps(marker), encoding="utf-8")
+    before = _tree_digest(layout["site"])
+    result, commands = _run_remote_script(tmp_path, layout, action=action)
+    assert _tree_digest(layout["site"]) == before
+    if action == "Status":
+        assert result["status"] == "observed", result
+        assert not any("\tup\t" in f"\t{command}\t" for command in commands)
+    else:
+        assert result["error_code"] == "full_upgrade_maintenance_active", result
+        assert commands == []
+
+
+@pytest.mark.parametrize("shell_name", ["powershell.exe", "pwsh.exe"])
+def test_maintenance_new_marker_blocks_interrupted_operation_reconciliation(
+    tmp_path: Path, monkeypatch, shell_name: str
+) -> None:
+    shell = shutil.which(shell_name)
+    if not shell:
+        pytest.skip(f"{shell_name} unavailable")
+    layout = _remote_layout(tmp_path)
+    _prepare_restricted_layout(layout)
+    monkeypatch.setattr(sys.modules[__name__], "_powershell", lambda: shell)
+    setup = r"""
+$record = [ordered]@{
+  schema_version=1; operation_id=$OperationId; action=$Action; target=$RequestedTarget;
+  candidate_id=(Split-Path -Leaf $CandidateRoot); reason_hash=(Get-Sha256Text -Text $Reason);
+  status='executing'; ok=$false; audit_id='60000000-0000-4000-8000-000000000054';
+  started_at=[DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o');stopped=@();started=@();remaining=@();
+  recovery_hint='';error_code='';services=@()
+}
+Write-JsonAtomic -Path $OperationPath -Value $record
+$marker=[ordered]@{schema_version=1;operation_id=$OperationId;site_root=$SiteRoot;status='active';
+ source_identity=('sha256:'+('a'*64));candidate_identity=('sha256:'+('b'*64));
+ source_head='0012_alarm_notification_runtime';target_head='0013_serial_polling_profile';
+ journal_path=(Join-Path $StateDirectory "full-upgrade-$OperationId.json");updated_at=[DateTimeOffset]::UtcNow.ToString('o')}
+Write-JsonAtomic -Path (Join-Path $StateDirectory 'full-upgrade-maintenance.json') -Value $marker
+"""
+    result, commands = _run_remote_script(
+        tmp_path,
+        layout,
+        action="StartApp",
+        scenario=_restricted_scenario(setup),
+    )
+    assert result["error_code"] == "full_upgrade_maintenance_active", result
+    assert commands == []
+    operation = json.loads(
+        (
+            layout["site"] / ".remote-maintenance-state/00000000-0000-4000-8000-000000000001.json"
+        ).read_text()
+    )
+    assert operation["status"] == "executing"
 
 
 @pytest.mark.parametrize(
@@ -1532,8 +1658,8 @@ if ($LASTEXITCODE -ne 0) {{ throw 'failed to enable fixture ACL inheritance' }}
             """
 $record = [ordered]@{
   schema_version=1; lock_name='shared-maintenance';
-  operation_id='10000000-0000-4000-8000-000000000031'; action='hotfix-gw'; pid=999999;
-  process_started_at='2000-01-01T00:00:00Z'; target='fixture';
+  operation_id='10000000-0000-4000-8000-000000000031'; action='hotfix-gw'; pid=$PID;
+  process_started_at=$ProcessStartedAt; target='fixture';
   acquired_at=[DateTimeOffset]::UtcNow.ToString('o');
   expires_at=[DateTimeOffset]::UtcNow.AddMinutes(5).ToString('o')
 }

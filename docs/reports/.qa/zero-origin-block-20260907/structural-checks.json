@@ -1,0 +1,15 @@
+{
+  "output": "D:\\江苏润盛\\docs\\reports\\江苏润盛_零起点整块读取测试报告_20260907.docx",
+  "source": "D:\\江苏润盛\\docs\\superpowers\\specs\\evidence\\zero-origin-block-20260907\\RUN-RESULTS.md",
+  "source_sha256": "cf578807ff66877ba913ce07c96ef4e8a15793695df33b6a42ea5d09235b26e4",
+  "docx_sha256": "5da5850183c27be858a65d7893bfe844438cb3584e7d282ea306fbebed245101",
+  "preset": "compact_reference_guide",
+  "header": "memo_masthead",
+  "table_count": 3,
+  "raw_rows": 36,
+  "all_source_paragraphs_preserved": true,
+  "raw_values_equal_json_evidence": true,
+  "formal_acceptance": "BLOCKED",
+  "evidence_links_existing": 14,
+  "table_geometry": 0
+}

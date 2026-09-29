@@ -21,3 +21,10 @@ async def is_jti_blacklisted(r: Any, jti: str) -> bool:
         return True
     # Backward compatibility for tokens revoked before the per-JTI key format.
     return bool(await r.sismember(_LEGACY_SET, jti))
+
+
+async def consume_refresh_jti(r: Any, jti: str, remaining: int) -> bool:
+    """Only one concurrent request may rotate a refresh token."""
+    if not jti or remaining <= 0 or await r.sismember(_LEGACY_SET, jti):
+        return False
+    return bool(await r.set(f"{_PREFIX}{jti}", "1", ex=remaining, nx=True))

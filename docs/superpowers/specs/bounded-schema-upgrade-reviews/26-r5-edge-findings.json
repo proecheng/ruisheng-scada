@@ -1,0 +1,8 @@
+[
+  {
+    "location": "tools/remote_full_upgrade/target-updater.ps1:1988-1989",
+    "trigger_condition": "A task pipes command text into PowerShell without -Command or -File.",
+    "guard_snippet": "if ($Depth -gt 0 -and $null -eq $command) { return $true }",
+    "potential_consequence": "The task can start old application containers during active schema maintenance."
+  }
+]

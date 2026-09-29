@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-09-07T12:26:11.7166768+08:00",
+  "checks": {
+    "no_test_failure": true,
+    "expected_test_count": true,
+    "source_hashes_match": true,
+    "production_empty": true,
+    "services_running": true,
+    "previous_test_data_unchanged": true,
+    "endpoints_ready": true,
+    "release_unchanged": true,
+    "trust_and_environment": true
+  },
+  "tests_passed": 416,
+  "tests_skipped": 2,
+  "new_physical_requests": 0,
+  "new_probe_installed": false,
+  "physical_status": "AWAITING_APPROVAL",
+  "formal_acceptance": "BLOCKED"
+}

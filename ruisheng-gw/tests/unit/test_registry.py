@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from ruisheng_gw.domain.device import DeviceState
 from ruisheng_gw.domain.registry import Registry
 
@@ -308,3 +309,184 @@ async def test_config_version_poll_is_non_consuming_and_clears_deleted_rules() -
     assert not reg.needs_config_reload("D1", 2)
     assert not reg.needs_config_reload("D1", 1)
     assert reg.needs_config_reload("D1", 3)
+
+
+def _serial_rows(*, version=1, address=1, enabled=True):
+    return [
+        {
+            "dev_number": "S1",
+            "usr_group": "tenant",
+            "update_interval_decisec": 10,
+            "transport_type": "serial",
+            "serial_port": "COM3",
+            "modbus_addr": address,
+            "read_profile": "zero_origin_38",
+            "update_flag": version,
+            "is_enabled": enabled,
+        }
+    ]
+
+
+def test_serial_reconciliation_preserves_unchanged_runtime_but_invalidates_changed_entry():
+    registry = Registry.build(device_rows=_serial_rows(), point_rows=[])
+    original = registry.get("S1")
+    original.device.register(now=100)
+    original.poll_cursor = 7
+    assert (
+        registry.reconcile_serial(Registry.build(device_rows=_serial_rows(), point_rows=[]))
+        == set()
+    )
+    assert registry.get("S1") is original
+    assert original.poll_cursor == 7
+    assert registry.reconcile_serial(
+        Registry.build(device_rows=_serial_rows(version=2), point_rows=[])
+    ) == {"S1"}
+    updated = registry.get("S1")
+    assert updated is not original
+    assert updated.device is original.device
+    assert updated.config_version == 2
+    assert (
+        registry.reconcile_serial(
+            Registry.build(device_rows=_serial_rows(version=1), point_rows=[])
+        )
+        == set()
+    )
+    assert registry.get("S1") is updated
+    registry.reconcile_serial(
+        Registry.build(device_rows=_serial_rows(version=3, address=7), point_rows=[])
+    )
+    assert registry.get("S1").modbus_addr == 7
+    assert registry.get("S1").device.state is DeviceState.UNREGISTERED
+    registry.reconcile_serial(
+        Registry.build(device_rows=_serial_rows(enabled=False), point_rows=[])
+    )
+    assert registry.get("S1") is None
+    assert registry.needs_config_reload("NEW", 1)
+
+
+def test_disabled_serial_devices_reserve_capacity_and_address_across_tenants():
+    devices = [
+        {
+            **_serial_rows(address=addr)[0],
+            "dev_number": f"D{addr}",
+            "usr_group": f"T{addr}",
+            "is_enabled": False,
+        }
+        for addr in range(1, 129)
+    ]
+    assert list(Registry.build(device_rows=devices, point_rows=[]).entries()) == []
+    devices[1]["is_enabled"] = True
+    overflow = Registry.build(device_rows=[*devices, _serial_rows(address=129)[0]], point_rows=[])
+    assert overflow.get("D2") is not None
+    assert overflow.get("S1") is None
+    other = {
+        **_serial_rows(address=1)[0],
+        "dev_number": "OTHER",
+        "serial_port": "COM9",
+    }
+    mixed = Registry.build(
+        device_rows=[*devices, _serial_rows(address=129)[0], other],
+        point_rows=[],
+    )
+    assert mixed.get("S1") is None
+    assert mixed.get("OTHER") is not None
+    with pytest.raises(ValueError, match="duplicate"):
+        Registry.build(device_rows=[*devices, _serial_rows(address=1)[0]], point_rows=[])
+    devices[0]["deleted_at"] = "deleted"
+    reg = Registry.build(device_rows=[*devices, _serial_rows(address=1)[0]], point_rows=[])
+    assert reg.get("S1") is not None
+
+
+def test_reconcile_discovers_empty_start_and_does_not_hot_add_tcp():
+    registry = Registry()
+    rows = [
+        *_serial_rows(),
+        {"dev_number": "TCP", "usr_group": "tenant", "update_interval_decisec": 10},
+    ]
+    assert registry.reconcile_serial(Registry.build(device_rows=rows, point_rows=[])) == {"S1"}
+    assert registry.get("S1") is not None
+    assert registry.get("TCP") is None
+
+
+def test_tcp_to_serial_invalidates_tcp_entry_and_reverse_waits_for_restart():
+    tcp_row = {
+        **_serial_rows()[0],
+        "transport_type": "tcp",
+        "serial_port": None,
+        "read_profile": "point_groups",
+    }
+    registry = Registry.build(device_rows=[tcp_row], point_rows=[])
+    old_tcp = registry.get("S1")
+    registry.reconcile_serial(Registry.build(device_rows=_serial_rows(version=2), point_rows=[]))
+    assert registry.get("S1") is not old_tcp
+    assert registry.get("S1").transport_type == "serial"
+    registry.reconcile_serial(
+        Registry.build(device_rows=[{**tcp_row, "update_flag": 3}], point_rows=[])
+    )
+    assert registry.get("S1") is None
+
+
+async def test_full_reload_uses_one_snapshot_and_failure_keeps_existing_configuration():
+    from unittest.mock import AsyncMock, MagicMock
+
+    registry = Registry()
+    conn = AsyncMock()
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = _serial_rows()
+    empty = MagicMock()
+    empty.mappings.return_value.all.return_value = []
+    conn.execute.side_effect = [None, result, empty, empty]
+    engine = MagicMock()
+    engine.begin.return_value.__aenter__.return_value = conn
+    assert await registry.reload_serial_configuration(engine) == {"S1"}
+    assert "REPEATABLE READ, READ ONLY" in str(conn.execute.call_args_list[0].args[0])
+    assert "is_enabled IS TRUE" not in str(conn.execute.call_args_list[1].args[0])
+    entry = registry.get("S1")
+    conn.execute.side_effect = OSError("database unavailable")
+    with pytest.raises(OSError):
+        await registry.reload_serial_configuration(engine)
+    assert registry.get("S1") is entry
+
+
+def test_alarm_runtime_flag_does_not_invalidate_serial_configuration():
+    points = [
+        {
+            "id": 1,
+            "dev_number": "S1",
+            "point_number": 35,
+            "point_ratio": 1.0,
+            "point_offset": 0.0,
+            "user_ratio": 1.0,
+            "user_point_offset": 0.0,
+        }
+    ]
+    alarm = {
+        "id": 9,
+        "point_id": 1,
+        "alarm_name": "hot",
+        "alarm_type": ">",
+        "limit_value": 80,
+        "waring_flag": False,
+    }
+    registry = Registry.build(device_rows=_serial_rows(), point_rows=points, alarm_rows=[alarm])
+    original = registry.get("S1")
+    assert (
+        registry.reconcile_serial(
+            Registry.build(
+                device_rows=_serial_rows(),
+                point_rows=points,
+                alarm_rows=[{**alarm, "waring_flag": True}],
+            )
+        )
+        == set()
+    )
+    assert registry.get("S1") is original
+    assert registry.reconcile_serial(
+        Registry.build(
+            device_rows=_serial_rows(version=2),
+            point_rows=points,
+            alarm_rows=[{**alarm, "waring_flag": True, "limit_value": 90}],
+        )
+    ) == {"S1"}
+    assert registry.get("S1") is not original
+    assert registry.get("S1").points[1].alarms[0].limit_value == 90

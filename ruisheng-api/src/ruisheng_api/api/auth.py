@@ -17,6 +17,7 @@ else:
     _Redis = redis_async.Redis
 
 from ..config import Config
+from ..core.client_peer import is_shared_ingress
 from ..core.login_limit import (
     clear_login_fail,
     is_ip_blocked,
@@ -30,10 +31,11 @@ from ..core.security import (
     hash_password,
     issue_access_token,
     issue_refresh_token,
+    session_deadline,
     verify_password,
     verify_token,
 )
-from ..core.token_blacklist import blacklist_jti, is_jti_blacklisted
+from ..core.token_blacklist import blacklist_jti, consume_refresh_jti
 from ..db.repositories import users as users_repo
 from ..deps import get_config, get_current_user, get_gw_session, get_redis, get_session
 from ..services import otp as otp_svc
@@ -58,18 +60,23 @@ async def login(
     r: _Redis = Depends(get_redis),
     session: AsyncSession = Depends(get_gw_session),
 ) -> ApiResponse:
+    # The socket peer is the web container or Docker gateway, not the browser.
+    # Client-written X-Forwarded-For is ignored. A trusted proxy peer is shared
+    # by every browser, so it cannot be used as an IP lock key. The login
+    # fingerprint stays on this same peer, so existing sessions remain valid.
     ip = request.client.host if request.client else "unknown"
+    shared_ingress = is_shared_ingress(ip, cfg.trusted_proxy_cidrs)
     ua = request.headers.get("user-agent", "")
     if await is_user_locked(r, body.user_name):
         raise BizError(ErrCode.FORBIDDEN, "account locked; try later")
-    if await is_ip_blocked(r, ip):
+    if not shared_ingress and await is_ip_blocked(r, ip):
         raise BizError(ErrCode.FORBIDDEN, "ip temporarily blocked")
     user = await users_repo.load_by_user_name(session, body.user_name)
     if user is None or not verify_password(body.password, user.password_hash):
         await record_login_fail(
             r,
             body.user_name,
-            ip,
+            None if shared_ingress else ip,
             user_max=cfg.login_fail_user_max,
             ip_max=cfg.login_fail_ip_max,
             window=cfg.login_fail_user_window_sec,
@@ -79,6 +86,7 @@ async def login(
         raise BizError(ErrCode.UNAUTHED, "invalid credentials")
     await clear_login_fail(r, body.user_name)
     fp = client_fingerprint(ip, ua)
+    deadline = int(time.time()) + cfg.jwt_session_ttl_sec
     access = issue_access_token(
         user.user_name,
         user.usr_group,
@@ -87,6 +95,7 @@ async def login(
         fp,
         secret=cfg.jwt_secret,
         ttl_sec=cfg.jwt_access_ttl_sec,
+        session_expires_at=deadline,
     )
     refresh = issue_refresh_token(
         user.user_name,
@@ -96,13 +105,14 @@ async def login(
         fp,
         secret=cfg.jwt_secret,
         ttl_sec=cfg.jwt_refresh_ttl_sec,
+        session_expires_at=deadline,
     )
     logger.bind(user_name=user.user_name, usr_group=user.usr_group).info("login ok")
     return ok(
         data=LoginResponseData(
             access_token=access,
             refresh_token=refresh,
-            access_ttl_sec=cfg.jwt_access_ttl_sec,
+            access_ttl_sec=min(cfg.jwt_access_ttl_sec, cfg.jwt_session_ttl_sec),
             user_name=user.user_name,
             role=user.authority,
             usr_group=user.usr_group,
@@ -168,10 +178,7 @@ async def refresh(
         expected_typ="refresh",
     )
     old_jti = str(payload["jti"])
-    if await is_jti_blacklisted(r, old_jti):
-        raise BizError(ErrCode.UNAUTHED, "refresh revoked")
-    remaining = int(str(payload["exp"])) - int(time.time())
-    await blacklist_jti(r, old_jti, remaining)
+    deadline = session_deadline(payload, cfg.jwt_session_ttl_sec)
     sub = str(payload["sub"])
     current = await users_repo.load_by_user_name(session, sub)
     if current is None:
@@ -179,17 +186,34 @@ async def refresh(
     grp = current.usr_group
     role = current.authority
     ca = current.control_authority
+    remaining = int(str(payload["exp"])) - int(time.time())
+    if not await consume_refresh_jti(r, old_jti, remaining):
+        raise BizError(ErrCode.UNAUTHED, "refresh revoked")
     access = issue_access_token(
-        sub, grp, role, ca, fp, secret=cfg.jwt_secret, ttl_sec=cfg.jwt_access_ttl_sec
+        sub,
+        grp,
+        role,
+        ca,
+        fp,
+        secret=cfg.jwt_secret,
+        ttl_sec=cfg.jwt_access_ttl_sec,
+        session_expires_at=deadline,
     )
     new_refresh = issue_refresh_token(
-        sub, grp, role, ca, fp, secret=cfg.jwt_secret, ttl_sec=cfg.jwt_refresh_ttl_sec
+        sub,
+        grp,
+        role,
+        ca,
+        fp,
+        secret=cfg.jwt_secret,
+        ttl_sec=cfg.jwt_refresh_ttl_sec,
+        session_expires_at=deadline,
     )
     return ok(
         data=LoginResponseData(
             access_token=access,
             refresh_token=new_refresh,
-            access_ttl_sec=cfg.jwt_access_ttl_sec,
+            access_ttl_sec=max(0, min(cfg.jwt_access_ttl_sec, deadline - int(time.time()))),
             user_name=current.user_name,
             role=role,
             usr_group=grp,

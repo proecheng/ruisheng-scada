@@ -8,6 +8,23 @@
 - `fix:` — 错误修正
 - `chore:` — 重构、重命名、注释（无语义变化）
 
+## 2026-09-29
+
+- chore: Record the local working-tree snapshot, including the already-described `read_profile` device field. `SHARED_SCHEMA_VERSION` remains 20260415.
+
+## 2026-09-10
+
+- chore: Continue the reviewed multi-device release preparation with the bounded upgrade launcher ancestry checks. Model behavior and `SHARED_SCHEMA_VERSION` 20260415 remain unchanged; candidate and target acceptance are pending.
+
+## 2026-09-09
+
+- chore: Prepare the reviewed multi-device candidate with bounded 0012-to-0013 database upgrade and recovery. The September 7 additive model changes remain unchanged; release and target acceptance are still pending. `SHARED_SCHEMA_VERSION` remains 20260415.
+
+## 2026-09-07
+
+- feature: Device adds the backward-compatible `read_profile` default `point_groups`, with serial-only `zero_origin_38`; migration 0013 preserves existing polling behavior. `SHARED_SCHEMA_VERSION` is unchanged.
+- fix: serial endpoint uniqueness excludes soft-deleted devices while disabled devices still reserve their address; downgrade refuses conflicting reused addresses without deleting history.
+
 ## 2026-08-19
 
 - feature: add immutable alarm configuration snapshots plus tenant-scoped notification subscriptions, dispatches, leased deliveries, and sanitized delivery-attempt audit models. Existing alarm rows remain readable; `SHARED_SCHEMA_VERSION` is unchanged because the change is additive.

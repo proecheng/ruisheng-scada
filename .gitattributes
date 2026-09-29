@@ -14,3 +14,6 @@ Makefile text eol=lf
 *.pcap binary
 *.blob binary
 *.parquet binary
+
+# Published point-table bytes (UTF-8 BOM + CRLF) are bound by mapping SHA-256.
+docs/point-tables/default-rs485-38-points.csv -text whitespace=cr-at-eol

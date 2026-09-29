@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="0" skipped="0" tests="1" time="1.472" timestamp="2026-09-07T12:49:31.410058+08:00" hostname="CXG-PC"><testcase classname="" name="docs.superpowers.specs.evidence.address-correlation-20260907.test_address_comparison" time="0.000"><error message="collection failure">ImportError while importing test module 'D:\江苏润盛\docs\superpowers\specs\evidence\address-correlation-20260907\test_address_comparison.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+docs\superpowers\specs\evidence\address-correlation-20260907\test_address_comparison.py:3: in &lt;module&gt;
+    from analyze_address_results import compare
+E   ModuleNotFoundError: No module named 'analyze_address_results'</error></testcase></testsuite></testsuites>

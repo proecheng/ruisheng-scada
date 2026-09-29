@@ -49,8 +49,18 @@ function startEdit(p: MaintenancePlan): void {
   isNew.value = false
 }
 
+function setNextDueAt(value: string): void {
+  if (!editing.value) return
+  const date = new Date(value)
+  editing.value.next_due_at = Number.isFinite(date.getTime()) ? date.toISOString() : ''
+}
+
 async function save(): Promise<void> {
   if (!editing.value) return
+  if (!Number.isFinite(new Date(editing.value.next_due_at).getTime())) {
+    toast.error('请选择有效的下次到期日期')
+    return
+  }
   try {
     await upsertMaintenancePlan(editing.value)
     toast.success('已保存')
@@ -151,7 +161,8 @@ const sorted = computed(() =>
           <input
             :value="editing.next_due_at.slice(0, 10)"
             type="date"
-            @input="(e: Event) => { if (editing) editing.next_due_at = new Date((e.target as HTMLInputElement).value).toISOString() }"
+            required
+            @input="(e: Event) => setNextDueAt((e.target as HTMLInputElement).value)"
           />
         </label>
         <label>负责人 <input v-model="editing.owner_user_name" type="text" required /></label>

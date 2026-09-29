@@ -3,9 +3,12 @@ import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useWsConnection } from '@/composables/useWsConnection'
+import { useAuthStore } from '@/stores/auth'
+import { nextTick } from 'vue'
 
 let connectError: Error | null = null
 let closeConnection: (() => void) | undefined
+const connectedUrls: string[] = []
 
 const ConnectionHarness = defineComponent({
   setup() {
@@ -17,6 +20,7 @@ const ConnectionHarness = defineComponent({
 vi.mock('@/ws/client', () => {
   class MockWSClient {
     private closed = false
+    constructor(url: string) { connectedUrls.push(url) }
 
     get state() {
       if (this.closed) throw new Error('closed client state was accessed')
@@ -46,6 +50,10 @@ describe('useWsConnection', () => {
     connectError = null
     closeConnection = undefined
     setActivePinia(createPinia())
+    connectedUrls.length = 0
+    useAuthStore().setSession({ access_token: 'initial-token', refresh_token: 'refresh', user: {
+      user_name: 'test', authority: 'User', usr_group: 'g',
+    } })
     vi.useFakeTimers()
   })
 
@@ -80,5 +88,24 @@ describe('useWsConnection', () => {
     wrapper.unmount()
     expect(vi.getTimerCount()).toBe(0)
     expect(() => vi.advanceTimersByTime(500)).not.toThrow()
+  })
+
+  it('replaces the socket after renewal and closes it without reconnecting on logout', async () => {
+    const wrapper = mount(ConnectionHarness)
+    const auth = useAuthStore()
+    auth.setSession({ access_token: 'renewed-token', refresh_token: 'renewed-refresh', user: {
+      user_name: 'test', authority: 'User', usr_group: 'g',
+    } })
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(connectedUrls).toHaveLength(2)
+    expect(connectedUrls[1]).toContain('token=renewed-token')
+    expect(vi.getTimerCount()).toBe(1)
+    auth.logout()
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(connectedUrls).toHaveLength(2)
+    expect(vi.getTimerCount()).toBe(0)
+    wrapper.unmount()
   })
 })

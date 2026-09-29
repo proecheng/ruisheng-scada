@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import fakeredis.aioredis
 from fastapi.testclient import TestClient
 from ruisheng_api.core.security import client_fingerprint, issue_access_token
@@ -60,7 +62,7 @@ def _install(app, monkeypatch, rows):
             pass
 
         async def execute(self, *a, **kw):
-            return None
+            return SimpleNamespace(scalar_one=lambda: 1)
 
     async def fake_session():
         yield _S()
@@ -138,6 +140,7 @@ def test_create_device_validates_contract_and_tenant(monkeypatch):
         "dev_number": "DEV002",
         "dev_ser_number": "SN-D2",
         "transport_type": "tcp",
+        "read_profile": "point_groups",
         "modbus_addr": 2,
         "baud_rate": 9600,
         "update_interval_decisec": 100,
@@ -180,6 +183,7 @@ def test_create_serial_device_validates_contract_and_tenant(monkeypatch):
         "dev_number": "DEV003",
         "dev_ser_number": "SN-D3",
         "transport_type": "serial",
+        "read_profile": "point_groups",
         "serial_port": "COM3",
         "modbus_addr": 3,
         "baud_rate": 9600,

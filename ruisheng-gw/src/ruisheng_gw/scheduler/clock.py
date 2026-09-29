@@ -1,6 +1,6 @@
 """Clock protocol — injected into all timer-driven gw components.
 
-Production uses RealClock (asyncio.sleep + time.monotonic).
+Production uses RealClock (asyncio.sleep + time.perf_counter).
 Tests use FakeClock with .advance() for deterministic timing — no
 wall-clock sleeps, no GitHub Actions flakiness.
 """
@@ -23,7 +23,15 @@ class RealClock:
         return time.perf_counter()
 
     async def sleep(self, seconds: float) -> None:
-        await asyncio.sleep(seconds)
+        if seconds <= 0:
+            await asyncio.sleep(seconds)
+            return
+        deadline = self.monotonic() + seconds
+        remaining = seconds
+        # Some event loops can wake timers early; preserve the physical bus quiet interval.
+        while remaining > 0:
+            await asyncio.sleep(remaining)
+            remaining = deadline - self.monotonic()
 
 
 class FakeClock:

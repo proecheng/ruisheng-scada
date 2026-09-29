@@ -53,3 +53,17 @@ def test_refresh_token_has_typ_refresh():
 def test_fingerprint_stable():
     assert client_fingerprint("1.1.1.1", "ua") == client_fingerprint("1.1.1.1", "ua")
     assert client_fingerprint("1.1.1.1", "ua") != client_fingerprint("1.1.1.2", "ua")
+
+
+def test_session_deadline_is_enforced_even_if_access_exp_is_later():
+    import time
+
+    from jose import jwt
+
+    fp = client_fingerprint("x", "y")
+    token = issue_access_token("a", "g", "User", 0, fp, secret="s" * 64, ttl_sec=900)
+    claims = jwt.get_unverified_claims(token)
+    claims["session_exp"] = int(time.time()) - 1
+    token = jwt.encode(claims, "s" * 64, algorithm="HS256")
+    with pytest.raises(BizError, match="session expired"):
+        verify_token(token, secret="s" * 64, expected_fp=fp)

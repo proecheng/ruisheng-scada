@@ -5,7 +5,22 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ReadFunCode = Literal[1, 2, 3, 4]
-PointValueType = Literal["字", "双字", "bit"]
+PointValueType = Literal["字", "双字", "有符号字节", "无符号字节", "bit"]
+ZERO_ORIGIN_REGISTER_COUNT = 38
+HOLDING_REGISTER_FUNCTION = 3
+
+
+def validate_point_read_profile(
+    read_profile: str, *, fun_code: int, point_number: int, value_type: str
+) -> None:
+    if read_profile != "zero_origin_38":
+        return
+    span = 2 if value_type == "双字" else 1
+    if (
+        fun_code != HOLDING_REGISTER_FUNCTION
+        or not 0 <= point_number <= ZERO_ORIGIN_REGISTER_COUNT - span
+    ):
+        raise ValueError("zero_origin_38 points require FC3 and register span within 0..37")
 
 
 def validate_point_contract(
@@ -44,6 +59,7 @@ class PointOut(BaseModel):
     dev_addr: int
     r_bit: int | None
     value_type: PointValueType
+    display_bits: int | None = None
     point_unit: str | None
     point_ratio: float
     point_offset: float
@@ -63,6 +79,7 @@ class PointCreateRequest(BaseModel):
     dev_addr: int = Field(..., ge=1, le=247)
     r_bit: int | None = Field(default=None, ge=0, le=15)
     value_type: PointValueType
+    display_bits: int | None = Field(default=None, ge=1, le=16)
     point_unit: str | None = Field(default=None, max_length=20)
     point_ratio: float = 1.0
     point_offset: float = 0.0
@@ -81,6 +98,15 @@ class PointCreateRequest(BaseModel):
             min_value=self.min_value,
             max_value=self.max_value,
         )
+        validate_point_display(
+            display_bits=self.display_bits,
+            fun_code=self.fun_code,
+            value_type=self.value_type,
+            point_ratio=self.point_ratio,
+            point_offset=self.point_offset,
+            user_ratio=self.user_ratio,
+            user_point_offset=self.user_point_offset,
+        )
         return self
 
 
@@ -93,6 +119,7 @@ class PointUpdateRequest(BaseModel):
     dev_addr: int | None = Field(default=None, ge=1, le=247)
     r_bit: int | None = Field(default=None, ge=0, le=15)
     value_type: PointValueType | None = None
+    display_bits: int | None = Field(default=None, ge=1, le=16)
     point_unit: str | None = None
     point_ratio: float | None = None
     point_offset: float | None = None
@@ -101,3 +128,21 @@ class PointUpdateRequest(BaseModel):
     min_value: float | None = None
     max_value: float | None = None
     show: int | None = None
+
+
+def validate_point_display(
+    *,
+    display_bits: int | None,
+    fun_code: int,
+    value_type: str,
+    point_ratio: float,
+    point_offset: float,
+    user_ratio: float,
+    user_point_offset: float,
+) -> None:
+    if display_bits is None:
+        return
+    if fun_code not in (3, 4) or value_type != "字":
+        raise ValueError("多位二进制显示需要 FC3/FC4 整字采集，不能使用单独 bit")
+    if (point_ratio, point_offset, user_ratio, user_point_offset) != (1, 0, 1, 0):
+        raise ValueError("多位二进制显示的原始/显示倍率必须为1，偏移必须为0")

@@ -405,6 +405,78 @@ def test_attach_script_uses_usb_identity_and_never_opens_serial_port() -> None:
     assert "$inputStream.Close()" in script
 
 
+@pytest.mark.parametrize("adapter_kind", ["ftdi", "ch340"])
+@pytest.mark.parametrize("active_rows,expected", [(1, 0), (0, 43), (2, 43), (-1, 0)])
+def test_attach_selects_current_vhci_slot_despite_stale_duplicate_serial(
+    tmp_path, active_rows, expected, adapter_kind
+):
+    bash = shutil.which("bash")
+    if sys.platform == "win32":
+        git = shutil.which("git")
+        bash = str(Path(git).parents[1] / "bin/bash.exe") if git else None
+    if not bash or not Path(bash).exists():
+        pytest.skip("bash unavailable")
+    source = (ROOT / "tools/serial_hardware_attach.ps1").read_text(encoding="utf-8")
+    script = (
+        source.split("function Ensure-WslDevice", 1)[1]
+        .split("$linuxScript = @'", 1)[1]
+        .split("'@", 1)[0]
+    )
+    fixture = tmp_path / "fixture"
+    for index in (0, 1):
+        (fixture / f"sys/class/tty/ttyUSB{index}").mkdir(parents=True)
+        usb = fixture / f"sys/bus/usb/devices/1-{index + 1}"
+        (usb / "iface").mkdir(parents=True)
+        identity = {"idVendor": "0403", "idProduct": "6001", "serial": "TEST123"}
+        if adapter_kind == "ch340":
+            identity = {"idVendor": "1a86", "idProduct": "7523"}
+        for key, value in identity.items():
+            (usb / key).write_text(value)
+    status = fixture / "sys/devices/platform/vhci_hcd.0/status"
+    status.parent.mkdir(parents=True)
+    status.write_text(
+        "hs 0 006 2 00010009 sock 1-1\n" + "hs 1 006 2 00040001 sock 1-2\n" * active_rows
+    )
+    # Mock only OS operations; run the actual slot/identity selection shell unchanged.
+    prefix = """fixture_root="$PWD/fixture"
+modprobe() { :; }
+sleep() { :; }
+readlink() {
+ case "$2" in
+  */ttyUSB0/device) printf '%s/sys/bus/usb/devices/1-1/iface\\n' "$fixture_root";;
+  */ttyUSB1/device) printf '%s/sys/bus/usb/devices/1-2/iface\\n' "$fixture_root";;
+  *) printf '%s\\n' "$2";;
+ esac
+}
+ln() { printf '%s\\n' "$2" > "$3"; }
+"""
+    if active_rows == -1:
+        prefix += """sleep() {
+ printf '%s\\n' 'hs 1 006 2 00040001 sock 1-2' > "$fixture_root/sys/devices/platform/vhci_hcd.0/status"
+}
+"""
+    (tmp_path / "probe.sh").write_text(
+        prefix + script.replace("/sys/", "${fixture_root}/sys/"), encoding="utf-8", newline="\n"
+    )
+    args = ["0403", "6001", "TEST123", "alias", "4-1"]
+    if adapter_kind == "ch340":
+        args = ["1a86", "7523", "-", "alias", "4-1", "windows_instance"]
+    result = subprocess.run(
+        [bash, "probe.sh", *args],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == expected, result.stderr
+    if expected == 0:
+        assert result.stdout.strip() == "/dev/ttyUSB1"
+        assert (tmp_path / "alias").read_text().strip() == "/dev/ttyUSB1"
+    else:
+        assert not (tmp_path / "alias").exists()
+
+
 def test_native_stdin_is_utf8_without_bom_under_windows_powershell_51(tmp_path: Path) -> None:
     powershell = shutil.which("powershell.exe")
     if powershell is None:

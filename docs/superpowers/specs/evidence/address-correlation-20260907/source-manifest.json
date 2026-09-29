@@ -1,0 +1,27 @@
+[
+  {
+    "path": "ModBusServer20210908\\ModBusServer20210908\\ModBusServer\\Comm.cs",
+    "bytes": 14476,
+    "sha256": "fa713405f477abf76dc3db1497d50d6048bf2fa9f2860099c18759614c5feb3d"
+  },
+  {
+    "path": "ModBusServer20210908\\ModBusServer20210908\\ModBusServer\\ModBusServer.cs",
+    "bytes": 142015,
+    "sha256": "de6fa2b3136a5496ca125bc5721fe848b1b890d4d33096007c52c9fe119a68d6"
+  },
+  {
+    "path": "tools\\probe_modbus_rtu.py",
+    "bytes": 32070,
+    "sha256": "4994ed81e7f44725873314d82c3249fa8e903204b79c9404de2d44341b0b99d9"
+  },
+  {
+    "path": "tools\\run_modbus_probe.ps1",
+    "bytes": 45392,
+    "sha256": "524c7ed8eb3112c153f95770f74e23141ff55203b22d8463455ac00ffefac9a6"
+  },
+  {
+    "path": "tests\\tools\\test_modbus_probe.py",
+    "bytes": 34227,
+    "sha256": "bbfa0298586a8b09f5c2ce00a01cef4425c92a7e52be0730c057e57cb7b35ab9"
+  }
+]

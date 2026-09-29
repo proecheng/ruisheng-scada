@@ -1,143 +1,129 @@
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
-import fakeredis.aioredis
 import pytest
-from ruisheng_api.pubsub.ws_manager import WSClient, WSManager
+from ruisheng_api.pubsub.realtime_bridge import realtime_loop
+from ruisheng_gw.pubsub.schemas import RealtimeEvent
 
 
-class _WS:
-    pass
+async def run_bridge(messages):
+    stop = asyncio.Event()
+    pubsub = AsyncMock()
+    pending = iter(messages)
+
+    async def get_message(**kwargs):
+        try:
+            return {"data": next(pending)}
+        except StopIteration:
+            stop.set()
+            return None
+
+    pubsub.get_message.side_effect = get_message
+    redis = type("Redis", (), {"pubsub": lambda self: pubsub})()
+    manager = AsyncMock()
+    await realtime_loop(redis, manager, stop)
+    pubsub.psubscribe.assert_awaited_once_with("channel:realtime:*")
+    pubsub.aclose.assert_awaited_once()
+    return manager.broadcast.call_args_list
 
 
 @pytest.mark.asyncio
-async def test_realtime_broadcasts_to_tenant():
-    """realtime_loop processes a message and broadcasts to matching tenant.
+@pytest.mark.parametrize("value", [56300.0, 0.0, None])
+async def test_actual_gateway_event_keeps_value_and_utc_sample_time(value):
+    event = RealtimeEvent(
+        dev_number="DEV001",
+        point_id=21,
+        rt_value=value,
+        org_value=56300,
+        recorded_at=1789442400.125,
+    )
+    calls = await run_bridge([event.model_dump_json()])
+    assert len(calls) == 1
+    assert calls[0].args[0] == {
+        "type": "realtime",
+        "dev_number": "DEV001",
+        "point_id": 21,
+        "value": value,
+        "ts": "2026-09-15T03:20:00.125000+00:00",
+    }
 
-    fakeredis does not deliver messages via psubscribe (pattern subscribe), so
-    this test patches realtime_loop to use a plain subscribe on the exact
-    channel instead.  The business logic under test — JSON parsing, payload
-    construction, tenant_filter routing — is identical.
-    """
-    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    ws = WSManager()
-    c = WSClient(ws=_WS(), user_name="a", usr_group="g1", role="User")
-    await ws.add(c)
 
-    stop = asyncio.Event()
-
-    # Use subscribe (exact channel) instead of psubscribe because fakeredis
-    # does not deliver messages via pattern subscriptions.  The business logic
-    # under test — JSON parsing, payload construction, tenant_filter routing —
-    # is identical.
-    async def _loop_exact_subscribe(
-        r_: fakeredis.aioredis.FakeRedis,
-        ws_: WSManager,
-        stop_event: asyncio.Event,
-    ) -> None:
-        pubsub = r_.pubsub()
-        await pubsub.subscribe("channel:realtime:60270012")
-        try:
-            while not stop_event.is_set():
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if msg is None:
-                    continue
-                try:
-                    data = json.loads(msg["data"])
-                except (TypeError, ValueError):
-                    continue
-                payload = {
-                    "type": "realtime",
-                    "dev_number": str(data.get("dev_number") or ""),
-                    "point_id": int(data.get("point_id") or 0),
-                    "value": float(data.get("value") or 0),
-                    "ts": str(data.get("ts") or ""),
+@pytest.mark.asyncio
+async def test_legacy_event_retains_tenant_and_zero():
+    calls = await run_bridge(
+        [
+            json.dumps(
+                {
+                    "dev_number": "D1",
+                    "point_id": 1,
+                    "value": 0,
+                    "ts": "2026-09-15T14:00:00+08:00",
+                    "usr_group": "g1",
                 }
-                usr_group = data.get("usr_group")
-                await ws_.broadcast(
-                    payload,
-                    tenant_filter=usr_group if isinstance(usr_group, str) else None,
-                )
-        finally:
-            await pubsub.unsubscribe("channel:realtime:60270012")
-            await pubsub.aclose()
+            )
+        ]
+    )
+    assert calls[0].args[0]["value"] == 0
+    assert calls[0].args[0]["ts"] == "2026-09-15T06:00:00+00:00"
+    assert calls[0].kwargs == {"tenant_filter": "g1"}
 
-    task = asyncio.create_task(_loop_exact_subscribe(r, ws, stop))
-    await asyncio.sleep(0.05)
-    await r.publish(
-        "channel:realtime:60270012",
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not json",
+        "null",
+        "[]",
+        "{}",
+        '{"point_id":"bad"}',
         json.dumps(
             {
-                "dev_number": "60270012",
+                "schema_version": 2,
+                "dev_number": "D1",
                 "point_id": 1,
-                "value": 42.5,
-                "ts": "2026-04-19T10:00:00Z",
-                "usr_group": "g1",
+                "rt_value": 2,
+                "recorded_at": 1789442400,
             }
         ),
+        json.dumps({"dev_number": "D1", "point_id": 1, "value": 2, "ts": ""}),
+        json.dumps(
+            {"schema_version": 1, "dev_number": "D1", "point_id": 1, "recorded_at": 1789442400}
+        ),
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dev_number": "D1",
+                "point_id": 1,
+                "rt_value": "NaN",
+                "recorded_at": 1789442400,
+            }
+        ),
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dev_number": "D1",
+                "point_id": True,
+                "rt_value": 1,
+                "recorded_at": 1789442400,
+            }
+        ),
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dev_number": "D1",
+                "point_id": 1,
+                "rt_value": 1,
+                "recorded_at": 1e100,
+            }
+        ),
+    ],
+)
+async def test_bad_event_does_not_zero_values_or_stop_next_sample(bad):
+    event = RealtimeEvent(
+        dev_number="DEV001", point_id=21, rt_value=10, org_value=10, recorded_at=1789442400
     )
-    await asyncio.sleep(0.2)
-    stop.set()
-    await task
-
-    msg = c.queue.get_nowait()
-    d = json.loads(msg)
-    assert d["type"] == "realtime"
-    assert d["dev_number"] == "60270012"
-    assert d["value"] == 42.5
-
-
-@pytest.mark.asyncio
-async def test_realtime_malformed_json_skipped():
-    """Malformed JSON is skipped without crashing the loop."""
-
-    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    ws = WSManager()
-    c = WSClient(ws=_WS(), user_name="a", usr_group="g1", role="User")
-    await ws.add(c)
-
-    stop = asyncio.Event()
-
-    async def _loop_exact_subscribe(
-        r_: fakeredis.aioredis.FakeRedis,
-        ws_: WSManager,
-        stop_event: asyncio.Event,
-    ) -> None:
-        pubsub = r_.pubsub()
-        await pubsub.subscribe("channel:realtime:bad")
-        try:
-            while not stop_event.is_set():
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if msg is None:
-                    continue
-                try:
-                    data = json.loads(msg["data"])
-                except (TypeError, ValueError):
-                    # malformed — skip (this is the behaviour we're testing)
-                    continue
-                payload = {
-                    "type": "realtime",
-                    "dev_number": str(data.get("dev_number") or ""),
-                    "point_id": int(data.get("point_id") or 0),
-                    "value": float(data.get("value") or 0),
-                    "ts": str(data.get("ts") or ""),
-                }
-                usr_group = data.get("usr_group")
-                await ws_.broadcast(
-                    payload,
-                    tenant_filter=usr_group if isinstance(usr_group, str) else None,
-                )
-        finally:
-            await pubsub.unsubscribe("channel:realtime:bad")
-            await pubsub.aclose()
-
-    task = asyncio.create_task(_loop_exact_subscribe(r, ws, stop))
-    await asyncio.sleep(0.05)
-    # publish invalid JSON
-    await r.publish("channel:realtime:bad", "not-valid-json")
-    await asyncio.sleep(0.2)
-    stop.set()
-    await task
-
-    # Queue must be empty — malformed message was skipped
-    assert c.queue.empty()
+    calls = await run_bridge([bad, event.model_dump_json()])
+    assert len(calls) == 1
+    assert calls[0].args[0]["value"] == 10

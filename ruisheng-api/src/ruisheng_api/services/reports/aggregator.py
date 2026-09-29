@@ -17,6 +17,8 @@ def aggregate_daily(rows: list[dict[str, Any]]) -> dict[str, dict[int, dict[str,
         )
     )
     for r in rows:
+        if r.get("rt_value") is None:
+            continue
         v = float(r["rt_value"])
         b = buckets[str(r["dev_number"])][int(r["point_id"])]
         b["count"] = int(b["count"]) + 1

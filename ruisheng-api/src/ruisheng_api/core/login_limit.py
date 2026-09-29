@@ -8,7 +8,7 @@ import redis.asyncio as redis_async
 async def record_login_fail(
     r: redis_async.Redis[bytes],
     user_name: str,
-    ip: str,
+    ip: str | None,
     *,
     user_max: int,
     ip_max: int,
@@ -16,7 +16,11 @@ async def record_login_fail(
     lock_ttl: int,
     ip_block_ttl: int,
 ) -> bool:
-    """Returns True if user is locked due to this failure."""
+    """Returns True if user is locked due to this failure.
+
+    ``ip`` is omitted for a shared ingress peer. Counting that one address would
+    block every browser after a single user's failures.
+    """
     key_user = f"login_fail:{user_name}"
     n_user = await r.incr(key_user)
     if n_user == 1:
@@ -25,6 +29,8 @@ async def record_login_fail(
     if n_user >= user_max:
         await r.setex(f"login_lock:{user_name}", lock_ttl, "1")
         locked = True
+    if not ip:
+        return locked
 
     key_ip = f"login_fail_ip:{ip}"
     n_ip = await r.incr(key_ip)

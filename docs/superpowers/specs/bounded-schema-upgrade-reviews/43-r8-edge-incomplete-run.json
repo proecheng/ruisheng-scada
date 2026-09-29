@@ -1,0 +1,13 @@
+{
+  "role": "edge",
+  "started": "2026-09-10T07:14:58.375Z",
+  "ended": "2026-09-10T07:23:40.177Z",
+  "code": 0,
+  "signal": null,
+  "model": "gpt-6-astra",
+  "sandbox": "read-only",
+  "ephemeral": true,
+  "parent_history": false,
+  "diff_sha256": "169da4cd1506b4e7e53bde50c7e32f997baa7ba296c5b47376230a323caff3fb",
+  "output_present": true
+}

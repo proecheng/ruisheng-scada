@@ -1,0 +1,44 @@
+[
+  {
+    "name": "modbus-probe-release.json",
+    "path": "C:\\ProgramData\\Ruisheng\\receipts\\modbus-probe-release.json",
+    "sha256": "d9d493f2a0dd06587d91e4734da273ebda6737219a139a35cc2778108cdfd671",
+    "local_name": "installed-receipt.json"
+  },
+  {
+    "name": "modbus-probe-zero-origin-20260907.json",
+    "path": "C:\\Ruisheng\\site\\modbus-probe-zero-origin-20260907.json",
+    "sha256": "a6736686c594894326647f3fbb1ced3006783078d5d11c4482bee123f6f02ff7",
+    "local_name": "approved-config.json"
+  },
+  {
+    "name": "modbus-runner-03a9356d-89d1-4970-855f-2bcc42070151.jsonl",
+    "path": "C:\\Ruisheng\\audit\\modbus-runner-03a9356d-89d1-4970-855f-2bcc42070151.jsonl",
+    "sha256": "bc3c1aeb0554c81b9e32ddc210ec935b40e95a476b7b9b779acbdc26a43c6235",
+    "local_name": "modbus-runner-03a9356d-89d1-4970-855f-2bcc42070151.jsonl"
+  },
+  {
+    "name": "modbus-probe-release.json",
+    "path": "C:\\ProgramData\\Ruisheng\\receipts\\modbus-probe-release.json",
+    "sha256": "d9d493f2a0dd06587d91e4734da273ebda6737219a139a35cc2778108cdfd671",
+    "local_name": "installed-receipt.json"
+  },
+  {
+    "name": "modbus-probe-zero-origin-20260907.json",
+    "path": "C:\\Ruisheng\\site\\modbus-probe-zero-origin-20260907.json",
+    "sha256": "a6736686c594894326647f3fbb1ced3006783078d5d11c4482bee123f6f02ff7",
+    "local_name": "approved-config.json"
+  },
+  {
+    "name": "bounded-physical-3ebabe47ef984a5db1cb14d10e1d130d-physical.jsonl",
+    "path": "C:\\Ruisheng\\audit\\bounded-physical-3ebabe47ef984a5db1cb14d10e1d130d-physical.jsonl",
+    "sha256": "bbc0774fd6238fade455f075c866404d207134ec4e5f7855f52e1bf63799107e",
+    "local_name": "physical.jsonl"
+  },
+  {
+    "name": "modbus-runner-e1e5dfdb-3f45-42d1-8964-86e792ab697a.jsonl",
+    "path": "C:\\Ruisheng\\audit\\modbus-runner-e1e5dfdb-3f45-42d1-8964-86e792ab697a.jsonl",
+    "sha256": "dc288110e5f9e9f600980cb6f546d424c16f8ab1dafe6808ab8616757ee97b7d",
+    "local_name": "modbus-runner-e1e5dfdb-3f45-42d1-8964-86e792ab697a.jsonl"
+  }
+]

@@ -13,7 +13,7 @@ services:
     volumes:
       - ruisheng-pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ruisheng"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER} -d ruisheng"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -69,6 +69,7 @@ services:
       API_JWT_SECRET: ${JWT_SECRET}
       API_MANAGEMENT_TOKEN_SHA256: ${MANAGEMENT_TOKEN_SHA256:?MANAGEMENT_TOKEN_SHA256 must be set}
       API_ENV: prod
+      API_TRUSTED_PROXY_CIDRS: ${APP_NETWORK_SUBNET:-10.254.250.0/24}
       API_NOTIFICATION_WECHAT_ENABLED: ${API_NOTIFICATION_WECHAT_ENABLED:-false}
       API_NOTIFICATION_EMAIL_ENABLED: ${API_NOTIFICATION_EMAIL_ENABLED:-false}
       API_NOTIFICATION_EMAIL_HOST: ${API_NOTIFICATION_EMAIL_HOST:-}

@@ -19,7 +19,7 @@ const wsStore = useWsStore()
 
 const stageConfig = ref({ width: 900, height: 600 })
 const views = ref<SceneView[]>([])
-const pointValues = ref<Record<string, number>>({})
+const pointValues = ref<Record<string, number | null>>({})
 const editMode = ref(false)
 const selectedView = ref<SceneView | null>(null)
 
@@ -54,7 +54,7 @@ function viewLabel(v: SceneView): string {
   if (!binding) return v.dev_number
   const key = `${v.dev_number}:${binding.point_id}`
   const val = pointValues.value[key]
-  return val !== undefined ? `${binding.label}: ${val}` : `${binding.label}: —`
+  return val != null ? `${binding.label}: ${val}` : `${binding.label}: —`
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

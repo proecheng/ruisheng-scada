@@ -156,6 +156,61 @@ docker compose -f docker-compose.prod.yml -f site-network.override.yml --env-fil
 
 生产 bootstrap 不创建演示数据或账号。管理员引导和凭据交接尚未交付，B-02 不解除 G0-05/CAP-2；在独立流程获批并完成前，不得将系统开放给用户或提供 Web 访问入口。
 
+#### 首位管理员维护引导（待发布、待现场验收）
+
+仓库现提供 `tools/remote_admin_bootstrap.ps1`，仅供批准的维护人员从发布机执行。它不是公开
+注册接口，也不由迁移或 API 启动入口自动调用。必须先单独批准并发布包含
+`ruisheng_api.admin_bootstrap` 的新签名候选，完成既有升级验收，再另行批准现场账号创建。
+旧候选缺少该命令时保持未交付，不向容器注入临时脚本。
+
+本次批准的账号为 `rs_admin`、租户为 `site-win-oaucm8uqugh`，角色为 `Administrators`，初始
+`control_authority=0`。此值禁止当前账号发出设备控制命令，但不意味着剥夺管理员后续
+授权能力；不承诺尚未实现的首次登录强制改密。更换保管人或恢复密码须另行批准。
+
+先从本机执行只读计划，记录返回的活动候选，核对目标计算机和站点：
+
+```powershell
+.\tools\remote_admin_bootstrap.ps1 -Action Plan
+```
+
+计划只验证发布者签名绑定的已安装镜像、活动指针、数据库目标、身份和 `remote-support`，
+不重新完成整包归档/网络/设备现场验收，不得把计划成功当作解除其他生产门禁。
+数据库核对包含容器内 `postgres` 实际解析地址，拒绝额外 hosts 覆盖；服务就绪使用镜像内
+`ruisheng_api.healthcheck`，不要求生产配置中不存在的 API Docker HEALTHCHECK。
+现场创建审批通过后，把以下候选值替换为计划中已批准的实际值：
+
+```powershell
+.\tools\remote_admin_bootstrap.ps1 -Action Create -ExpectedCandidateId deploy-YYYYMMDD.N -Approved
+.\tools\remote_admin_bootstrap.ps1 -Action Status
+```
+
+工具先生成 32 字符随机密码，以当前 Windows 用户的 DPAPI 加密、排他保存并验证可解密，
+然后才发送创建请求。默认目录为 `C:\ProgramData\Ruisheng\admin-bootstrap-<当前用户SID>`，
+目录和凭据文件仅允许当前 SID/SYSTEM 访问；`C:\ProgramData\Ruisheng` 必须已由管理员准备，
+工具不修改现有父目录 ACL。可指定已经满足相同保护条件的 `-CredentialDirectory`。
+首次目录准备可能需要本机管理员权限，后续只能由原保管用户解密。不要复制密文给其他用户，
+不要删除密文后重试，不要把密码发到聊天、命令行、日志或截图。
+
+密码仅在原保管用户本机的交互窗口查看，不打印到终端或复制到剪贴板；SSH/非交互环境会拒绝：
+
+```powershell
+.\tools\remote_admin_bootstrap.ps1 -Action ShowCredential
+```
+
+创建持有现有站点共享维护锁，API 使用真实受限数据库角色，在同一事务内创建租户、账号和
+一条 WARN/api 安全审计。任何已有用户（含软删除）、租户或旧引导审计都会拒绝新的创建。
+重复调用不会覆盖密码。`created` 是提交回执，`confirmed` 是通过相同操作、站点、身份、
+角色、控制权限和密码进行只读核对；`empty` 只证明当前空库，不能当作创建成功。
+脚本退出码：`planned/created/confirmed/empty` 为 `0`，`rejected/conflict` 为 `2`，
+`unknown` 为 `3`；自动化必须同时检查退出码和 JSON 状态，不能将退出码 `0` 一概视为已创建。
+
+发生超时、断线、`unknown` 或 `conflict` 时保留原加密凭据，仅运行 `Status` 核对，不自动
+重置账号。审计保留一年，记录缺失也不能推断成功。目标进程异常退出可能保留
+`.remote-maintenance-state\.remote-maintenance.lock` 中的 `admin-bootstrap` 记录；其他维护
+工具会失败关闭。提交后传输结果无法确认时也保留锁，只有相同操作的 `Status` 可以只读
+核对，不自动删锁。不得手工删锁或重启绕过，需确认原进程结束并单独批准恢复处理。
+所有测试、发布和凭据交接通过之前，本节不解除 G0-05/CAP-2、网络、采集点表或恢复验收门禁。
+
 ### 5. RS485 串口设备（可选）
 
 候选基础 Compose 禁止现场编辑。Windows Docker Desktop 使用 `usbipd-win` 把 USB-RS485

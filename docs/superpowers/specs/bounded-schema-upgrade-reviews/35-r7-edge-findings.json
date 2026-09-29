@@ -1,0 +1,14 @@
+[
+  {
+    "location": "tools/remote_maintenance_prepare.ps1:242-249",
+    "trigger_condition": "The compliant shared audit directory exists, but its maintenance audit lock is absent.",
+    "guard_snippet": "Set-Acl -LiteralPath $mutexPath -AclObject (New-ExplicitMaintenanceLockAcl)",
+    "potential_consequence": "Preparation reports success, but subsequent maintenance and upgrade operations reject the inherited lock ACL."
+  },
+  {
+    "location": "ruisheng-api/src/ruisheng_api/api/devices.py:89-94",
+    "trigger_condition": "Creating a 129th nondeleted serial endpoint on one port, including disabled devices.",
+    "guard_snippet": "await enforce_serial_capacity_under_port_lock(session, body.serial_port, maximum=128)",
+    "potential_consequence": "All configuration refreshes fail; disabled devices keep polling, and gateway restart cannot load."
+  }
+]

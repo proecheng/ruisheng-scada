@@ -1,0 +1,233 @@
+{
+  "verification": {
+    "schema_version": 1,
+    "at": "2026-09-16T17:26:15.7349884+08:00",
+    "scope": "DEV001 only; second physical device deferred",
+    "capture_summary": [
+      {
+        "capture": "first",
+        "start": "2026-09-16T09:12:57+00:00",
+        "end": "2026-09-16T09:15:57+00:00",
+        "requests": 36,
+        "outcomes": {
+          "valid_frame": 34,
+          "no_response_bytes": 1,
+          "uart_line_error_without_valid_frame": 1
+        },
+        "framer_accepted": 34,
+        "complete_38_point_database_rounds": 34,
+        "matched_timeout_logs": 2,
+        "response_completion_ms_range": [
+          106.287,
+          398.264
+        ]
+      },
+      {
+        "capture": "confirmation",
+        "start": "2026-09-16T09:19:05+00:00",
+        "end": "2026-09-16T09:22:05+00:00",
+        "requests": 36,
+        "outcomes": {
+          "uart_line_error_without_valid_frame": 2,
+          "valid_frame": 28,
+          "invalid_or_partial_response": 1,
+          "no_response_bytes": 5
+        },
+        "framer_accepted": 28,
+        "complete_38_point_database_rounds": 28,
+        "matched_timeout_logs": 8,
+        "response_completion_ms_range": [
+          105.136,
+          384.174
+        ]
+      }
+    ],
+    "requests": 72,
+    "valid_complete_frames": 62,
+    "complete_database_rounds": 62,
+    "matched_timeouts": 10,
+    "all_replay_results_matched": true,
+    "uart_framing_error_transactions": 3,
+    "no_payload_transactions": 6,
+    "incomplete_payload_without_flag_transactions": 1,
+    "temporary_trace_resources_removed": true,
+    "services_unchanged": true,
+    "configuration_version": 23,
+    "active_candidate": "deploy-20260915.4",
+    "latest_snapshot": "D:\\江苏润盛\\tmp-test-logs\\field-acceptance-20260916\\snapshots\\20260916-investigation-final.json",
+    "source_sha256": {
+      "capture-database.json": "6e62135dd2985375add0330304607a11ba68495be955cd71b036d8df60c11bb8",
+      "capture-final-verify.json": "8eb82989b7086c0a562cbb536dba5ba3f5aaa324f2d437d143ab91c3e9830abe",
+      "capture-verify.json": "c343136b7380cb41ecb58e86e2ae12dd556e7efc4670bbc622c54dcde3f43334",
+      "host-bounded-v2.json": "225f5ab2909bcf680d4d05fa96f41a51bcc75c774c28701ad2c5fb5d0d746824",
+      "linux-capabilities.json": "ebfc32956972a2e1e1cfbefc2f2a17c742708dc1f956cc13944720b07d4e8383",
+      "linux-simple.json": "86c951d15eb72033b08cdacaee42eb5ef97198e7e143b93e8e6933fcba4c14f2",
+      "passive-usb-180s-analysis-replay.json": "68e9a9ba71da8037debe922e1bfc2380c0f333a2273c2754f68ba0cd28dca0a3",
+      "passive-usb-180s-analysis.json": "cf5e0292d1edd8d32eb07309f96cfe72dd6220c24f434d3a09e2a1ac53d679eb",
+      "passive-usb-180s.json": "f656589c3e5880b53859296b113b4ab270f39df9a4c26635f52653d2a16d7925",
+      "passive-usb-confirm-180s-analysis-replay.json": "f5f797e816cb3cfacc541e14a6ec124977f885dc31839942dcf01c89a8f43faf",
+      "passive-usb-confirm-180s-analysis.json": "b735d33d6235a62eee5696c2845f70e00eaebb9bb0b51df02542d4ac9848b4f3",
+      "passive-usb-confirm-180s.json": "a21c7297a959c481c237437b694a4203d773d088aa967b30527dcaff050f9ffd"
+    },
+    "limitations": [
+      "USB transmit completions captured only in confirmation run; all 36 have status 0.",
+      "USB status 0 confirms delivery to adapter, not electrical reception by device.",
+      "Text timestamps use modulo 4096s; reconstructed wall times are approximate within 1s.",
+      "Six minutes of passive capture explain these ten timeouts, not every timeout in the preceding 24h.",
+      "Exact failing component and physical/firmware repair remain unconfirmed."
+    ]
+  },
+  "abnormal_transactions": [
+    {
+      "capture": "first",
+      "request_at_approx": "2026-09-16T09:14:43.141580+00:00",
+      "outcome": "no_response_bytes",
+      "tx_usb_status": null,
+      "response_bytes": 0,
+      "response_hex": "",
+      "line_errors": [],
+      "first_byte_ms": null,
+      "last_byte_ms": null,
+      "database_recorded_at": null,
+      "timeout_log_at": "2026-09-16T09:14:44.152620+00:00"
+    },
+    {
+      "capture": "first",
+      "request_at_approx": "2026-09-16T09:15:53.504121+00:00",
+      "outcome": "uart_line_error_without_valid_frame",
+      "tx_usb_status": null,
+      "response_bytes": 3,
+      "response_hex": "b07082",
+      "line_errors": [
+        {
+          "after_ms": 11.63,
+          "modem_status": 177,
+          "line_status": 104,
+          "payload": "b070"
+        }
+      ],
+      "first_byte_ms": 11.63,
+      "last_byte_ms": 27.779,
+      "database_recorded_at": null,
+      "timeout_log_at": "2026-09-16T09:15:54.508493+00:00"
+    },
+    {
+      "capture": "confirmation",
+      "request_at_approx": "2026-09-16T09:19:08.450241+00:00",
+      "outcome": "uart_line_error_without_valid_frame",
+      "tx_usb_status": 0,
+      "response_bytes": 3,
+      "response_hex": "1b8ef8",
+      "line_errors": [
+        {
+          "after_ms": 10.553,
+          "modem_status": 177,
+          "line_status": 104,
+          "payload": "1b"
+        }
+      ],
+      "first_byte_ms": 10.553,
+      "last_byte_ms": 25.672,
+      "database_recorded_at": null,
+      "timeout_log_at": "2026-09-16T09:19:10.390814+00:00"
+    },
+    {
+      "capture": "confirmation",
+      "request_at_approx": "2026-09-16T09:19:28.534440+00:00",
+      "outcome": "invalid_or_partial_response",
+      "tx_usb_status": 0,
+      "response_bytes": 2,
+      "response_hex": "8304",
+      "line_errors": [],
+      "first_byte_ms": 25.882,
+      "last_byte_ms": 25.882,
+      "database_recorded_at": null,
+      "timeout_log_at": "2026-09-16T09:19:30.471340+00:00"
+    },
+    {
+      "capture": "confirmation",
+      "request_at_approx": "2026-09-16T09:19:43.579401+00:00",
+      "outcome": "no_response_bytes",
+      "tx_usb_status": 0,
+      "response_bytes": 0,
+      "response_hex": "",
+      "line_errors": [],
+      "first_byte_ms": null,
+      "last_byte_ms": null,
+      "database_recorded_at": null,
+      "timeout_log_at": "2026-09-16T09:19:45.512069+00:00"
+    },
+    {
+      "capture": "confirmation",
+      "request_at_approx": "2026-09-16T09:20:23.854469+00:00",
+      "outcome": "no_response_bytes",
+      "tx_usb_status": 0,
+      "response_bytes": 0,
+      "response_hex": "",
+      "line_errors": [],
+      "first_byte_ms": null,
+      "last_byte_ms": null,
+      "database_recorded_at": null,
+      "timeout_log_at": "2026-09-16T09:20:25.782766+00:00"
+    },
+    {
+      "capture": "confirmation",
+      "request_at_approx": "2026-09-16T09:20:28.856159+00:00",
+      "outcome": "no_response_bytes",
+      "tx_usb_status": 0,
+      "response_bytes": 0,
+      "response_hex": "",
+      "line_errors": [],
+      "first_byte_ms": null,
+      "last_byte_ms": null,
+      "database_recorded_at": null,
+      "timeout_log_at": "2026-09-16T09:20:30.785090+00:00"
+    },
+    {
+      "capture": "confirmation",
+      "request_at_approx": "2026-09-16T09:20:48.962040+00:00",
+      "outcome": "no_response_bytes",
+      "tx_usb_status": 0,
+      "response_bytes": 0,
+      "response_hex": "",
+      "line_errors": [],
+      "first_byte_ms": null,
+      "last_byte_ms": null,
+      "database_recorded_at": null,
+      "timeout_log_at": "2026-09-16T09:20:50.879317+00:00"
+    },
+    {
+      "capture": "confirmation",
+      "request_at_approx": "2026-09-16T09:21:24.143746+00:00",
+      "outcome": "uart_line_error_without_valid_frame",
+      "tx_usb_status": 0,
+      "response_bytes": 2,
+      "response_hex": "8ef8",
+      "line_errors": [
+        {
+          "after_ms": 10.571,
+          "modem_status": 177,
+          "line_status": 104,
+          "payload": "8e"
+        }
+      ],
+      "first_byte_ms": 10.571,
+      "last_byte_ms": 25.565,
+      "database_recorded_at": null,
+      "timeout_log_at": "2026-09-16T09:21:26.026206+00:00"
+    },
+    {
+      "capture": "confirmation",
+      "request_at_approx": "2026-09-16T09:21:54.254315+00:00",
+      "outcome": "no_response_bytes",
+      "tx_usb_status": 0,
+      "response_bytes": 0,
+      "response_hex": "",
+      "line_errors": [],
+      "first_byte_ms": null,
+      "last_byte_ms": null,
+      "database_recorded_at": null,
+      "timeout_log_at": "2026-09-16T09:21:56.150161+00:00"
+    }
+  ]
+}

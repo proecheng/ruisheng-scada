@@ -1,0 +1,15 @@
+{
+  "role": "edge",
+  "label": "edge-retry1",
+  "started": "2026-09-10T07:26:40.609Z",
+  "ended": "2026-09-10T07:58:16.899Z",
+  "code": 4294967295,
+  "signal": null,
+  "model": "gpt-6-astra",
+  "sandbox": "read-only",
+  "ephemeral": true,
+  "parent_history": false,
+  "diff_sha256": "169da4cd1506b4e7e53bde50c7e32f997baa7ba296c5b47376230a323caff3fb",
+  "output_present": false,
+  "output_format_valid": false
+}

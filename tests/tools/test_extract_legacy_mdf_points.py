@@ -40,10 +40,11 @@ CANONICAL = (
     / "superpowers"
     / "specs"
     / "evidence"
-    / "b08-20260827"
+    / "b08-20260905"
     / "legacy-point-candidates.json"
 )
 WINDOWS_ERROR_SHARING_VIOLATION = 32
+HISTORICAL = CANONICAL.parent.parent / "b08-20260827" / CANONICAL.name
 REQUIRES_REPOSITORY_MDF = pytest.mark.skipif(
     not MDF.is_file(),
     reason="repository MDF fixture is unavailable",
@@ -204,6 +205,38 @@ def test_read_only_extractor_recovers_frozen_candidates(
     rendered = render_artifact(artifact)
     assert json.loads(CANONICAL.read_text(encoding="utf-8")) == artifact
     assert CANONICAL.read_bytes() == rendered.encode("utf-8")
+
+
+def test_runtime_evidence_refresh_preserves_historical_device_conclusions() -> None:
+    assert hashlib.sha256(HISTORICAL.read_bytes()).hexdigest().upper() == (
+        "C7560A700B3FA3CCB47A098C560EB6F4E395ED3ECB268FE532EEF0404E3D7EB9"
+    )
+    historical = json.loads(HISTORICAL.read_text(encoding="utf-8"))
+    refreshed = json.loads(CANONICAL.read_text(encoding="utf-8"))
+    historical["parser_contract"].pop("extractor_source_sha256")
+    refreshed["parser_contract"].pop("extractor_source_sha256")
+    for name in (
+        "current_point_api_contract",
+        "current_point_api_routes",
+        "current_device_api_routes",
+        "current_gateway_serial_config",
+        "current_gateway_decode",
+        "current_gateway_registry",
+        "current_gateway_poller",
+        "current_gateway_runtime",
+    ):
+        previous = historical["evidence_sources"].pop(name)
+        current = refreshed["evidence_sources"].pop(name)
+        assert previous["path"] == current["path"]
+        assert previous["evidence_ids"] == current["evidence_ids"]
+        assert (
+            current["sha256"]
+            == hashlib.sha256((ROOT / current["path"]).read_bytes()).hexdigest().upper()
+        )
+    historical.pop("current_runtime_compatibility")
+    refreshed.pop("current_runtime_compatibility")
+    assert historical["candidates"] == refreshed["candidates"]
+    assert historical == refreshed
 
 
 def test_supporting_evidence_size_limit_rejects_before_read(

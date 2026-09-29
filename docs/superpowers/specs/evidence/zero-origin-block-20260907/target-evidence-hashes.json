@@ -1,0 +1,27 @@
+[
+  {
+    "path": "C:\\Ruisheng\\audit\\zero-origin-block-20260907-physical.jsonl",
+    "local_name": "physical.jsonl",
+    "sha256": "27a72a6941b43392be9b778f28edb16dfc2cc0751d9b99703f566b48d924040e"
+  },
+  {
+    "path": "C:\\Ruisheng\\audit\\modbus-runner-e33566ea-a93f-4843-a433-d4b8210b5fd0.jsonl",
+    "local_name": "modbus-runner-e33566ea-a93f-4843-a433-d4b8210b5fd0.jsonl",
+    "sha256": "5acdf1ce0c4a2bc986eb26a9fab714dbe4f17aaa22cfa98913cc6a1a24abd981"
+  },
+  {
+    "path": "C:\\Ruisheng\\audit\\modbus-runner-b81c5dd8-d64d-48e2-81c1-eef5ae8bf910.jsonl",
+    "local_name": "modbus-runner-b81c5dd8-d64d-48e2-81c1-eef5ae8bf910.jsonl",
+    "sha256": "6b1124e1ac5c73c5fafe2d0a61c67e4949f478bfa5b8e39a3b489186e53d19a6"
+  },
+  {
+    "path": "C:\\ProgramData\\Ruisheng\\receipts\\modbus-probe-release.json",
+    "local_name": "installed-receipt.json",
+    "sha256": "4853947d4fcc351f7b35feb5c6f2d3b53c73159399e56a549fbf3d972cb97da1"
+  },
+  {
+    "path": "C:\\Ruisheng\\site\\modbus-probe-zero-origin-20260907.json",
+    "local_name": "installed-config.json",
+    "sha256": "a6736686c594894326647f3fbb1ced3006783078d5d11c4482bee123f6f02ff7"
+  }
+]

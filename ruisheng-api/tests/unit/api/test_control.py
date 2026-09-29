@@ -84,10 +84,8 @@ def test_control_happy(monkeypatch):
         json={"fun_code": 6, "reg": 0, "value": 1},
         headers={"Authorization": f"Bearer {_tok(ca=1)}"},
     )
-    assert resp.status_code == 200, resp.text
-    d = resp.json()["data"]
-    assert d["status"] == "pending"
-    assert len(d["cmd_id"]) == 26
+    assert resp.status_code == 400, resp.text
+    assert "not executed" in resp.json()["msg"]
 
 
 def test_control_high_risk_requires_otp(monkeypatch):
@@ -99,7 +97,8 @@ def test_control_high_risk_requires_otp(monkeypatch):
         json={"fun_code": 6, "reg": 0, "value": 1, "high_risk": True},
         headers={"Authorization": f"Bearer {_tok(ca=0x05)}"},
     )
-    assert resp.status_code == 401
+    assert resp.status_code == 400
+    assert "not executed" in resp.json()["msg"]
 
 
 def test_cancel_command_requires_control_authority(monkeypatch):
